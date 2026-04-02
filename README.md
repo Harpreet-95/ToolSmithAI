@@ -23,6 +23,25 @@ Output:
 "task_type": "generate_report",
 "frequency": "weekly"
 }
+## More Examples
+
+Input: Send a weekly email update
+Output:
+{
+"original_input": "Send a weekly email update",
+"task_type": "send_email",
+"frequency": "weekly"
+}
+
+Input: Do something random
+
+Output:
+
+{
+"original_input": "Do something random",
+"task_type": "unknown",
+"frequency": null
+}
 
 ## How It Works
 1. Converts user input to lowercase
