@@ -54,6 +54,21 @@ Output:
   "frequency": null
 }
 ```
+## Architecture
+
+ToolSmithAI follows a simple pipeline:
+
+User Input  
+→ Normalize (lowercase)  
+→ Detect all matching keywords  
+→ Apply priority rules  
+→ Extract frequency  
+→ Return structured output  
+
+### Flow
+
+Input → Detection → Priority Resolution → Output
+
 ## How It Works
 1. Converts user input to lowercase
 2. Detects all matching task keywords
