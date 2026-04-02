@@ -22,11 +22,13 @@ Email me a weekly report
 Output:
 
 {
+
 "original_input": "Email me a weekly report",
 
 "task_type": "generate_report",
 
 "frequency": "weekly"
+
 }
 ## More Examples
 
@@ -37,11 +39,13 @@ Send a weekly email update
 Output:
 
 {
+
 "original_input": "Send a weekly email update",
 
 "task_type": "send_email",
 
 "frequency": "weekly"
+
 }
 
 Input:
@@ -51,11 +55,13 @@ Do something random
 Output:
 
 {
+
 "original_input": "Do something random",
 
 "task_type": "unknown",
 
 "frequency": null
+
 }
 
 ## How It Works
