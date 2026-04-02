@@ -1,0 +1,45 @@
+# ToolSmithAI
+
+## Overview
+ToolSmithAI is a simple task interpreter that converts natural language input into structured task instructions.
+
+It identifies:
+- The main task (e.g., send email, generate report)
+- The frequency (daily, weekly, monthly)
+
+## Features
+- Keyword-based task detection
+- Priority-based intent resolution for multi-intent inputs
+- Frequency extraction (daily, weekly, monthly)
+- Handles unknown or unsupported inputs safely
+
+## Example
+
+Input:Email me a weekly report
+Output:
+
+{
+"original_input": "Email me a weekly report",
+"task_type": "generate_report",
+"frequency": "weekly"
+}
+
+## How It Works
+1. Converts user input to lowercase
+2. Detects all matching task keywords
+3. Applies priority rules to resolve conflicts
+4. Extracts frequency if present
+5. Returns structured output
+
+## Limitations
+- Relies on simple keyword matching
+- May not handle complex or ambiguous natural language
+- Limited to predefined task types
+
+## Future Improvements
+- Use NLP models instead of keyword matching
+- Support more task types
+- Improve handling of ambiguous inputs
+
+## Author
+Built as part of an AI + Data Engineering learning project.
