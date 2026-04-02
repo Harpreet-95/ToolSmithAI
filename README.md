@@ -20,16 +20,13 @@ Input:
 Email me a weekly report
 
 Output:
-
+```
 {
-
-"original_input": "Email me a weekly report",
-
-"task_type": "generate_report",
-
-"frequency": "weekly"
-
+  "original_input": "Email me a weekly report",
+  "task_type": "generate_report",
+  "frequency": "weekly"
 }
+```
 ## More Examples
 
 Input:
@@ -37,33 +34,26 @@ Input:
 Send a weekly email update
 
 Output:
-
+```
 {
-
-"original_input": "Send a weekly email update",
-
-"task_type": "send_email",
-
-"frequency": "weekly"
-
+  "original_input": "Send a weekly email update",
+  "task_type": "send_email",
+  "frequency": "weekly"
 }
+```
 
 Input:
 
 Do something random
 
 Output:
-
+```
 {
-
-"original_input": "Do something random",
-
-"task_type": "unknown",
-
-"frequency": null
-
+  "original_input": "Do something random",
+  "task_type": "unknown",
+  "frequency": null
 }
-
+```
 ## How It Works
 1. Converts user input to lowercase
 2. Detects all matching task keywords
