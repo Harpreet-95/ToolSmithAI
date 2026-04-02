@@ -23,7 +23,9 @@ Output:
 
 {
 "original_input": "Email me a weekly report",
+
 "task_type": "generate_report",
+
 "frequency": "weekly"
 }
 ## More Examples
@@ -36,7 +38,9 @@ Output:
 
 {
 "original_input": "Send a weekly email update",
+
 "task_type": "send_email",
+
 "frequency": "weekly"
 }
 
@@ -48,7 +52,9 @@ Output:
 
 {
 "original_input": "Do something random",
+
 "task_type": "unknown",
+
 "frequency": null
 }
 
