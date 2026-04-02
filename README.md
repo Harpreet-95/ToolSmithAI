@@ -15,7 +15,10 @@ It identifies:
 
 ## Example
 
-Input:Email me a weekly report
+Input:
+
+Email me a weekly report
+
 Output:
 
 {
@@ -25,15 +28,21 @@ Output:
 }
 ## More Examples
 
-Input: Send a weekly email update
+Input:
+
+Send a weekly email update
+
 Output:
+
 {
 "original_input": "Send a weekly email update",
 "task_type": "send_email",
 "frequency": "weekly"
 }
 
-Input: Do something random
+Input:
+
+Do something random
 
 Output:
 
