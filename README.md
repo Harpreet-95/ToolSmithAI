@@ -4,7 +4,7 @@
 ToolSmithAI is a simple task interpreter that converts natural language input into structured task instructions.
 
 It identifies:
-- The main task (e.g., send email, generate report)
+- The main task (e.g., send email, generate report, set reminder)
 - The frequency (daily, weekly, monthly)
 
 ## Features
@@ -12,7 +12,7 @@ It identifies:
 - Priority-based intent resolution for multi-intent inputs
 - Frequency extraction (daily, weekly, monthly)
 - Handles unknown or unsupported inputs safely
-
+- Reminder detection using keywords like "remind" and "reminder"
 ## Example
 
 Input:
@@ -51,6 +51,18 @@ Output:
 {
   "original_input": "Do something random",
   "task_type": "unknown",
+  "frequency": null
+}
+```
+Input:
+
+Remind me to call mom
+
+Output:
+```
+{
+  "original_input": "Remind me to call mom",
+  "task_type": "set_reminder",
   "frequency": null
 }
 ```
