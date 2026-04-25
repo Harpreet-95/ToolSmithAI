@@ -1,4 +1,5 @@
 import datetime
+import time
 
 from core.optimization.performance_tracker import PerformanceTracker
 
@@ -84,7 +85,11 @@ def run_plan(plan: dict) -> dict:
     tracker.start_timer(plan_id)
 
     for step in plan.get("steps", []):
+        step_id = step.get("step_id")
+        step_start = time.perf_counter()
         result = _run_step(step)
+        step_elapsed_ms = (time.perf_counter() - step_start) * 1000
+        print(f"[PerformanceTracker] step_id='{step_id}' completed in {step_elapsed_ms:.2f} ms", flush=True)
         step_results.append(result)
         if result["status"] == "failed":
             tracker.end_timer(plan_id)
