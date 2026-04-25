@@ -1,5 +1,7 @@
 import datetime
 
+from core.optimization.performance_tracker import PerformanceTracker
+
 
 # ---------------------------------------------------------------------------
 # Simulated tool handlers
@@ -76,13 +78,18 @@ def _run_step(step: dict) -> dict:
 def run_plan(plan: dict) -> dict:
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     step_results = []
+    plan_id = plan.get("plan_id")
+
+    tracker = PerformanceTracker()
+    tracker.start_timer(plan_id)
 
     for step in plan.get("steps", []):
         result = _run_step(step)
         step_results.append(result)
         if result["status"] == "failed":
+            tracker.end_timer(plan_id)
             return {
-                "plan_id": plan.get("plan_id"),
+                "plan_id": plan_id,
                 "status": "failed",
                 "started_at": started_at,
                 "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -90,8 +97,9 @@ def run_plan(plan: dict) -> dict:
                 "error": result["error"],
             }
 
+    tracker.end_timer(plan_id)
     return {
-        "plan_id": plan.get("plan_id"),
+        "plan_id": plan_id,
         "status": "completed",
         "started_at": started_at,
         "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
