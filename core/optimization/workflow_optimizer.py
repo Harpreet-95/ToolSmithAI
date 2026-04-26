@@ -37,4 +37,7 @@ class WorkflowOptimizer:
         """
         action = "optimize" if slowest_step.get("duration_ms", 0) > 1 else "no_action"
         print(f"[WorkflowOptimizer] Recommended action: {action}")
+        if action == "optimize":
+            step_id = slowest_step.get("step_id", "unknown")
+            print(f"[WorkflowOptimizer] Triggering optimization workflow for step '{step_id}'")
         return action

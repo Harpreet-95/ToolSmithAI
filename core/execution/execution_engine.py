@@ -85,7 +85,11 @@ def run_plan(plan: dict) -> dict:
     tracker = PerformanceTracker()
     tracker.start_timer(plan_id)
 
-    for step in plan.get("steps", []):
+    steps = sorted(
+        plan.get("steps", []),
+        key=lambda s: s.get("priority", float("inf")),
+    )
+    for step in steps:
         step_id = step.get("step_id")
         step_start = time.perf_counter()
         result = _run_step(step)
