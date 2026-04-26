@@ -105,7 +105,10 @@ def run_plan(plan: dict) -> dict:
             }
 
     tracker.end_timer(plan_id)
-    WorkflowOptimizer().analyze_steps(step_results)
+    optimizer = WorkflowOptimizer()
+    slowest = optimizer.analyze_steps(step_results)
+    if slowest is not None:
+        optimizer.recommend_action(slowest)
     return {
         "plan_id": plan_id,
         "status": "completed",
