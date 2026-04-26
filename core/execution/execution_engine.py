@@ -2,6 +2,7 @@ import datetime
 import time
 
 from core.optimization.performance_tracker import PerformanceTracker
+from core.optimization.workflow_optimizer import WorkflowOptimizer
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,7 @@ def run_plan(plan: dict) -> dict:
         result = _run_step(step)
         step_elapsed_ms = (time.perf_counter() - step_start) * 1000
         print(f"[PerformanceTracker] step_id='{step_id}' completed in {step_elapsed_ms:.2f} ms", flush=True)
+        result["duration_ms"] = step_elapsed_ms
         step_results.append(result)
         if result["status"] == "failed":
             tracker.end_timer(plan_id)
@@ -103,6 +105,7 @@ def run_plan(plan: dict) -> dict:
             }
 
     tracker.end_timer(plan_id)
+    WorkflowOptimizer().analyze_steps(step_results)
     return {
         "plan_id": plan_id,
         "status": "completed",
