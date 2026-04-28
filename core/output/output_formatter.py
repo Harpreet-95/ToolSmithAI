@@ -1,5 +1,6 @@
 def format_output(data: dict) -> dict:
+    status = "error" if data.get("status") == "failed" else "success"
     return {
-        "status": "success",
+        "status": status,
         "data": data
     }
