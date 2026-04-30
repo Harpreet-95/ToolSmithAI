@@ -9,8 +9,27 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 USER_API_KEY = os.getenv("USER_API_KEY")
 
+_MIN_KEY_LENGTH = 32
+_WEAK_KEYS = {"toolsmith-admin-key", "toolsmith-user-key"}
+
+
+def _validate_api_key(name: str, value: str) -> None:
+    if len(value) < _MIN_KEY_LENGTH:
+        raise ValueError(
+            f"{name} is too short ({len(value)} chars). "
+            f"Minimum required length is {_MIN_KEY_LENGTH} characters."
+        )
+    if value in _WEAK_KEYS:
+        raise ValueError(
+            f"{name} uses a known default value and is not secure. "
+            "Set a strong, unique key in your .env file."
+        )
+
+
 KEY_ROLE_MAP: dict[str, str] = {}
 if ADMIN_API_KEY:
+    _validate_api_key("ADMIN_API_KEY", ADMIN_API_KEY)
     KEY_ROLE_MAP[ADMIN_API_KEY] = "admin"
 if USER_API_KEY:
+    _validate_api_key("USER_API_KEY", USER_API_KEY)
     KEY_ROLE_MAP[USER_API_KEY] = "user"

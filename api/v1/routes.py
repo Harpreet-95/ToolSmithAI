@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from auth.api_key import AuthenticatedUser, require_api_key, require_role
+from core.errors.error_response import build_error_response
 from core.input.input_handler import handle_input
 from core.output.output_formatter import format_output
 from core.workflows.workflow_runner import run_workflow_by_name
@@ -23,11 +24,11 @@ class WorkflowRunRequest(BaseModel):
 @router.post("/interpret")
 def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(require_api_key)) -> dict:
     if not request.input.strip():
-        return JSONResponse(status_code=400, content={"status": "error", "error": "Input cannot be empty"})
+        return JSONResponse(status_code=400, content=build_error_response("Input cannot be empty"))
     try:
         return handle_input(request.input)
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 @router.post("/workflows/run")
@@ -36,9 +37,9 @@ def run_workflow(request: WorkflowRunRequest, user: AuthenticatedUser = Depends(
         result = run_workflow_by_name(request.name)
         return format_output(result)
     except ValueError as e:
-        return JSONResponse(status_code=404, content={"status": "error", "error": str(e)})
+        return JSONResponse(status_code=404, content=build_error_response("Not found", str(e)))
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 @router.get("/audit")
@@ -71,7 +72,7 @@ def get_audit_logs(
         conn.close()
         return {"status": "success", "data": [dict(row) for row in rows]}
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 @router.get("/insights")
@@ -79,7 +80,7 @@ def insights(user: AuthenticatedUser = Depends(require_api_key)) -> dict:
     try:
         return format_output(get_workflow_success_insights())
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 @router.get("/recommendations")
@@ -87,7 +88,7 @@ def recommendations(user: AuthenticatedUser = Depends(require_api_key)) -> dict:
     try:
         return format_output(get_repeated_intent_suggestions())
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "error": str(e)})
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 @router.get("/health")
