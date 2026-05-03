@@ -8,14 +8,24 @@ from core.errors.error_response import build_error_response
 _WINDOW_SECONDS = 60
 _MAX_FAILURES = 5
 
+_REQUEST_WINDOW_SECONDS = 60
+_MAX_REQUESTS = 60
+
 # {ip: {"count": int, "window_start": float}}
 _failure_tracker: dict[str, dict] = {}
+_request_tracker: dict[str, dict] = {}
 
 
 def _get_record(ip: str) -> dict:
     if ip not in _failure_tracker:
         _failure_tracker[ip] = {"count": 0, "window_start": time.monotonic()}
     return _failure_tracker[ip]
+
+
+def _get_request_record(ip: str) -> dict:
+    if ip not in _request_tracker:
+        _request_tracker[ip] = {"count": 0, "window_start": time.monotonic()}
+    return _request_tracker[ip]
 
 
 class AuthFailureRateLimiter:
@@ -45,6 +55,21 @@ class AuthFailureRateLimiter:
             )
             await response(scope, receive, send)
             return
+
+        req_record = _get_request_record(ip)
+        if now - req_record["window_start"] > _REQUEST_WINDOW_SECONDS:
+            req_record["count"] = 0
+            req_record["window_start"] = now
+
+        if req_record["count"] >= _MAX_REQUESTS:
+            response = JSONResponse(
+                status_code=429,
+                content=build_error_response("Too many requests. Try again later."),
+            )
+            await response(scope, receive, send)
+            return
+
+        req_record["count"] += 1
 
         status_holder: list[int] = []
 

@@ -8,6 +8,7 @@ APP_ENV = os.getenv("APP_ENV", "development")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 USER_API_KEY = os.getenv("USER_API_KEY")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
 _MIN_KEY_LENGTH = 32
 _WEAK_KEYS = {"toolsmith-admin-key", "toolsmith-user-key"}
@@ -25,6 +26,12 @@ def _validate_api_key(name: str, value: str) -> None:
             "Set a strong, unique key in your .env file."
         )
 
+
+if not ENCRYPTION_KEY:
+    raise ValueError(
+        "ENCRYPTION_KEY is not set. "
+        "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+    )
 
 KEY_ROLE_MAP: dict[str, str] = {}
 if ADMIN_API_KEY:

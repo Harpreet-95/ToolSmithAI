@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from auth.api_key import AuthenticatedUser, require_api_key, require_role
 from core.errors.error_response import build_error_response
 from core.input.input_handler import handle_input
+from core.security.encryption import decrypt
 from core.output.output_formatter import format_output
 from core.workflows.workflow_runner import run_workflow_by_name
 from data.db import get_connection
@@ -70,7 +71,12 @@ def get_audit_logs(
             params,
         ).fetchall()
         conn.close()
-        return {"status": "success", "data": [dict(row) for row in rows]}
+        data = []
+        for row in rows:
+            d = dict(row)
+            d["original_input"] = decrypt(d["original_input"])
+            data.append(d)
+        return {"status": "success", "data": data}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 

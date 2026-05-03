@@ -3,6 +3,7 @@ import logging
 import pathlib
 from datetime import datetime, timezone
 
+from core.security.encryption import encrypt
 from data.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ def log_audit_event(task_result: dict) -> None:
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "task_type": task_type,
-        "original_input": original_input,
+        "original_input": encrypt(original_input),
         "status": task_result.get("status") or "unknown",
     }
     try:
