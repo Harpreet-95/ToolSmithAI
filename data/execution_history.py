@@ -30,6 +30,7 @@ def log_execution_history(
     result: dict,
     workflow_id: int | None = None,
     trigger_source: str = "interpreter",
+    user_id: str | None = None,
 ) -> None:
     step_results = result.get("step_results") or []
     failed_step = _find_failed_step(step_results)
@@ -48,6 +49,7 @@ def log_execution_history(
         "failed_step_id": failed_step.get("step_id") if failed_step else None,
         "failed_tool":    failed_step.get("tool") if failed_step else None,
         "error_message":  result.get("error"),
+        "user_id":        user_id,
     }
 
     try:
@@ -58,8 +60,9 @@ def log_execution_history(
                 plan_id, workflow_id, trigger_source,
                 task_type, intent, status,
                 started_at, finished_at, duration_ms,
-                step_count, failed_step_id, failed_tool, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                step_count, failed_step_id, failed_tool, error_message,
+                user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record["plan_id"],
@@ -75,6 +78,7 @@ def log_execution_history(
                 record["failed_step_id"],
                 record["failed_tool"],
                 record["error_message"],
+                record["user_id"],
             ),
         )
         conn.commit()
@@ -156,3 +160,24 @@ def get_workflow_success_insights() -> list:
         })
 
     return results
+
+
+def purge_old_execution_history(cutoff: str) -> int:
+    """Delete execution_history rows whose started_at is before cutoff.
+
+    cutoff must be an ISO 8601 string (e.g. '2026-02-03T14:00:00+00:00').
+    Returns count of deleted rows.
+    """
+    try:
+        conn = get_connection()
+        cur = conn.execute(
+            "DELETE FROM execution_history WHERE started_at < ?",
+            (cutoff,),
+        )
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+    except Exception as e:
+        logger.error("Failed to purge old execution_history rows: %s", e)
+        return 0

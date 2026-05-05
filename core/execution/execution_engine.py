@@ -1,6 +1,7 @@
 import datetime
 import time
 
+from core.config import MAX_STEP_RETRIES, RETRY_BACKOFF_SECONDS
 from core.optimization.performance_tracker import PerformanceTracker
 from core.optimization.workflow_optimizer import WorkflowOptimizer
 
@@ -60,17 +61,38 @@ def _dispatch(step: dict) -> dict:
     return handler(step.get("params") or {})
 
 
+def _is_transient(exc: Exception) -> bool:
+    """Return True if the exception may resolve on retry.
+
+    ValueError and TypeError indicate permanent configuration problems
+    (unregistered tool, missing params) that will not improve with retries.
+    """
+    return not isinstance(exc, (ValueError, TypeError))
+
+
 def _run_step(step: dict) -> dict:
     base = {
         "step_id": step.get("step_id"),
         "tool": step.get("tool"),
         "operation": step.get("operation"),
     }
-    try:
-        output = _dispatch(step)
-        return {**base, "status": "success", "output": output, "error": None}
-    except Exception as exc:
-        return {**base, "status": "failed", "output": None, "error": str(exc)}
+    last_exc: Exception | None = None
+    for attempt in range(MAX_STEP_RETRIES + 1):
+        try:
+            output = _dispatch(step)
+            return {**base, "status": "success", "output": output, "error": None}
+        except Exception as exc:
+            last_exc = exc
+            if not _is_transient(exc) or attempt == MAX_STEP_RETRIES:
+                break
+            wait = RETRY_BACKOFF_SECONDS * (attempt + 1)
+            print(
+                f"[Retry] step_id='{step.get('step_id')}' attempt {attempt + 1} failed "
+                f"({type(exc).__name__}: {exc}). Retrying in {wait:.1f}s...",
+                flush=True,
+            )
+            time.sleep(wait)
+    return {**base, "status": "failed", "output": None, "error": str(last_exc)}
 
 
 # ---------------------------------------------------------------------------

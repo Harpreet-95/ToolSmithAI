@@ -13,21 +13,21 @@ def _build_plan(workflow: dict) -> dict:
     }
 
 
-def run_workflow_by_name(name: str) -> dict:
+def run_workflow_by_name(name: str, user_id: str | None = None) -> dict:
     workflow = get_workflow_by_name(name)
     if workflow is None:
         raise ValueError(f"No workflow found with name: '{name}'")
     plan = _build_plan(workflow)
     result = run_plan(plan)
-    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api")
+    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api", user_id=user_id)
     return result
 
 
-def run_workflow_by_id(workflow_id: int) -> dict:
+def run_workflow_by_id(workflow_id: int, user_id: str | None = None) -> dict:
     workflow = get_workflow_by_id(workflow_id)
     if workflow is None:
         raise ValueError(f"No workflow found with id: {workflow_id}")
     plan = _build_plan(workflow)
     result = run_plan(plan)
-    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api")
+    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api", user_id=user_id)
     return result

@@ -28,7 +28,8 @@ def init_db() -> None:
             timestamp      TEXT NOT NULL,
             task_type      TEXT,
             original_input TEXT,
-            status         TEXT NOT NULL
+            status         TEXT NOT NULL,
+            user_id        TEXT
         );
 
         CREATE TABLE IF NOT EXISTS execution_history (
@@ -45,7 +46,8 @@ def init_db() -> None:
             step_count     INTEGER NOT NULL,
             failed_step_id TEXT,
             failed_tool    TEXT,
-            error_message  TEXT
+            error_message  TEXT,
+            user_id        TEXT
         );
     """)
     conn.commit()

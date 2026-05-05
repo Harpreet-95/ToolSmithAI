@@ -113,6 +113,31 @@ The server starts at `http://127.0.0.1:8000`. The database is created automatica
 
 ---
 
+## Running with Docker
+
+**Build the image:**
+```bash
+docker build -t toolsmithai .
+```
+
+**Run the container:**
+```bash
+docker run --rm -p 8000:8000 --env-file .env -v ${PWD}/data:/app/data toolsmithai
+```
+
+**Check the server is up:**
+```bash
+curl http://localhost:8000/v1/health -UseBasicParsing
+```
+
+**Why `--env-file .env` is required:**
+The `.env` file is excluded from the Docker image (via `.dockerignore`) to prevent secrets from being baked in. Without passing it at runtime, the container starts with no API keys, no encryption key, and no HMAC salt — causing auth and audit logging to fail immediately.
+
+**Why the volume mount (`-v ${PWD}/data:/app/data`) is used:**
+The SQLite database (`toolsmith.db`) and flat audit log (`audit.log`) are written inside the container at `/app/data`. Without a volume mount, both files are destroyed every time the container stops. Mounting the host `data/` directory keeps all data persistent across container restarts.
+
+---
+
 ## Example Usage
 
 **Interpret a natural language task:**

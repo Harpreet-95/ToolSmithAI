@@ -33,6 +33,17 @@ if not ENCRYPTION_KEY:
         "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
     )
 
+USER_ID_SALT = os.getenv("USER_ID_SALT")
+if not USER_ID_SALT:
+    raise ValueError(
+        "USER_ID_SALT is not set. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+
+RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "90"))
+MAX_STEP_RETRIES: int = int(os.getenv("MAX_STEP_RETRIES", "2"))
+RETRY_BACKOFF_SECONDS: float = float(os.getenv("RETRY_BACKOFF_SECONDS", "1.0"))
+
 KEY_ROLE_MAP: dict[str, str] = {}
 if ADMIN_API_KEY:
     _validate_api_key("ADMIN_API_KEY", ADMIN_API_KEY)
