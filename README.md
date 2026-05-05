@@ -10,6 +10,19 @@ Built as part of an AI + Data Engineering learning project.
 
 ---
 
+## Live Deployment
+
+The API is deployed on Render at:
+
+**Base URL:** `https://toolsmithai.onrender.com`
+
+**Health check:** `https://toolsmithai.onrender.com/v1/health`
+
+- Render provides HTTPS automatically — no certificate configuration needed.
+- This project runs on Render's free tier. Free-tier services spin down after a period of inactivity and may take 30–60 seconds to respond on the first request after waking.
+
+---
+
 ## Current Architecture
 
 ```
