@@ -31,6 +31,7 @@ def log_execution_history(
     workflow_id: int | None = None,
     trigger_source: str = "interpreter",
     user_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> None:
     step_results = result.get("step_results") or []
     failed_step = _find_failed_step(step_results)
@@ -50,6 +51,7 @@ def log_execution_history(
         "failed_tool":    failed_step.get("tool") if failed_step else None,
         "error_message":  result.get("error"),
         "user_id":        user_id,
+        "tenant_id":      tenant_id,
     }
 
     try:
@@ -61,8 +63,8 @@ def log_execution_history(
                 task_type, intent, status,
                 started_at, finished_at, duration_ms,
                 step_count, failed_step_id, failed_tool, error_message,
-                user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                user_id, tenant_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record["plan_id"],
@@ -79,6 +81,7 @@ def log_execution_history(
                 record["failed_tool"],
                 record["error_message"],
                 record["user_id"],
+                record["tenant_id"],
             ),
         )
         conn.commit()
@@ -87,20 +90,24 @@ def log_execution_history(
         logger.error("Failed to write execution history: %s", e)
 
 
-def get_repeated_intent_suggestions() -> list:
+def get_repeated_intent_suggestions(tenant_id: str | None = None) -> list:
+    tenant_clause = "AND tenant_id = ?" if tenant_id is not None else ""
+    params = (tenant_id,) if tenant_id is not None else ()
     try:
         conn = get_connection()
         rows = conn.execute(
-            """
+            f"""
             SELECT intent, COUNT(*) AS count
             FROM execution_history
             WHERE trigger_source = 'interpreter'
               AND status = 'completed'
               AND intent IS NOT NULL
+              {tenant_clause}
             GROUP BY intent
             HAVING COUNT(*) >= 2
             ORDER BY count DESC
-            """
+            """,
+            params,
         ).fetchall()
         conn.close()
     except Exception as e:
@@ -117,11 +124,13 @@ def get_repeated_intent_suggestions() -> list:
     ]
 
 
-def get_workflow_success_insights() -> list:
+def get_workflow_success_insights(tenant_id: str | None = None) -> list:
+    tenant_clause = "AND tenant_id = ?" if tenant_id is not None else ""
+    params = (tenant_id,) if tenant_id is not None else ()
     try:
         conn = get_connection()
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 workflow_id,
                 COUNT(*) AS total_runs,
@@ -129,9 +138,11 @@ def get_workflow_success_insights() -> list:
             FROM execution_history
             WHERE trigger_source = 'workflow_api'
               AND workflow_id IS NOT NULL
+              {tenant_clause}
             GROUP BY workflow_id
             ORDER BY workflow_id ASC
-            """
+            """,
+            params,
         ).fetchall()
         conn.close()
     except Exception as e:

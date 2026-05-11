@@ -3,6 +3,7 @@ import uuid
 from data.workflow_service import get_workflow_by_id, get_workflow_by_name
 from core.execution.execution_engine import run_plan
 from data.execution_history import log_execution_history
+from data.usage_service import log_usage_event
 
 
 def _build_plan(workflow: dict) -> dict:
@@ -13,21 +14,25 @@ def _build_plan(workflow: dict) -> dict:
     }
 
 
-def run_workflow_by_name(name: str, user_id: str | None = None) -> dict:
-    workflow = get_workflow_by_name(name)
+def run_workflow_by_name(name: str, user_id: str | None = None, tenant_id: str | None = None) -> dict:
+    workflow = get_workflow_by_name(name, tenant_id=tenant_id)
     if workflow is None:
         raise ValueError(f"No workflow found with name: '{name}'")
     plan = _build_plan(workflow)
     result = run_plan(plan)
-    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api", user_id=user_id)
+    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api", user_id=user_id, tenant_id=tenant_id)
+    if tenant_id is not None:
+        log_usage_event(tenant_id, user_id, "workflow_run", "workflow_api", reference_id=str(workflow["id"]))
     return result
 
 
-def run_workflow_by_id(workflow_id: int, user_id: str | None = None) -> dict:
-    workflow = get_workflow_by_id(workflow_id)
+def run_workflow_by_id(workflow_id: int, user_id: str | None = None, tenant_id: str | None = None) -> dict:
+    workflow = get_workflow_by_id(workflow_id, tenant_id=tenant_id)
     if workflow is None:
         raise ValueError(f"No workflow found with id: {workflow_id}")
     plan = _build_plan(workflow)
     result = run_plan(plan)
-    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api", user_id=user_id)
+    log_execution_history(plan, result, workflow_id=workflow["id"], trigger_source="workflow_api", user_id=user_id, tenant_id=tenant_id)
+    if tenant_id is not None:
+        log_usage_event(tenant_id, user_id, "workflow_run", "workflow_api", reference_id=str(workflow["id"]))
     return result

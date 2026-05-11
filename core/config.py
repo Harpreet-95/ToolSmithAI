@@ -44,10 +44,16 @@ RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "90"))
 MAX_STEP_RETRIES: int = int(os.getenv("MAX_STEP_RETRIES", "2"))
 RETRY_BACKOFF_SECONDS: float = float(os.getenv("RETRY_BACKOFF_SECONDS", "1.0"))
 
+ADMIN_TENANT_ID: str = os.getenv("ADMIN_TENANT_ID", "default")
+USER_TENANT_ID: str = os.getenv("USER_TENANT_ID", "default")
+
 KEY_ROLE_MAP: dict[str, str] = {}
+TENANT_ID_MAP: dict[str, str] = {}
 if ADMIN_API_KEY:
     _validate_api_key("ADMIN_API_KEY", ADMIN_API_KEY)
     KEY_ROLE_MAP[ADMIN_API_KEY] = "admin"
+    TENANT_ID_MAP[ADMIN_API_KEY] = ADMIN_TENANT_ID
 if USER_API_KEY:
     _validate_api_key("USER_API_KEY", USER_API_KEY)
     KEY_ROLE_MAP[USER_API_KEY] = "user"
+    TENANT_ID_MAP[USER_API_KEY] = USER_TENANT_ID

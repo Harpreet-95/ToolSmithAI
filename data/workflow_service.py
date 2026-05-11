@@ -30,24 +30,36 @@ def create_workflow(name: str, definition: dict) -> int:
     return workflow_id
 
 
-def get_workflow_by_name(name: str) -> dict | None:
+def get_workflow_by_name(name: str, tenant_id: str | None = None) -> dict | None:
     conn = get_connection()
-    row = conn.execute(
-        "SELECT id, name, definition FROM workflows WHERE name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
+    if tenant_id is not None:
+        row = conn.execute(
+            "SELECT id, name, definition FROM workflows WHERE name = ? AND (tenant_id = ? OR tenant_id IS NULL) LIMIT 1",
+            (name, tenant_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id, name, definition FROM workflows WHERE name = ? LIMIT 1",
+            (name,),
+        ).fetchone()
     conn.close()
     if row is None:
         return None
     return _normalize(row)
 
 
-def get_workflow_by_id(workflow_id: int) -> dict | None:
+def get_workflow_by_id(workflow_id: int, tenant_id: str | None = None) -> dict | None:
     conn = get_connection()
-    row = conn.execute(
-        "SELECT id, name, definition FROM workflows WHERE id = ? LIMIT 1",
-        (workflow_id,),
-    ).fetchone()
+    if tenant_id is not None:
+        row = conn.execute(
+            "SELECT id, name, definition FROM workflows WHERE id = ? AND (tenant_id = ? OR tenant_id IS NULL) LIMIT 1",
+            (workflow_id, tenant_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT id, name, definition FROM workflows WHERE id = ? LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
     conn.close()
     if row is None:
         return None

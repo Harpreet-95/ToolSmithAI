@@ -14,6 +14,9 @@ from core.config import RETENTION_DAYS
 from data.audit import delete_audit_log_entries, purge_old_audit_db, purge_old_audit_log_file
 from data.db import get_connection
 from data.execution_history import get_repeated_intent_suggestions, get_workflow_success_insights, purge_old_execution_history
+from data.usage_service import count_usage_events, list_usage_events
+from data.tenant_service import get_tenant_by_id
+from core.quota import check_quota
 
 router = APIRouter()
 
@@ -35,7 +38,25 @@ def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(requi
     if not request.input.strip():
         return JSONResponse(status_code=400, content=build_error_response("Input cannot be empty"))
     try:
-        return handle_input(request.input, user_id=user.user_id)
+        tenant = get_tenant_by_id(user.tenant_id)
+        plan = tenant["plan"] if tenant else "free"
+        quota = check_quota(user.tenant_id, plan, "interpret")
+        if not quota["allowed"]:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "status": "error",
+                    "message": "Plan limit reached",
+                    "details": {
+                        "current_usage": quota["current_usage"],
+                        "limit": quota["limit"],
+                    },
+                },
+            )
+    except Exception:
+        pass  # quota check failure — allow request to proceed
+    try:
+        return handle_input(request.input, user_id=user.user_id, tenant_id=user.tenant_id)
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
@@ -43,7 +64,25 @@ def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(requi
 @router.post("/workflows/run")
 def run_workflow(request: WorkflowRunRequest, user: AuthenticatedUser = Depends(require_api_key)) -> dict:
     try:
-        result = run_workflow_by_name(request.name, user_id=user.user_id)
+        tenant = get_tenant_by_id(user.tenant_id)
+        plan = tenant["plan"] if tenant else "free"
+        quota = check_quota(user.tenant_id, plan, "workflow_run")
+        if not quota["allowed"]:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "status": "error",
+                    "message": "Plan limit reached",
+                    "details": {
+                        "current_usage": quota["current_usage"],
+                        "limit": quota["limit"],
+                    },
+                },
+            )
+    except Exception:
+        pass  # quota check failure — allow request to proceed
+    try:
+        result = run_workflow_by_name(request.name, user_id=user.user_id, tenant_id=user.tenant_id)
         return format_output(result)
     except ValueError as e:
         return JSONResponse(status_code=404, content=build_error_response("Not found", str(e)))
@@ -194,7 +233,7 @@ def admin_purge(user: AuthenticatedUser = Depends(require_role("admin"))) -> dic
 @router.get("/insights")
 def insights(user: AuthenticatedUser = Depends(require_api_key)) -> dict:
     try:
-        return format_output(get_workflow_success_insights())
+        return {"status": "success", "data": get_workflow_success_insights(tenant_id=user.tenant_id)}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
@@ -202,7 +241,26 @@ def insights(user: AuthenticatedUser = Depends(require_api_key)) -> dict:
 @router.get("/recommendations")
 def recommendations(user: AuthenticatedUser = Depends(require_api_key)) -> dict:
     try:
-        return format_output(get_repeated_intent_suggestions())
+        return {"status": "success", "data": get_repeated_intent_suggestions(tenant_id=user.tenant_id)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/usage")
+def usage(user: AuthenticatedUser = Depends(require_api_key)) -> dict:
+    try:
+        return {
+            "status": "success",
+            "data": {
+                "tenant_id": user.tenant_id,
+                "total_events": count_usage_events(user.tenant_id),
+                "by_event_type": {
+                    "interpret":     count_usage_events(user.tenant_id, event_type="interpret"),
+                    "workflow_run":  count_usage_events(user.tenant_id, event_type="workflow_run"),
+                },
+                "recent_events": list_usage_events(user.tenant_id, limit=10),
+            },
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
