@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 AUDIT_LOG_PATH = pathlib.Path(__file__).parent / "audit.log"
 
 
-def log_audit_event(task_result: dict, user_id: str | None = None, tenant_id: str | None = None) -> None:
+def log_audit_event(task_result: dict, user_id: str | None = None) -> None:
     task_type = (
         task_result.get("task_type")
         or "execution"
@@ -29,7 +29,6 @@ def log_audit_event(task_result: dict, user_id: str | None = None, tenant_id: st
         "original_input": encrypt(original_input),
         "status": task_result.get("status") or "unknown",
         "user_id": user_id,
-        "tenant_id": tenant_id,
     }
     try:
         with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
@@ -40,8 +39,8 @@ def log_audit_event(task_result: dict, user_id: str | None = None, tenant_id: st
     try:
         conn = get_connection()
         conn.execute(
-            "INSERT INTO audit_logs (timestamp, task_type, original_input, status, user_id, tenant_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (record["timestamp"], record["task_type"], record["original_input"], record["status"], record["user_id"], record["tenant_id"]),
+            "INSERT INTO audit_logs (timestamp, task_type, original_input, status, user_id) VALUES (?, ?, ?, ?, ?)",
+            (record["timestamp"], record["task_type"], record["original_input"], record["status"], record["user_id"]),
         )
         conn.commit()
         conn.close()

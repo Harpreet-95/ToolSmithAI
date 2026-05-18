@@ -1,0 +1,320 @@
+import datetime
+import logging
+
+from data.db import get_connection
+
+logger = logging.getLogger(__name__)
+
+_WEEKDAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _compute_next_run_at(frequency: str, day_of_week: str | None = None) -> str:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if frequency == "daily":
+        delta = datetime.timedelta(days=1)
+    elif frequency == "weekly":
+        if day_of_week and day_of_week.lower() in _WEEKDAY_MAP:
+            target = _WEEKDAY_MAP[day_of_week.lower()]
+            days_ahead = (target - now.weekday()) % 7 or 7
+            delta = datetime.timedelta(days=days_ahead)
+        else:
+            delta = datetime.timedelta(weeks=1)
+    elif frequency == "monthly":
+        delta = datetime.timedelta(days=30)
+    else:
+        delta = datetime.timedelta(days=1)
+    return (now + delta).isoformat()
+
+
+def create_scheduled_workflow(
+    user_id: str,
+    dataset_id: int | None,
+    input_text: str,
+    task_type: str,
+    frequency: str,
+    day_of_week: str | None,
+) -> dict:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    next_run_at = _compute_next_run_at(frequency, day_of_week)
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO scheduled_workflows
+              (user_id, dataset_id, input_text, task_type, frequency,
+               day_of_week, next_run_at, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (user_id, dataset_id, input_text, task_type, frequency,
+             day_of_week, next_run_at, now, now),
+        )
+        conn.commit()
+        row_id = cursor.lastrowid
+    finally:
+        conn.close()
+    return get_scheduled_workflow_by_id(row_id)
+
+
+def get_scheduled_workflow_by_id(workflow_id: int) -> dict | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM scheduled_workflows WHERE id = ?", (workflow_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_scheduled_workflows(user_id: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_workflows WHERE user_id = ? ORDER BY id DESC",
+            (user_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_due_scheduled_workflows(now_iso: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_workflows WHERE enabled = 1 AND next_run_at <= ?",
+            (now_iso,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def mark_scheduled_workflow_run(workflow_id: int, next_run_at: str) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE scheduled_workflows SET next_run_at = ?, updated_at = ? WHERE id = ?",
+            (next_run_at, now, workflow_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_scheduled_workflow_outcome(
+    workflow_id: int,
+    status: str,
+    error: str | None,
+) -> None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """UPDATE scheduled_workflows
+               SET last_run_at = ?, last_status = ?, last_error = ?,
+                   run_count = run_count + 1, updated_at = ?
+               WHERE id = ?""",
+            (now, status, error, now, workflow_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def pause_scheduled_workflow(workflow_id: int, user_id: str) -> dict | None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE scheduled_workflows SET enabled = 0, updated_at = ? WHERE id = ? AND user_id = ?",
+            (now, workflow_id, user_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+    finally:
+        conn.close()
+    return get_scheduled_workflow_by_id(workflow_id)
+
+
+def resume_scheduled_workflow(workflow_id: int, user_id: str) -> dict | None:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE scheduled_workflows SET enabled = 1, updated_at = ? WHERE id = ? AND user_id = ?",
+            (now, workflow_id, user_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+    finally:
+        conn.close()
+    return get_scheduled_workflow_by_id(workflow_id)
+
+
+def delete_scheduled_workflow(workflow_id: int, user_id: str) -> bool:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM scheduled_workflows WHERE id = ? AND user_id = ?",
+            (workflow_id, user_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+_WINDOW_SECONDS: dict[str, int] = {
+    "daily":   86_400,       # 1 day
+    "weekly":  604_800,      # 7 days
+    "monthly": 2_592_000,    # 30 days
+}
+
+
+def _parse_iso_utc(s: str) -> datetime.datetime:
+    dt = datetime.datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
+def _fmt_overdue(seconds: float) -> str:
+    if seconds < 3600:
+        m = max(1, int(seconds // 60))
+        return f"{m}m overdue"
+    if seconds < 86_400:
+        h = round(seconds / 3600, 1)
+        return f"{h}h overdue"
+    d = round(seconds / 86_400, 1)
+    return f"{d}d overdue"
+
+
+def get_schedule_health(user_id: str) -> list:
+    """
+    Return deterministic health analysis for every scheduled workflow owned by user_id.
+    Classification uses the execution window derived from the workflow's frequency.
+    """
+    rows = list_scheduled_workflows(user_id)
+    now  = datetime.datetime.now(datetime.timezone.utc)
+    results = []
+
+    for sw in rows:
+        enabled   = bool(sw["enabled"])
+        frequency = sw.get("frequency") or "daily"
+        next_run_str = sw.get("next_run_at")
+        last_run_str = sw.get("last_run_at")
+        last_status  = sw.get("last_status")
+        window       = _WINDOW_SECONDS.get(frequency, 86_400)
+
+        if not enabled:
+            health          = "Paused"
+            overdue_seconds = None
+            overdue_label   = None
+            recommendation  = "This schedule is paused and will not run automatically."
+        elif not next_run_str:
+            health          = "Healthy"
+            overdue_seconds = None
+            overdue_label   = None
+            recommendation  = "Schedule appears healthy."
+        else:
+            try:
+                next_run = _parse_iso_utc(next_run_str)
+                overdue_seconds = max(0.0, (now - next_run).total_seconds())
+            except Exception:
+                overdue_seconds = 0.0
+
+            if overdue_seconds == 0:
+                health         = "Healthy"
+                overdue_label  = None
+                recommendation = "Schedule appears healthy."
+            elif overdue_seconds < window * 2:
+                health         = "Delayed"
+                overdue_label  = _fmt_overdue(overdue_seconds)
+                recommendation = "This workflow is slightly overdue. It should run on the next scheduler tick."
+            else:
+                health         = "Missed"
+                overdue_label  = _fmt_overdue(overdue_seconds)
+                recommendation = "This workflow has not run recently and may be stalled."
+
+        # Last successful run (only when last run was actually successful)
+        last_success = (
+            last_run_str
+            if last_run_str and last_status in ("completed", "success")
+            else None
+        )
+
+        results.append({
+            "id":              sw["id"],
+            "input_text":      sw["input_text"],
+            "frequency":       frequency,
+            "day_of_week":     sw.get("day_of_week"),
+            "enabled":         enabled,
+            "health":          health,
+            "next_run_at":     next_run_str,
+            "last_run_at":     last_run_str,
+            "last_success":    last_success,
+            "last_status":     last_status,
+            "overdue_seconds": overdue_seconds,
+            "overdue_label":   overdue_label,
+            "recommendation":  recommendation,
+        })
+
+    # Severity order: Missed → Delayed → Healthy → Paused
+    _order = {"Missed": 0, "Delayed": 1, "Healthy": 2, "Paused": 3}
+    results.sort(key=lambda x: _order[x["health"]])
+    return results
+
+
+def _classify_result(result: dict) -> tuple[str, str | None]:
+    """
+    Inspect a handle_input() return value and classify the business outcome.
+
+    Returns (status, message) where status is:
+    - "completed" : operation succeeded with no business-level failure
+    - "warning"   : code ran without exception but a business condition was not met
+    Python-level exceptions are handled by the caller and classified as "failed".
+    """
+    data = result.get("data", {}) if isinstance(result, dict) else {}
+
+    dataset_error = data.get("dataset_report_error")
+    if dataset_error:
+        return "warning", str(dataset_error)
+
+    email_delivery = data.get("email_delivery")
+    if isinstance(email_delivery, dict) and email_delivery.get("sent") is False:
+        reason = email_delivery.get("reason") or "Email was not sent."
+        return "warning", str(reason)
+
+    return "completed", None
+
+
+def run_due_workflows() -> None:
+    """APScheduler job — executes all due scheduled workflows."""
+    from core.input.input_handler import handle_input
+
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    due = get_due_scheduled_workflows(now_iso)
+    for wf in due:
+        wid = wf["id"]
+        next_run = _compute_next_run_at(wf["frequency"], wf.get("day_of_week"))
+        # Advance next_run_at BEFORE executing to prevent duplicate runs
+        mark_scheduled_workflow_run(wid, next_run)
+        try:
+            result = handle_input(
+                wf["input_text"],
+                user_id=wf["user_id"],
+                dataset_id=wf.get("dataset_id"),
+            )
+            status, warn_msg = _classify_result(result)
+            update_scheduled_workflow_outcome(wid, status=status, error=warn_msg)
+            logger.info("Scheduled workflow %s %s. Next run: %s", wid, status, next_run)
+        except Exception as exc:
+            update_scheduled_workflow_outcome(wid, status="failed", error=str(exc)[:500])
+            logger.error("Scheduled workflow %s failed: %s", wid, exc)
