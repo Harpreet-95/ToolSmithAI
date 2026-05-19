@@ -5,7 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import LOG_LEVEL, SCHEDULER_INTERVAL_SECONDS
+from core.config import ALLOWED_ORIGINS, LOG_LEVEL, SCHEDULER_INTERVAL_SECONDS
 from api.v1.routes import router as v1_router
 from data.models import init_db
 from data.scheduled_workflow_service import run_due_workflows
@@ -39,7 +39,7 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

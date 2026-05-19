@@ -75,6 +75,18 @@ JWT_ALGORITHM: str = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
 # ---------------------------------------------------------------------------
+# CORS — comma-separated list of allowed frontend origins.
+# Default covers the Vite dev server only.
+# In production set this to your deployed frontend URL, e.g.:
+#   ALLOWED_ORIGINS=https://your-app.vercel.app
+# ---------------------------------------------------------------------------
+ALLOWED_ORIGINS: list[str] = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+    if o.strip()
+]
+
+# ---------------------------------------------------------------------------
 # SMTP email delivery (all optional — guarded by ENABLE_REAL_EMAIL)
 # ---------------------------------------------------------------------------
 SMTP_HOST: str = os.getenv("SMTP_HOST", "")
