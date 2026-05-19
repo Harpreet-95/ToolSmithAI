@@ -2,7 +2,7 @@
 import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById } from './api/client'
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
-const C = {
+const C_DARK = {
   bg:          '#09090f',
   sidebar:     '#0c0d15',
   surface:     '#101320',
@@ -21,88 +21,115 @@ const C = {
   dangerSoft:  '#f871711a',
 }
 
+const C_LIGHT = {
+  bg:          '#f8f8fb',
+  sidebar:     '#f0f0f6',
+  surface:     '#ffffff',
+  border:      '#e2e2ec',
+  borderAlt:   '#d0d0de',
+  accent:      '#6366f1',
+  accentSoft:  '#6366f112',
+  text:        '#111118',
+  textSec:     '#5c5c72',
+  textMuted:   '#9898b0',
+  success:     '#059669',
+  successSoft: '#05966912',
+  warn:        '#d97706',
+  warnSoft:    '#d9770612',
+  danger:      '#dc2626',
+  dangerSoft:  '#dc262612',
+}
+
+// LoginView always uses dark; DashboardView shadows this with the resolved theme
+const C = C_DARK
+
 const FONT      = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO      = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
-const SIDEBAR_W = 232
+const SIDEBAR_W = 216
 const HEADER_H  = 56
 
 // ─── Shared style primitives ───────────────────────────────────────────────────
-const S = {
-  card: {
-    background: C.surface,
-    border: `1px solid ${C.border}`,
-    borderRadius: '12px',
-    padding: '24px',
-  },
-  input: {
-    width: '100%',
-    boxSizing: 'border-box',
-    background: C.bg,
-    border: `1px solid ${C.border}`,
-    borderRadius: '8px',
-    color: C.text,
-    fontSize: '0.88rem',
-    padding: '10px 14px',
-    outline: 'none',
-    fontFamily: MONO,
-    letterSpacing: '0.02em',
-  },
-  textarea: {
-    width: '100%',
-    boxSizing: 'border-box',
-    background: C.bg,
-    border: `1px solid ${C.border}`,
-    borderRadius: '8px',
-    color: C.text,
-    fontSize: '0.9rem',
-    padding: '12px 14px',
-    outline: 'none',
-    resize: 'vertical',
-    lineHeight: 1.65,
-  },
-  btnPrimary: {
-    background: C.accent,
-    color: '#fff',
-    border: 'none',
-    borderRadius: '8px',
-    padding: '10px 22px',
-    fontSize: '0.88rem',
-    fontWeight: '600',
-    cursor: 'pointer',
-    fontFamily: FONT,
-    letterSpacing: '0.01em',
-  },
-  label: {
-    display: 'block',
-    fontSize: '0.7rem',
-    color: C.textSec,
-    fontWeight: '600',
-    marginBottom: '7px',
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-  },
-  badge: (color, bg) => ({
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '5px',
-    background: bg,
-    color: color,
-    border: `1px solid ${color}30`,
-    borderRadius: '20px',
-    padding: '3px 10px',
-    fontSize: '0.7rem',
-    fontWeight: '600',
-    letterSpacing: '0.04em',
-    fontFamily: FONT,
-  }),
-  dot: (color) => ({
-    width: '5px',
-    height: '5px',
-    borderRadius: '50%',
-    background: color,
-    flexShrink: 0,
-  }),
+function makeS(C) {
+  return {
+    card: {
+      background: C.surface,
+      border: `1px solid ${C.border}`,
+      borderRadius: '10px',
+      padding: '14px 16px',
+    },
+    input: {
+      width: '100%',
+      boxSizing: 'border-box',
+      background: C.bg,
+      border: `1px solid ${C.border}`,
+      borderRadius: '8px',
+      color: C.text,
+      fontSize: '0.88rem',
+      padding: '10px 14px',
+      outline: 'none',
+      fontFamily: MONO,
+      letterSpacing: '0.02em',
+    },
+    textarea: {
+      width: '100%',
+      boxSizing: 'border-box',
+      background: C.bg,
+      border: `1px solid ${C.border}`,
+      borderRadius: '8px',
+      color: C.text,
+      fontSize: '0.9rem',
+      padding: '12px 14px',
+      outline: 'none',
+      resize: 'vertical',
+      lineHeight: 1.65,
+    },
+    btnPrimary: {
+      background: C.accent,
+      color: '#fff',
+      border: 'none',
+      borderRadius: '8px',
+      padding: '10px 22px',
+      fontSize: '0.88rem',
+      fontWeight: '600',
+      cursor: 'pointer',
+      fontFamily: FONT,
+      letterSpacing: '0.01em',
+    },
+    label: {
+      display: 'block',
+      fontSize: '0.7rem',
+      color: C.textSec,
+      fontWeight: '600',
+      marginBottom: '7px',
+      letterSpacing: '0.06em',
+      textTransform: 'uppercase',
+    },
+    badge: (color, bg) => ({
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '5px',
+      background: bg,
+      color: color,
+      border: `1px solid ${color}30`,
+      borderRadius: '20px',
+      padding: '3px 10px',
+      fontSize: '0.7rem',
+      fontWeight: '600',
+      letterSpacing: '0.04em',
+      fontFamily: FONT,
+    }),
+    dot: (color) => ({
+      width: '5px',
+      height: '5px',
+      borderRadius: '50%',
+      background: color,
+      flexShrink: 0,
+    }),
+  }
 }
+
+// LoginView always uses dark; DashboardView shadows this with the resolved theme
+const S = makeS(C_DARK)
 
 // ─── Dataset helpers ──────────────────────────────────────────────────────────
 function getFileType(filename) {
@@ -391,13 +418,14 @@ function LoginView({ onSignIn, sessionExpired }) {
 
   return (
     <div style={{
-      height: '100vh',
+      minHeight: '100vh',
       background: 'linear-gradient(145deg, #060818 0%, #0a0c1e 55%, #07091a 100%)',
       display: 'flex',
+      flexWrap: 'wrap',
       fontFamily: FONT,
       color: '#ffffff',
       position: 'relative',
-      overflow: 'hidden',
+      overflowX: 'hidden',
     }}>
       <style>{`
         @keyframes tsFloat {
@@ -415,6 +443,10 @@ function LoginView({ onSignIn, sessionExpired }) {
         .toolsmith-logo { width: 80px; height: auto; object-fit: contain; display: block; }
         .brand-logo-large { width: 110px; }
         .brand-logo-small { width: 82px; }
+        @media (max-width: 860px) {
+          .ts-landing-left { display: none !important; }
+          .ts-landing-right { flex: 1 1 100% !important; min-height: 100vh !important; padding: 32px 20px !important; align-items: center !important; justify-content: center !important; }
+        }
       `}</style>
 
       {/* Dot-grid texture */}
@@ -458,12 +490,12 @@ function LoginView({ onSignIn, sessionExpired }) {
       {/* ══════════════════════════════════════════════════════ */}
       {/* LEFT PANEL — 58%                                      */}
       {/* ══════════════════════════════════════════════════════ */}
-      <div style={{
-        flex: '0 0 58%',
-        paddingLeft: '72px',
-        paddingTop: '72px',
-        paddingBottom: '72px',
-        paddingRight: '80px',
+      <div className="ts-landing-left" style={{
+        flex: '1 1 480px',
+        paddingLeft: 'clamp(32px, 5vw, 72px)',
+        paddingTop: 'clamp(40px, 5vh, 72px)',
+        paddingBottom: 'clamp(40px, 5vh, 72px)',
+        paddingRight: 'clamp(32px, 5vw, 64px)',
         display: 'flex',
         flexDirection: 'column',
         position: 'relative',
@@ -498,7 +530,7 @@ function LoginView({ onSignIn, sessionExpired }) {
           />
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <div style={{
-              fontSize: '60px',
+              fontSize: 'clamp(36px, 4vw, 60px)',
               fontWeight: '700',
               lineHeight: 1,
               letterSpacing: '-1.8px',
@@ -510,6 +542,7 @@ function LoginView({ onSignIn, sessionExpired }) {
             </div>
             <p style={{
               margin: '12px 0 0',
+              marginLeft: '12px',
               fontSize: '15px',
               fontWeight: '400',
               opacity: 0.78,
@@ -524,7 +557,7 @@ function LoginView({ onSignIn, sessionExpired }) {
         {/* Main headline — nowrap on first line guarantees no per-word stacking */}
         <h1 style={{
           margin: '48px 0 22px',
-          fontSize: '47px',
+          fontSize: 'clamp(26px, 3.5vw, 47px)',
           fontWeight: '700',
           lineHeight: 1.14,
           letterSpacing: '-1.2px',
@@ -628,8 +661,8 @@ function LoginView({ onSignIn, sessionExpired }) {
       {/* ══════════════════════════════════════════════════════ */}
       {/* RIGHT PANEL — 42%                                     */}
       {/* ══════════════════════════════════════════════════════ */}
-      <div style={{
-        flex: '0 0 42%',
+      <div className="ts-landing-right" style={{
+        flex: '1 1 380px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -654,7 +687,7 @@ function LoginView({ onSignIn, sessionExpired }) {
           maxWidth: '480px',
           padding: '40px 44px',
           borderRadius: '28px',
-          transform: 'translateX(-50px) translateY(0px)',
+          transform: 'none',
           background: 'rgba(6, 8, 28, 0.96)',
           backdropFilter: 'blur(30px)',
           WebkitBackdropFilter: 'blur(30px)',
@@ -669,7 +702,7 @@ function LoginView({ onSignIn, sessionExpired }) {
           {/* Welcome Back */}
           <h2 style={{
             margin: 0,
-            fontSize: '44px',
+            fontSize: '26px',
             fontWeight: '700',
             lineHeight: 1.08,
             letterSpacing: '-0.8px',
@@ -1217,7 +1250,7 @@ function LoginView({ onSignIn, sessionExpired }) {
 }
 
 // ─── Confirm modal ─────────────────────────────────────────────────────────────
-function ConfirmModal({ title, body, confirmLabel, onConfirm, onCancel }) {
+function ConfirmModal({ title, body, confirmLabel, onConfirm, onCancel, C, S }) {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 200,
@@ -1253,7 +1286,7 @@ const MULTI_STEP_TYPES = [
   { type: 'send_notification',        label: 'Send Notification'     },
 ]
 
-function WorkflowStepBuilder({ steps, onStepsChange }) {
+function WorkflowStepBuilder({ steps, onStepsChange, C, S }) {
   const [selectedType, setSelectedType] = useState(MULTI_STEP_TYPES[0].type)
 
   function addStep() {
@@ -1274,58 +1307,78 @@ function WorkflowStepBuilder({ steps, onStepsChange }) {
     onStepsChange(next)
   }
 
-  const selectStyle = {
-    background: C.bg, border: `1px solid ${C.border}`, borderRadius: '7px',
-    color: C.text, fontSize: '0.83rem', padding: '7px 10px', outline: 'none',
-    fontFamily: FONT, cursor: 'pointer', flex: 1,
-  }
-  const iconBtn = (color) => ({
-    background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '5px',
-    color, padding: '3px 7px', cursor: 'pointer', fontSize: '0.75rem', fontFamily: FONT,
+  const iconBtn = (color, disabled) => ({
+    width: '26px', height: '26px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '6px',
+    cursor: disabled ? 'default' : 'pointer', color, opacity: disabled ? 0.3 : 1, flexShrink: 0,
   })
 
   return (
     <div>
       {steps.length === 0 && (
-        <div style={{ fontSize: '0.8rem', color: C.textMuted, marginBottom: '10px', fontStyle: 'italic' }}>
-          No steps yet. Add steps below to build your workflow.
+        <div style={{ padding: '18px', background: C.bg, border: `1px dashed ${C.border}`, borderRadius: '10px', marginBottom: '12px', textAlign: 'center' }}>
+          <div style={{ fontSize: '0.73rem', color: C.textMuted }}>No steps yet — select a type below and click Add Step</div>
         </div>
       )}
+
       {steps.map((step, i) => (
         <div key={step.id} style={{
-          display: 'flex', alignItems: 'center', gap: '6px',
-          marginBottom: '6px', background: C.bg,
-          border: `1px solid ${C.border}`, borderRadius: '7px', padding: '7px 10px',
+          display: 'flex', alignItems: 'center', gap: '10px',
+          marginBottom: '6px', background: C.surface,
+          border: `1px solid ${C.border}`, borderRadius: '9px', padding: '10px 14px',
         }}>
-          <span style={{ fontSize: '0.72rem', color: C.textMuted, fontWeight: '600', minWidth: '18px' }}>{i + 1}.</span>
-          <span style={{ flex: 1, fontSize: '0.83rem', color: C.text }}>{step.label}</span>
-          <div style={S.badge(C.accent, C.accentSoft)}>{step.type}</div>
-          <button onClick={() => moveStep(i, -1)} disabled={i === 0} style={iconBtn(C.textSec)}>↑</button>
-          <button onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1} style={iconBtn(C.textSec)}>↓</button>
-          <button onClick={() => removeStep(i)} style={iconBtn(C.danger)}>✕</button>
+          <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: C.accentSoft, color: C.accent, fontSize: '0.65rem', fontWeight: '700', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            {i + 1}
+          </div>
+          <span style={{ flex: 1, fontSize: '0.78rem', color: C.textSec, fontWeight: '400' }}>{step.label}</span>
+          <button onClick={() => moveStep(i, -1)} disabled={i === 0} style={iconBtn(C.textMuted, i === 0)}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+          </button>
+          <button onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1} style={iconBtn(C.textMuted, i === steps.length - 1)}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <button onClick={() => removeStep(i)} style={iconBtn(C.danger, false)}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
       ))}
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}>
-        <select value={selectedType} onChange={e => setSelectedType(e.target.value)} style={selectStyle}>
-          {MULTI_STEP_TYPES.map(t => <option key={t.type} value={t.type}>{t.label}</option>)}
-        </select>
+
+      <div style={{ marginTop: '12px' }}>
+        <div style={{ fontSize: '0.67rem', color: C.textMuted, fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Step type</div>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          {MULTI_STEP_TYPES.map(t => {
+            const active = selectedType === t.type
+            return (
+              <button key={t.type} onClick={() => setSelectedType(t.type)} style={{
+                padding: '5px 13px', borderRadius: '20px', fontSize: '0.73rem',
+                cursor: 'pointer', fontFamily: FONT, fontWeight: active ? '500' : '400',
+                border: `1px solid ${active ? C.accent : C.border}`,
+                background: active ? C.accentSoft : 'transparent',
+                color: active ? C.accent : C.textSec,
+                transition: 'border-color 0.12s, background 0.12s, color 0.12s',
+              }}>
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
         <button
           onClick={addStep}
           disabled={steps.length >= 10}
-          style={{ ...S.btnPrimary, padding: '7px 16px', fontSize: '0.83rem', opacity: steps.length >= 10 ? 0.5 : 1 }}
+          style={{ ...S.btnPrimary, padding: '7px 18px', fontSize: '0.78rem', background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', opacity: steps.length >= 10 ? 0.5 : 1 }}
         >
           + Add Step
         </button>
+        {steps.length >= 10 && (
+          <span style={{ marginLeft: '10px', fontSize: '0.71rem', color: C.warn }}>Maximum 10 steps reached.</span>
+        )}
       </div>
-      {steps.length >= 10 && (
-        <div style={{ marginTop: '6px', fontSize: '0.75rem', color: C.warn }}>Maximum 10 steps reached.</div>
-      )}
     </div>
   )
 }
 
 // ─── Multi-step execution result renderer ──────────────────────────────────────
-function MultiStepResult({ result }) {
+function MultiStepResult({ result, C, S }) {
   const statusColor = (s) => s === 'completed' ? C.success : s === 'failed' ? C.danger : s === 'running' ? C.warn : C.textMuted
   const statusBg    = (s) => s === 'completed' ? C.successSoft : s === 'failed' ? C.dangerSoft : s === 'running' ? C.warnSoft : 'transparent'
   const statusIcon  = (s) => s === 'completed' ? '✓' : s === 'failed' ? '✕' : s === 'running' ? '…' : s === 'skipped' ? '—' : '·'
@@ -1380,9 +1433,9 @@ function MultiStepResult({ result }) {
 }
 
 // ─── Workflow result renderer ──────────────────────────────────────────────────
-function WorkflowResult({ result }) {
+function WorkflowResult({ result, C, S }) {
   if (result.task_type === 'multi_step' || result.workflow_steps) {
-    return <MultiStepResult result={result} />
+    return <MultiStepResult result={result} C={C} S={S} />
   }
   const isSuccess = result.status === 'success' || result.status === 'completed' || result.status === 'ok'
   const statusColor = isSuccess ? C.success : C.danger
@@ -1725,13 +1778,21 @@ function buildReport(summary) {
 }
 
 // ─── Dashboard view ────────────────────────────────────────────────────────────
-function DashboardView({ token, user, onLogout, onSessionExpired }) {
+function DashboardView({ token, user, onLogout, onSessionExpired, theme, setTheme }) {
+  const resolvedTheme = theme === 'system'
+    ? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+    : (theme || 'dark')
+  // Shadow module-level C and S with theme-aware versions
+  const C = resolvedTheme === 'light' ? C_LIGHT : C_DARK
+  const S = makeS(C)
+
   const [taskInput, setTaskInput] = useState('')
   const [loading, setLoading]     = useState(false)
   const [result, setResult]           = useState(null)
   const [error, setError]             = useState(null)
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
-  const [activeNav,    setActiveNav]    = useState('overview')
+  const [activeNav,       setActiveNav]       = useState('overview')
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [usage,        setUsage]        = useState(null)
   const [usageLoading,   setUsageLoading]   = useState(false)
   const [history,        setHistory]        = useState([])
@@ -1747,6 +1808,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
   const [scheduledList,       setScheduledList]       = useState([])
   const [scheduledLoading,    setScheduledLoading]    = useState(false)
   const [scheduleInput,       setScheduleInput]       = useState('')
+  const [scheduleFreq,        setScheduleFreq]        = useState('daily')
   const [scheduleCreating,    setScheduleCreating]    = useState(false)
   const [scheduleError,       setScheduleError]       = useState(null)
   const [scheduleSuccess,     setScheduleSuccess]     = useState(null)
@@ -1755,6 +1817,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
   const [scheduleHealthLoading, setScheduleHealthLoading] = useState(false)
   const [workflowList,        setWorkflowList]        = useState([])
   const [workflowListLoading, setWorkflowListLoading] = useState(false)
+  const [wfNameColW,          setWfNameColW]          = useState(220)
   const [wfSaveName,          setWfSaveName]          = useState('')
   const [wfSaveIntent,        setWfSaveIntent]        = useState('')
   const [wfSaving,            setWfSaving]            = useState(false)
@@ -1919,6 +1982,16 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
     } finally {
       setWfRunningId(null)
     }
+  }
+
+  function startWfColResize(e) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = wfNameColW
+    const onMove = (ev) => setWfNameColW(Math.max(80, startW + ev.clientX - startX))
+    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp) }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
   }
 
   async function handleDeleteWorkflow(id) {
@@ -2142,7 +2215,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
       } catch (wfErr) {
         if (is401(wfErr)) { onSessionExpired(); return }
         if (!wfErr.message.startsWith('404:')) throw wfErr
-        data = await interpretTask(taskInput, token, selectedDatasetId)
+        data = await interpretTask(trimmed, token, selectedDatasetId)
       }
       setResult(data.data)
       getUsage(token).then(d => setUsage(d)).catch(() => {})
@@ -2235,7 +2308,14 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.text, display: 'flex' }}>
+    <div className="ts-dashboard" style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.text, display: 'flex' }}>
+      <style>{`
+        .ts-dashboard, .ts-dashboard * {
+          transition: background-color 0.18s ease, border-color 0.18s ease, color 0.12s ease !important;
+        }
+        .ts-dashboard *[style*="transition"] { transition: inherit !important; }
+        .ts-composer-input::placeholder { font-size: 0.72rem; opacity: 0.6; }
+      `}</style>
 
       {/* Hidden file input for composer "Attach Dataset" — always mounted */}
       <input
@@ -2248,6 +2328,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
       {dsModal && (
         <ConfirmModal
+          C={C} S={S}
           title="Delete Dataset"
           body={`Are you sure you want to delete "${dsModal.name}"? This cannot be undone.`}
           confirmLabel="Delete"
@@ -2342,7 +2423,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 </div>
               </div>
             ) : result ? (
-              <WorkflowResult result={result} />
+              <WorkflowResult result={result} C={C} S={S} />
             ) : null}
           </div>
 
@@ -2382,14 +2463,14 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
           <span style={{ fontWeight: '700', fontSize: '0.92rem', letterSpacing: '-0.2px' }}>ToolSmithAI</span>
         </div>
 
-        <nav style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: '1px', overflowY: 'auto' }}>
+        <nav style={{ flex: 1, padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: '2px', overflowY: 'hidden' }}>
           {NAV_ITEMS.map(({ id, label, icon }) => {
             const active = activeNav === id
             return (
               <button key={id} onClick={() => setActiveNav(id)} style={{
                 display: 'flex', alignItems: 'center', gap: '10px',
                 width: '100%', textAlign: 'left',
-                padding: '8px 12px', borderRadius: '8px', border: 'none',
+                padding: '9px 12px', borderRadius: '8px', border: 'none',
                 background: active ? C.accentSoft : 'transparent',
                 color: active ? C.accent : C.textSec,
                 fontSize: '0.855rem', fontWeight: active ? '600' : '400',
@@ -2420,7 +2501,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 {user?.email || 'Local build · v0.6'}
               </div>
             </div>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: C.textMuted, flexShrink: 0 }}><path d="m6 9 6 6 6-6"/></svg>
           </div>
         </div>
       </aside>
@@ -2429,18 +2509,18 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
         <header style={{
           position: 'sticky', top: 0, height: `${HEADER_H}px`,
-          background: C.sidebar, borderBottom: 'none',
+          background: C.bg, borderBottom: 'none',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '0 28px', zIndex: 50, flexShrink: 0,
         }}>
           {/* Page title */}
           <div style={{ paddingLeft: '8px' }}>
             <span style={{ fontSize: '1.25rem', fontWeight: '700', color: C.text, letterSpacing: '-0.3px' }}>
-              {activeNav !== 'overview' ? (NAV_ITEMS.find(n => n.id === activeNav)?.label ?? '') : ''}
+              {''}
             </span>
           </div>
           {/* Right icon cluster */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
             {/* Bell */}
             <div style={{ position: 'relative', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px', cursor: 'pointer', color: C.textSec }}
               onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
@@ -2449,7 +2529,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
                 <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
               </svg>
-              <div style={{ position: 'absolute', top: '5px', right: '5px', width: '14px', height: '14px', borderRadius: '50%', background: '#ef4444', fontSize: '0.55rem', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700', lineHeight: 1, fontFamily: FONT }}>3</div>
             </div>
             {/* Help */}
             <div style={{ width: '36px', height: '36px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: C.textSec }}
@@ -2461,25 +2540,107 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 <circle cx="12" cy="17" r="0.5" fill="currentColor"/>
               </svg>
             </div>
-            {/* Profile + logout */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px 4px 4px', borderRadius: '8px', border: `1px solid ${C.border}`, cursor: 'pointer' }}
+            {/* Theme toggle */}
+            <div
+              title={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+              style={{ width: '36px', height: '36px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: C.textSec }}
               onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-              <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: '700', color: '#fff', flexShrink: 0, letterSpacing: '-0.01em' }}>
-                {(user?.name || user?.email || 'U')[0].toUpperCase()}
-              </div>
-              <button onClick={onLogout} title="Logout"
-                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 0, display: 'flex', alignItems: 'center' }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              {resolvedTheme === 'dark' ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="4"/>
+                  <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                </svg>
+              )}
+            </div>
+            {/* Profile dropdown */}
+            <div style={{ position: 'relative', marginLeft: '4px' }}>
+              {profileMenuOpen && (
+                <div
+                  style={{ position: 'fixed', inset: 0, zIndex: 199 }}
+                  onClick={() => setProfileMenuOpen(false)}
+                />
+              )}
+              <button
+                onClick={() => setProfileMenuOpen(o => !o)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  padding: '3px 6px 3px 3px', borderRadius: '20px',
+                  border: `1px solid ${C.border}`,
+                  background: profileMenuOpen ? C.borderAlt : 'transparent',
+                  cursor: 'pointer', transition: 'background 0.12s',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
+                onMouseLeave={e => { if (!profileMenuOpen) e.currentTarget.style.background = 'transparent' }}
+              >
+                <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', fontWeight: '700', color: '#fff', flexShrink: 0 }}>
+                  {(user?.name || user?.email || 'U')[0].toUpperCase()}
+                </div>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ color: C.textMuted, flexShrink: 0, transform: profileMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease' }}>
                   <path d="m6 9 6 6 6-6"/>
                 </svg>
               </button>
+
+              {profileMenuOpen && (
+                <div style={{
+                  position: 'absolute', top: 'calc(100% + 8px)', right: 0, zIndex: 200,
+                  width: '200px',
+                  background: C.surface,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: '12px',
+                  boxShadow: resolvedTheme === 'dark'
+                    ? '0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)'
+                    : '0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06)',
+                  overflow: 'hidden',
+                  animation: 'tsDropdown 0.14s ease',
+                }}>
+                  <style>{`@keyframes tsDropdown { from { opacity:0; transform:translateY(-6px) scale(0.97); } to { opacity:1; transform:translateY(0) scale(1); } }`}</style>
+                  {/* User info header */}
+                  <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}` }}>
+                    <div style={{ fontSize: '0.78rem', fontWeight: '600', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {user?.name || 'User'}
+                    </div>
+                    <div style={{ fontSize: '0.67rem', color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '2px' }}>
+                      {user?.email || ''}
+                    </div>
+                  </div>
+                  {/* Menu items */}
+                  <div style={{ padding: '6px' }}>
+                    <button
+                      onClick={() => { setActiveNav('settings'); setProfileMenuOpen(false) }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderRadius: '7px', padding: '8px 10px', fontSize: '0.78rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, transition: 'background 0.1s, color 0.1s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = C.borderAlt; e.currentTarget.style.color = C.text }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSec }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      Profile
+                    </button>
+                    <div style={{ height: '1px', background: C.border, margin: '4px 0' }} />
+                    <button
+                      onClick={() => { setProfileMenuOpen(false); onLogout() }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderRadius: '7px', padding: '8px 10px', fontSize: '0.78rem', color: C.danger, cursor: 'pointer', fontFamily: FONT, transition: 'background 0.1s' }}
+                      onMouseEnter={e => e.currentTarget.style.background = C.dangerSoft}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                      Log out
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </header>
 
-        <main style={{ flex: 1, padding: '0 36px 32px', marginTop: '-6px', boxSizing: 'border-box' }}>
-          <div style={{ maxWidth: '1060px', margin: '0' }}>
+        <main style={{ flex: 1, padding: '12px 28px 36px', boxSizing: 'border-box' }}>
+          <div style={{ maxWidth: '1060px', margin: '0 auto' }}>
 
             {/* ── Overview ─────────────────────────────────────────── */}
             {activeNav === 'overview' && (() => {
@@ -2524,41 +2685,35 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
               return <>
                 {/* ═══ GREETING ═══ */}
-                <div style={{ marginBottom: '22px' }}>
-                  <h2 style={{ margin: '0 0 5px', fontSize: '1.9rem', fontWeight: '500', letterSpacing: '-0.6px', color: C.text, lineHeight: 1.1 }}>
+                <div style={{ marginBottom: '14px', paddingTop: '0' }}>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '1.6rem', fontWeight: '600', letterSpacing: '-0.5px', color: C.text, lineHeight: 1.1 }}>
                     {greeting}, <span style={{ color: C.accent }}>{firstName}</span>
                   </h2>
-                  <p style={{ margin: 0, color: C.textSec, fontSize: '0.76rem' }}>
+                  <p style={{ margin: 0, color: C.textSec, fontSize: '0.75rem', lineHeight: 1.5 }}>
                     Describe your goal in natural language and let AI build the workflow for you.
                   </p>
                 </div>
 
                 {/* ═══ AI WORKFLOW COMPOSER ═══ */}
-                <div style={{ marginBottom: '18px', background: C.surface, border: `1px solid ${C.accent}28`, borderRadius: '16px', padding: '26px 28px 20px', position: 'relative', overflow: 'visible', boxShadow: `0 0 48px ${C.accent}08` }}>
-                  <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '3px', background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #a855f7)' }} />
-                  <div style={{ position: 'absolute', top: '-30px', right: '-20px', width: '180px', height: '180px', background: 'radial-gradient(circle, #6366f112 0%, transparent 70%)', pointerEvents: 'none' }} />
-                  <div style={{ position: 'absolute', top: '14px', right: '22px', opacity: 0.12, pointerEvents: 'none', color: C.accent }}>
-                    <svg width="54" height="54" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+                <div style={{ marginBottom: '12px', background: C.surface, border: `1px solid ${C.accent}22`, borderRadius: '14px', padding: '22px 24px 18px', position: 'relative', overflow: 'visible' }}>
+                  <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #a855f7)', borderRadius: '20px 20px 0 0' }} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill={C.accent}><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-                    <span style={{ fontSize: '0.7rem', fontWeight: '500', color: C.accent, textTransform: 'uppercase', letterSpacing: '0.12em' }}>AI Workflow Composer</span>
-                    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '4px 12px', fontSize: '0.75rem', color: C.textSec, cursor: 'pointer' }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> How it works
-                    </div>
+                    <span style={{ fontSize: '0.72rem', fontWeight: '600', color: C.accent, textTransform: 'uppercase', letterSpacing: '0.12em' }}>AI Workflow Composer</span>
                   </div>
 
-                  <h3 style={{ margin: '0 0 14px', fontSize: '1.05rem', fontWeight: '400', letterSpacing: '-0.2px', color: C.text, lineHeight: 1.3 }}>
+                  <h3 style={{ margin: '0 0 8px', fontSize: '0.82rem', fontWeight: '400', letterSpacing: '-0.1px', color: C.textSec, lineHeight: 1.3 }}>
                     What would you like ToolSmithAI to automate?
                   </h3>
 
                   <textarea
                     placeholder="Example: Generate weekly sales report from my uploaded dataset and email it every Monday"
-                    rows={2}
+                    className="ts-composer-input"
+                    rows={4}
                     value={taskInput}
                     onChange={e => setTaskInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRunTask() } }}
-                    style={{ ...S.textarea, fontFamily: FONT, fontSize: '0.78rem', background: C.bg, border: `1px solid ${C.border}`, marginBottom: '12px', resize: 'none', lineHeight: 1.65 }}
+                    style={{ ...S.textarea, fontFamily: FONT, fontSize: '0.82rem', background: C.bg, border: `1px solid ${C.border}`, marginBottom: '10px', resize: 'none', lineHeight: 1.65, padding: '11px 13px' }}
                   />
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' }}>
@@ -2643,22 +2798,23 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                       Connect API
                     </button>
                     <button onClick={handleRunTask} disabled={loading}
-                      style={{ marginLeft: 'auto', ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: loading ? 'none' : '0 0 20px #6366f130', padding: '8px 22px', fontSize: '0.88rem', display: 'flex', alignItems: 'center', gap: '8px', opacity: loading ? 0.7 : 1 }}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+                      style={{ marginLeft: 'auto', ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: loading ? 'none' : '0 4px 14px #6366f124', padding: '7px 16px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px', opacity: loading ? 0.7 : 1, borderRadius: '7px' }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
                       {loading ? 'Generating…' : 'Generate Workflow'}
                     </button>
                   </div>
 
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap', overflow: 'hidden' }}>
-                    <span style={{ fontSize: '0.72rem', color: C.textMuted, flexShrink: 0 }}>Try these examples</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '4px' }}>
+                    <span style={{ fontSize: '0.68rem', color: C.textMuted, flexShrink: 0, fontWeight: '500' }}>Try:</span>
                     {CHIPS.map(chip => (
                       <button key={chip} onClick={() => setTaskInput(chip)}
-                        style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '20px', padding: '4px 10px', fontSize: '0.71rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        style={{ background: 'transparent', border: `1px solid ${C.borderAlt}`, borderRadius: '20px', padding: '4px 11px', fontSize: '0.7rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', transition: 'border-color 0.15s, color 0.15s' }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.text }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = C.borderAlt; e.currentTarget.style.color = C.textSec }}>
                         {chip}
                       </button>
                     ))}
-                    <span style={{ color: C.accent, fontSize: '0.82rem', cursor: 'pointer' }}>&#8250;</span>
                   </div>
 
                   {/* Compact status bar — replaces inline expansion */}
@@ -2684,41 +2840,19 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   )}
                 </div>
 
-                {/* ═══ THREE-COLUMN ROW ═══ */}
-                <div style={{ display: 'grid', gridTemplateColumns: '242px 1fr 1fr', gap: '14px', marginBottom: '14px' }}>
-
-                  {/* ── Quick Start ── */}
-                  <div style={S.card}>
-                    <h3 style={{ margin: '0 0 12px', fontSize: '0.72rem', fontWeight: '500', color: C.textSec, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Quick Start</h3>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      {QUICK_START.map(item => (
-                        <button key={item.label} onClick={item.action}
-                          style={{ display: 'flex', alignItems: 'center', gap: '13px', background: 'transparent', border: 'none', padding: '9px 8px', borderRadius: '9px', cursor: 'pointer', fontFamily: FONT, textAlign: 'left', width: '100%' }}
-                          onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
-                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                          <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: item.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: item.color }}>
-                            <item.Icon />
-                          </div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: '0.85rem', fontWeight: '400', color: C.text, lineHeight: 1.3 }}>{item.label}</div>
-                            <div style={{ fontSize: '0.71rem', color: C.textMuted, lineHeight: 1.4, marginTop: '1px' }}>{item.sub}</div>
-                          </div>
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: C.textMuted, flexShrink: 0 }}><path d="m9 18 6-6-6-6"/></svg>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                {/* ═══ TWO-COLUMN ROW ═══ */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
 
                   {/* ── Recent Executions ── */}
                   <div style={S.card}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                      <h3 style={{ margin: 0, fontSize: '0.72rem', fontWeight: '500', color: C.textSec, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Recent Executions</h3>
-                      <button onClick={() => setActiveNav('history')} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT }}>View all</button>
+                      <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Recent Executions</h3>
+                      <button onClick={() => setActiveNav('history')} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT, fontWeight: '400' }}>View all</button>
                     </div>
                     {historyLoading ? (
                       <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading…</div>
                     ) : history.length === 0 ? (
-                      <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.79rem', lineHeight: 1.7 }}>No executions yet.<br />Run a workflow to see activity here.</div>
+                      <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem', lineHeight: 1.7 }}>No executions yet.<br />Run a workflow to see activity here.</div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
                         {history.slice(0, 5).map(row => {
@@ -2729,15 +2863,15 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           const srcMap = { 'Manual': [C.accent, C.accentSoft], 'Scheduler': [C.warn, C.warnSoft], 'Workflow': ['#0ea5e9', '#0ea5e91a'], 'Composer': ['#a855f7', '#a855f71a'] }
                           const [srcC, srcBg] = srcMap[row.source_label] || [C.textMuted, C.borderAlt]
                           return (
-                            <div key={row.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px' }}>
+                            <div key={row.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px' }}>
                               <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: srcBg, border: `1px solid ${srcC}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: srcC }}>
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
                               </div>
                               <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: '0.82rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '400' }}>
+                                <div style={{ fontSize: '0.75rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '400' }}>
                                   {row.summary || row.intent || '—'}
                                 </div>
-                                <div style={{ fontSize: '0.67rem', color: C.textMuted, display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px' }}>
+                                <div style={{ fontSize: '0.64rem', color: C.textMuted, display: 'flex', alignItems: 'center', gap: '5px', marginTop: '2px' }}>
                                   <span style={{ color: srcC, fontWeight: '400' }}>{row.source_label || 'Manual'}</span>
                                   <span>·</span>
                                   <span>{row.started_at ? new Date(row.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}</span>
@@ -2757,27 +2891,27 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   {/* ── My Workflows ── */}
                   <div style={S.card}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                      <h3 style={{ margin: 0, fontSize: '0.72rem', fontWeight: '500', color: C.textSec, textTransform: 'uppercase', letterSpacing: '0.08em' }}>My Workflows</h3>
-                      <button onClick={() => setActiveNav('workflows')} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT }}>View all</button>
+                      <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>My Workflows</h3>
+                      <button onClick={() => setActiveNav('workflows')} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT, fontWeight: '400' }}>View all</button>
                     </div>
                     {workflowListLoading ? (
                       <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading…</div>
                     ) : workflowList.length === 0 ? (
-                      <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.79rem', lineHeight: 1.7 }}>No workflows saved yet.<br />Run a task and save it to create one.</div>
+                      <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem', lineHeight: 1.7 }}>No workflows saved yet.<br />Run a task and save it to create one.</div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
                         {workflowList.slice(0, 5).map(wf => {
                           const isMulti = Array.isArray(wf.definition?.workflow_steps)
                           const typeLabel = isMulti ? 'Multi-step' : 'Saved'
                           return (
-                            <div key={wf.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px' }}>
+                            <div key={wf.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px' }}>
                               <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: C.accentSoft, border: `1px solid ${C.accent}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: C.accent }}>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
                               </div>
                               <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: '0.82rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '400' }}>{wf.name || wf.intent || '—'}</div>
-                                <div style={{ fontSize: '0.67rem', color: C.textMuted, marginTop: '2px' }}>
-                                  <span style={{ color: C.accent, fontWeight: '600' }}>{typeLabel}</span>
+                                <div style={{ fontSize: '0.75rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: '400' }}>{wf.name || wf.intent || '—'}</div>
+                                <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '2px' }}>
+                                  <span style={{ color: C.accent, fontWeight: '500' }}>{typeLabel}</span>
                                   {wf.created_at && <span> · Last run {new Date(wf.created_at).toLocaleString(undefined, { month: 'short', day: 'numeric' })}</span>}
                                 </div>
                               </div>
@@ -2800,13 +2934,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 </div>
 
                 {/* ═══ BOTTOM TWO-COLUMN ═══ */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
 
                   {/* Dataset Insights */}
                   <div style={S.card}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                      <h3 style={{ margin: 0, fontSize: '0.72rem', fontWeight: '700', color: C.textSec, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Dataset Insights</h3>
-                      <button onClick={() => setActiveNav('datasets')} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT }}>View all</button>
+                      <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Dataset Insights</h3>
+                      <button onClick={() => setActiveNav('datasets')} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT, fontWeight: '400' }}>View all</button>
                     </div>
                     {datasetList.length === 0 ? (
                       <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.79rem', lineHeight: 1.7 }}>No datasets uploaded yet.<br />Upload a CSV or Excel file to get started.</div>
@@ -2817,8 +2951,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           {getFileType(activeDs.filename).slice(0, 3)}
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: '0.84rem', fontWeight: '600', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeDs.filename}</div>
-                          <div style={{ fontSize: '0.68rem', color: C.textMuted }}>{(activeDs.row_count || 0).toLocaleString()} rows &middot; {activeDs.column_count} columns &middot; Updated {fmtRelTime(activeDs.uploaded_at)}</div>
+                          <div style={{ fontSize: '0.75rem', fontWeight: '500', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeDs.filename}</div>
+                          <div style={{ fontSize: '0.64rem', color: C.textMuted }}>{(activeDs.row_count || 0).toLocaleString()} rows &middot; {activeDs.column_count} columns &middot; Updated {fmtRelTime(activeDs.uploaded_at)}</div>
                         </div>
                       </div>
                       {/* Quality metrics */}
@@ -2830,9 +2964,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           { label: 'Anomalies',           value: dsQuality ? dsQuality.anomalyCols : '—',                                                                                                                                                               sub: dsQuality ? (dsQuality.anomalyCols === 0 ? 'None' : 'Detected') : 'Run analysis',                                                       color: dsQuality && dsQuality.anomalyCols > 0 ? C.warn : C.success },
                         ].map(m => (
                           <div key={m.label} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '11px 10px' }}>
-                            <div style={{ fontSize: '0.6rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '6px' }}>{m.label}</div>
-                            <div style={{ fontSize: '1.1rem', fontWeight: '700', color: m.color, letterSpacing: '-0.03em', lineHeight: 1, marginBottom: '3px' }}>{m.value}</div>
-                            <div style={{ fontSize: '0.66rem', color: m.color, fontWeight: '600' }}>{m.sub}</div>
+                            <div style={{ fontSize: '0.58rem', color: C.textMuted, fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>{m.label}</div>
+                            <div style={{ fontSize: '0.95rem', fontWeight: '600', color: m.color, letterSpacing: '-0.02em', lineHeight: 1, marginBottom: '3px' }}>{m.value}</div>
+                            <div style={{ fontSize: '0.62rem', color: m.color, fontWeight: '400' }}>{m.sub}</div>
                           </div>
                         ))}
                       </div>
@@ -2847,8 +2981,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   {/* Recommended Automations */}
                   <div style={S.card}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                      <h3 style={{ margin: 0, fontSize: '0.72rem', fontWeight: '700', color: C.textSec, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Recommended Automations</h3>
-                      <button onClick={refreshRecommendations} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '5px' }}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Refresh</button>
+                      <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Recommended Automations</h3>
+                      <button onClick={refreshRecommendations} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.68rem', cursor: 'pointer', fontFamily: FONT, fontWeight: '400', display: 'flex', alignItems: 'center', gap: '5px' }}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Refresh</button>
                     </div>
                     {recLoading ? (
                       <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading…</div>
@@ -2866,11 +3000,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                             <div key={i} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                               <div style={{ width: '34px', height: '34px', borderRadius: '9px', background: pal.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color: pal.color }}>{pal.icon}</div>
                               <div>
-                                <div style={{ fontSize: '0.79rem', fontWeight: '600', color: C.text, marginBottom: '4px', lineHeight: 1.4 }}>{rec.intent}</div>
-                                <div style={{ fontSize: '0.69rem', color: C.textSec, lineHeight: 1.5 }}>{rec.suggestion}</div>
+                                <div style={{ fontSize: '0.75rem', fontWeight: '500', color: C.textSec, marginBottom: '3px', lineHeight: 1.4 }}>{rec.intent}</div>
+                                <div style={{ fontSize: '0.66rem', color: C.textSec, lineHeight: 1.5 }}>{rec.suggestion}</div>
                               </div>
                               <button onClick={() => handleRecRunAgain(rec)}
-                                style={{ ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', padding: '7px 10px', fontSize: '0.74rem', textAlign: 'center', marginTop: 'auto' }}>
+                                style={{ ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', padding: '6px 10px', fontSize: '0.7rem', textAlign: 'center', marginTop: 'auto' }}>
                                 Create Automation
                               </button>
                             </div>
@@ -2886,13 +3020,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
             {/* ── Saved Workflows ──────────────────────────────────── */}
             {activeNav === 'workflows' && <>
-              <div style={{ marginBottom: '28px' }}>
-                <p style={{ margin: 0, color: C.textSec, fontSize: '0.855rem' }}>Save named workflows and re-run them from the dashboard at any time.</p>
+              <div style={{ marginBottom: '18px' }}>
+                <p style={{ margin: 0, color: C.textMuted, fontSize: '0.78rem' }}>Save named workflows and re-run them from the dashboard at any time.</p>
               </div>
 
               {/* Workflow Templates */}
               <div style={{ ...S.card, marginBottom: '18px' }}>
-                <h3 style={{ margin: '0 0 16px', fontSize: '0.92rem', fontWeight: '600' }}>Workflow Templates</h3>
+                <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Workflow Templates</h3>
                 {templatesLoading ? (
                   <div style={{ padding: '20px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading...</div>
                 ) : templates.length === 0 ? (
@@ -2905,8 +3039,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           <div style={S.badge(C.accent, C.accentSoft)}>{t.category}</div>
                           {t.frequency && <span style={{ fontSize: '0.67rem', color: C.textMuted, fontWeight: '500', letterSpacing: '0.03em' }}>{t.frequency}</span>}
                         </div>
-                        <div style={{ fontSize: '0.85rem', fontWeight: '600', color: C.text, lineHeight: 1.3 }}>{t.name}</div>
-                        <div style={{ fontSize: '0.76rem', color: C.textSec, lineHeight: 1.55, flex: 1 }}>{t.description}</div>
+                        <div style={{ fontSize: '0.75rem', fontWeight: '500', color: C.textSec, lineHeight: 1.3 }}>{t.name}</div>
+                        <div style={{ fontSize: '0.7rem', color: C.textMuted, lineHeight: 1.55, flex: 1 }}>{t.description}</div>
                         <button
                           onClick={() => handleUseTemplate(t)}
                           style={{ ...S.btnPrimary, padding: '5px 12px', fontSize: '0.75rem', alignSelf: 'flex-start', marginTop: '2px' }}
@@ -2922,10 +3056,10 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
               {/* Multi-step workflow builder */}
               <div style={{ ...S.card, marginBottom: '18px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                  <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: '600' }}>Multi-Step Workflow Builder</h3>
+                  <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Multi-Step Workflow Builder</h3>
                   <div style={S.badge(C.accent, C.accentSoft)}>New</div>
                 </div>
-                <p style={{ margin: '0 0 16px', color: C.textSec, fontSize: '0.81rem', lineHeight: 1.6 }}>
+                <p style={{ margin: '0 0 14px', color: C.textMuted, fontSize: '0.75rem', lineHeight: 1.6 }}>
                   Build a workflow with ordered steps. Each step runs sequentially — if one fails, execution stops.
                 </p>
                 <label style={S.label}>Workflow name</label>
@@ -2937,7 +3071,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   style={{ ...S.input, marginBottom: '14px' }}
                 />
                 <label style={S.label}>Steps (max 10)</label>
-                <WorkflowStepBuilder steps={builderSteps} onStepsChange={setBuilderSteps} />
+                <WorkflowStepBuilder steps={builderSteps} onStepsChange={setBuilderSteps} C={C} S={S} />
                 <button
                   onClick={handleSaveMultiStepWorkflow}
                   disabled={builderSaving || !builderName.trim() || builderSteps.length === 0}
@@ -2958,8 +3092,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
               </div>
 
               {/* Save form */}
-              <div style={{ ...S.card, marginBottom: '18px', maxWidth: '600px' }}>
-                <h3 style={{ margin: '0 0 18px', fontSize: '0.92rem', fontWeight: '600' }}>Save Single-Intent Workflow</h3>
+              <div style={{ ...S.card, marginBottom: '18px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+                  <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Save Single-Intent Workflow</h3>
+                </div>
+                <p style={{ margin: '0 0 14px', color: C.textMuted, fontSize: '0.75rem', lineHeight: 1.6 }}>
+                  Save a single natural language intent as a reusable workflow. Run it again any time from the dashboard.
+                </p>
                 <label style={S.label}>Workflow name</label>
                 <input
                   type="text"
@@ -2998,16 +3137,16 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
               {/* Run result */}
               {(wfRunResult || wfRunError) && (
                 <div style={{ ...S.card, marginBottom: '18px' }}>
-                  <h3 style={{ margin: '0 0 14px', fontSize: '0.92rem', fontWeight: '600' }}>Run Result</h3>
+                  <h3 style={{ margin: '0 0 12px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Run Result</h3>
                   {wfRunError
                     ? <p style={{ margin: 0, fontSize: '0.82rem', color: C.danger }}>{wfRunError}</p>
-                    : <WorkflowResult result={wfRunResult} />}
+                    : <WorkflowResult result={wfRunResult} C={C} S={S} />}
                 </div>
               )}
 
               {/* Workflow list */}
               <div style={S.card}>
-                <h3 style={{ margin: '0 0 18px', fontSize: '0.92rem', fontWeight: '600' }}>Saved Workflows</h3>
+                <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Saved Workflows</h3>
                 {workflowListLoading ? (
                   <div style={{ fontSize: '0.82rem', color: C.textSec, textAlign: 'center', padding: '16px 0' }}>Loading...</div>
                 ) : workflowList.length === 0 ? (
@@ -3016,9 +3155,19 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   </div>
                 ) : (
                   <div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '160px minmax(180px, 1fr) 130px', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '4px' }}>
-                      {['Name', 'Intent', 'Actions'].map(col => (
-                        <div key={col} style={{ padding: '0 8px', fontSize: '0.67rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: `${wfNameColW}px 1fr 64px`, borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '4px' }}>
+                      {[{ resizable: true, label: 'Name' }, { resizable: false, label: 'Intent' }, { resizable: false, label: 'Actions' }].map(({ resizable, label }) => (
+                        <div key={label} style={{ padding: '0 8px', fontSize: '0.67rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', position: 'relative', userSelect: 'none' }}>
+                          {label}
+                          {resizable && (
+                            <div
+                              onMouseDown={startWfColResize}
+                              style={{ position: 'absolute', right: 0, top: '50%', transform: 'translateY(-50%)', width: '8px', height: '16px', cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                            >
+                              <div style={{ width: '2px', height: '12px', background: C.borderAlt, borderRadius: '1px' }} />
+                            </div>
+                          )}
+                        </div>
                       ))}
                     </div>
                     {workflowList.map((wf, idx) => {
@@ -3028,9 +3177,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         : (wf.definition?.intent || '—')
                       const isRunning = wfRunningId === wf.id
                       return (
-                        <div key={wf.id} style={{ display: 'grid', gridTemplateColumns: '160px minmax(180px, 1fr) 130px', padding: '9px 0', borderBottom: idx < workflowList.length - 1 ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
+                        <div key={wf.id} style={{ display: 'grid', gridTemplateColumns: `${wfNameColW}px 1fr 64px`, padding: '9px 0', borderBottom: idx < workflowList.length - 1 ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
                           <div style={{ padding: '0 8px', display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
-                            <span style={{ fontSize: '0.82rem', fontWeight: '600', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wf.name}>
+                            <span style={{ fontSize: '0.75rem', fontWeight: '400', color: C.textSec, lineHeight: 1.4, wordBreak: 'break-word' }}>
                               {wf.name}
                             </span>
                             {isMultiStep && <div style={S.badge(C.accent, C.accentSoft)}>Multi</div>}
@@ -3042,15 +3191,19 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                             <button
                               onClick={() => handleRunWorkflow(wf)}
                               disabled={isRunning}
-                              style={{ ...S.btnPrimary, padding: '4px 12px', fontSize: '0.75rem', opacity: isRunning ? 0.6 : 1 }}
+                              title="Run"
+                              style={{ width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.successSoft, border: `1px solid ${C.success}30`, borderRadius: '7px', cursor: isRunning ? 'default' : 'pointer', color: C.success, opacity: isRunning ? 0.5 : 1, flexShrink: 0 }}
                             >
-                              {isRunning ? '...' : 'Run'}
+                              {isRunning
+                                ? <div style={{ width: '10px', height: '10px', borderRadius: '50%', border: `2px solid ${C.success}40`, borderTopColor: C.success, animation: 'spin 0.75s linear infinite' }} />
+                                : <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>}
                             </button>
                             <button
                               onClick={() => handleDeleteWorkflow(wf.id)}
-                              style={{ background: C.dangerSoft, border: `1px solid ${C.danger}40`, color: C.danger, borderRadius: '6px', padding: '4px 10px', fontSize: '0.75rem', cursor: 'pointer', fontFamily: FONT }}
+                              title="Delete"
+                              style={{ width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.dangerSoft, border: `1px solid ${C.danger}30`, borderRadius: '7px', cursor: 'pointer', color: C.danger, flexShrink: 0 }}
                             >
-                              Delete
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                             </button>
                           </div>
                         </div>
@@ -3091,12 +3244,12 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 {/* Page header */}
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '12px' }}>
                   <div>
-                    <p style={{ margin: 0, color: C.textSec, fontSize: '0.76rem' }}>Upload, inspect, and manage your data sources.</p>
+                    <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Upload, inspect, and manage your data sources.</p>
                   </div>
                   <div style={{ display: 'flex', gap: '10px', alignItems: 'center', paddingTop: '4px', flexShrink: 0 }}>
                     <button
                       onClick={() => dsFileInputRef.current && dsFileInputRef.current.click()}
-                      style={{ ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: '0 0 20px #6366f130', padding: '7px 18px', fontSize: '0.86rem' }}
+                      style={{ ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: '0 0 16px #6366f124', padding: '7px 16px', fontSize: '0.78rem' }}
                     >
                       + New Dataset
                     </button>
@@ -3151,7 +3304,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                             <polyline points="21,33 29,24 37,33" fill="none" stroke="#6366f1" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/>
                           </svg>
                           <div style={{ textAlign: 'center' }}>
-                            <div style={{ fontSize: '0.9rem', fontWeight: '600', color: C.text, marginBottom: '2px' }}>Drag & drop your file here</div>
+                            <div style={{ fontSize: '0.78rem', fontWeight: '500', color: C.textSec, marginBottom: '2px' }}>Drag & drop your file here</div>
                           </div>
                           <div style={{ fontSize: '0.75rem', color: C.textMuted, lineHeight: 1 }}>or</div>
                           <button
@@ -3171,7 +3324,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         </div>
                         {/* Supported formats list only */}
                         <div style={{ width: '176px', flexShrink: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                          <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '12px' }}>Supported Formats</div>
+                          <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '12px' }}>Supported Formats</div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                             {[
                               { label: 'CSV',   desc: 'Comma Separated Values',    color: '#10b981' },
@@ -3199,7 +3352,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                       {/* Toolbar */}
                       <div style={{ padding: '20px 24px 16px', borderBottom: `1px solid ${C.border}` }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                          <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: '600', color: C.text, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em', display: 'flex', alignItems: 'center', gap: '8px' }}>
                             My Datasets
                             {datasetList.length > 0 && (
                               <span style={{ background: C.accentSoft, color: C.accent, borderRadius: '20px', padding: '1px 8px', fontSize: '0.69rem', fontWeight: '700' }}>
@@ -3207,7 +3360,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                               </span>
                             )}
                           </h3>
-                          <button onClick={refreshDatasets} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.78rem', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <button onClick={refreshDatasets} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.68rem', fontWeight: '400', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '5px' }}>
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Refresh
                           </button>
                         </div>
@@ -3237,11 +3390,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
                       {/* Table body */}
                       {datasetListLoading ? (
-                        <div style={{ padding: '40px', textAlign: 'center', color: C.textSec, fontSize: '0.85rem' }}>Loading datasets…</div>
+                        <div style={{ padding: '40px', textAlign: 'center', color: C.textMuted, fontSize: '0.78rem' }}>Loading datasets…</div>
                       ) : filteredDs.length === 0 ? (
                         <div style={{ padding: '48px 24px', textAlign: 'center' }}>
                           <div style={{ marginBottom: '12px', opacity: 0.3, display: 'flex', justifyContent: 'center', color: C.textSec }}><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
-                          <div style={{ fontSize: '0.88rem', color: C.textSec, marginBottom: '4px' }}>
+                          <div style={{ fontSize: '0.78rem', color: C.textSec, marginBottom: '4px' }}>
                             {datasetList.length === 0 ? 'No datasets uploaded yet.' : 'No datasets match your filter.'}
                           </div>
                           <div style={{ fontSize: '0.78rem', color: C.textMuted }}>
@@ -3252,7 +3405,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         <>
                           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(170px, 2.2fr) 72px 70px 52px minmax(120px, 1fr) 84px 96px', padding: '8px 24px', borderBottom: `1px solid ${C.border}` }}>
                             {['Dataset Name', 'Type', 'Rows', 'Cols', 'Uploaded', 'Status', 'Actions'].map(col => (
-                              <div key={col} style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{col}</div>
+                              <div key={col} style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{col}</div>
                             ))}
                           </div>
                           {filteredDs.map((ds, idx) => {
@@ -3281,7 +3434,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                                       onKeyDown={e => { if (e.key === 'Enter') handleRenameDataset(ds.id); if (e.key === 'Escape') { setDsRenaming(null); setDsRenameVal('') } }}
                                       style={{ ...S.input, fontSize: '0.79rem', padding: '4px 9px' }} />
                                   ) : (
-                                    <span style={{ fontSize: '0.84rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block', fontFamily: MONO }} title={ds.filename}>{ds.filename}</span>
+                                    <span style={{ fontSize: '0.75rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block', fontFamily: MONO }} title={ds.filename}>{ds.filename}</span>
                                   )}
                                 </div>
                                 {/* Type badge */}
@@ -3289,11 +3442,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                                   <span style={{ display: 'inline-flex', background: tStyle.bg, color: tStyle.color, border: `1px solid ${tStyle.color}40`, borderRadius: '5px', padding: '2px 8px', fontSize: '0.64rem', fontWeight: '700', letterSpacing: '0.04em' }}>{type}</span>
                                 </div>
                                 {/* Rows */}
-                                <div style={{ fontSize: '0.81rem', color: C.textSec, fontFamily: MONO }}>{(ds.row_count || 0).toLocaleString()}</div>
+                                <div style={{ fontSize: '0.73rem', color: C.textMuted, fontFamily: MONO }}>{(ds.row_count || 0).toLocaleString()}</div>
                                 {/* Cols */}
-                                <div style={{ fontSize: '0.81rem', color: C.textSec, fontFamily: MONO }}>{ds.column_count}</div>
+                                <div style={{ fontSize: '0.73rem', color: C.textMuted, fontFamily: MONO }}>{ds.column_count}</div>
                                 {/* Uploaded */}
-                                <div style={{ fontSize: '0.74rem', color: C.textSec, whiteSpace: 'nowrap' }}>
+                                <div style={{ fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
                                   {new Date(ds.uploaded_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                 </div>
                                 {/* Status */}
@@ -3340,13 +3493,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                                         {menuOpen && (
                                           <div style={{ position: 'absolute', right: 0, top: '110%', background: '#13151f', border: `1px solid ${C.borderAlt}`, borderRadius: '10px', boxShadow: '0 8px 32px #000b', zIndex: 50, minWidth: '160px', overflow: 'hidden' }}>
                                             <button onClick={() => { setDsRenaming(ds.id); setDsRenameVal(ds.filename); setDsOpenMenu(null) }}
-                                              style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', padding: '9px 14px', fontSize: '0.81rem', color: C.text, cursor: 'pointer', fontFamily: FONT }}>
+                                              style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', padding: '9px 14px', fontSize: '0.75rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
                                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                                               Rename
                                             </button>
                                             {!active && (
                                               <button onClick={() => { setSelectedDatasetId(ds.id); setReport(null); setDsOpenMenu(null) }}
-                                                style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: `1px solid ${C.border}`, padding: '9px 14px', fontSize: '0.81rem', color: C.text, cursor: 'pointer', fontFamily: FONT }}>
+                                                style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: `1px solid ${C.border}`, padding: '9px 14px', fontSize: '0.75rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
                                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                                                 Set Active
                                               </button>
@@ -3384,13 +3537,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                             { label: 'Cat. Cols',    value: datasetSummary.column_count - datasetSummary.numeric_columns.length },
                           ].map(({ label, value }) => (
                             <div key={label} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px' }}>
-                              <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>{label}</div>
+                              <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>{label}</div>
                               <div style={{ fontSize: '1.3rem', fontWeight: '700', color: C.accent, fontFamily: MONO, letterSpacing: '-0.03em' }}>{value}</div>
                             </div>
                           ))}
                         </div>
                         <div style={{ marginBottom: '20px' }}>
-                          <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>All Columns</div>
+                          <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>All Columns</div>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                             {datasetSummary.columns.map(col => {
                               const isNum = datasetSummary.numeric_columns.includes(col)
@@ -3409,7 +3562,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         </div>
                         {(datasetSummary.sample_rows || []).length > 0 && (
                           <div>
-                            <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+                            <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
                               Sample Rows (first {(datasetSummary.sample_rows || []).length})
                             </div>
                             <div style={{ overflowX: 'auto', borderRadius: '8px', border: `1px solid ${C.border}` }}>
@@ -3442,7 +3595,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         <h3 style={{ margin: '0 0 20px', fontSize: '0.92rem', fontWeight: '600' }}>Analysis</h3>
                         {Object.keys(datasetSummary.numeric_profile).length > 0 && (
                           <div style={{ marginBottom: '24px' }}>
-                            <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Numeric Profiles</div>
+                            <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Numeric Profiles</div>
                             <div style={{ overflowX: 'auto', borderRadius: '8px', border: `1px solid ${C.border}` }}>
                               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', fontFamily: MONO }}>
                                 <thead>
@@ -3469,7 +3622,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           </div>
                         )}
                         <div style={{ marginBottom: Object.keys(datasetSummary.categorical_profile).length > 0 ? '24px' : 0 }}>
-                          <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Missing Values</div>
+                          <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Missing Values</div>
                           {Object.values(datasetSummary.missing_values).every(v => v === 0) ? (
                             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', background: '#10b9811a', border: '1px solid #10b98140', borderRadius: '8px', padding: '8px 14px', fontSize: '0.82rem', color: '#10b981' }}>
                               <span>&#x2713;</span> No missing values detected.
@@ -3487,7 +3640,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         </div>
                         {Object.keys(datasetSummary.categorical_profile).length > 0 && (
                           <div>
-                            <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '12px' }}>Top Values by Category</div>
+                            <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '12px' }}>Top Values by Category</div>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: '12px' }}>
                               {Object.entries(datasetSummary.categorical_profile).map(([col, entries]) => (
                                 <div key={col} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', overflow: 'hidden' }}>
@@ -3519,7 +3672,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           </div>
                           {report.map((section, i) => (
                             <div key={i} style={{ marginBottom: i < report.length - 1 ? '20px' : 0 }}>
-                              <div style={{ fontSize: '0.62rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>{section.heading}</div>
+                              <div style={{ fontSize: '0.62rem', color: C.textSec, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>{section.heading}</div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                 {section.items.map((item, j) => (
                                   <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', fontSize: '0.84rem', color: C.text, lineHeight: 1.65 }}>
@@ -3599,232 +3752,204 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
             })()}
 
             {/* ── Scheduled ────────────────────────────────────────── */}
-            {activeNav === 'scheduled' && <>
-              <div style={{ marginBottom: '28px' }}>
-                <p style={{ margin: 0, color: C.textSec, fontSize: '0.855rem' }}>Workflows saved to run automatically at a recurring interval.</p>
-              </div>
-
-              {/* Create schedule */}
-              <div style={{ ...S.card, marginBottom: '18px', maxWidth: '600px' }}>
-                <h3 style={{ margin: '0 0 18px', fontSize: '0.92rem', fontWeight: '600' }}>Create Schedule</h3>
-                <label style={S.label}>Task description (must include a frequency)</label>
-                <textarea
-                  rows={3}
-                  placeholder="Example: email me a daily dataset report"
-                  value={scheduleInput}
-                  onChange={e => { setScheduleInput(e.target.value); setScheduleError(null); setScheduleSuccess(null) }}
-                  style={{ ...S.textarea, fontFamily: FONT, marginBottom: '8px' }}
-                />
-                <div style={{ fontSize: '0.72rem', color: C.textMuted, marginBottom: '14px' }}>
-                  Try: "generate a daily dataset report" · "email me a weekly dataset report on Monday"
-                  {selectedDatasetId && <span style={{ color: C.accent }}> · Dataset #{selectedDatasetId} active</span>}
+            {activeNav === 'scheduled' && (() => {
+              const activeCount = scheduledList.filter(s => s.enabled).length
+              const pausedCount = scheduledList.filter(s => !s.enabled).length
+              const totalRuns   = scheduledList.reduce((s, sw) => s + (sw.run_count || 0), 0)
+              const issueCount  = scheduleHealth.filter(sh => ['Missed','Delayed'].includes(sh.health)).length
+              const SCHED_STATS = [
+                { label: 'Active Schedules', value: scheduledLoading ? '…' : activeCount, sub: `${scheduledList.length} total configured`, accent: '#10b981',
+                  icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
+                { label: 'Total Runs', value: scheduledLoading ? '…' : totalRuns, sub: 'Across all schedules', accent: '#3b82f6',
+                  icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg> },
+                { label: 'Issues Detected', value: scheduledLoading ? '…' : issueCount, sub: 'Missed or delayed', accent: '#f59e0b',
+                  icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> },
+                { label: 'Paused', value: scheduledLoading ? '…' : pausedCount, sub: 'Awaiting resume', accent: '#64748b',
+                  icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> },
+              ]
+              const activeDs = datasetList.find(d => d.id === selectedDatasetId)
+              const COLS = 'minmax(180px, 2fr) 120px 150px 150px 100px 110px'
+              return <>
+                <div style={{ marginBottom: '16px' }}>
+                  <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Workflows saved to run automatically at a recurring interval.</p>
                 </div>
-                <button
-                  onClick={handleCreateSchedule}
-                  disabled={scheduleCreating || !scheduleInput.trim()}
-                  style={{ ...S.btnPrimary, opacity: (scheduleCreating || !scheduleInput.trim()) ? 0.6 : 1 }}
-                >
-                  {scheduleCreating ? 'Saving...' : 'Save Schedule'}
-                </button>
-                {scheduleError && (
-                  <div style={{ marginTop: '12px', background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.82rem', color: C.danger }}>
-                    {scheduleError}
-                  </div>
-                )}
-                {scheduleSuccess && (
-                  <div style={{ marginTop: '12px', background: C.successSoft, border: `1px solid ${C.success}40`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.82rem', color: C.success }}>
-                    {scheduleSuccess}
-                  </div>
-                )}
-              </div>
 
-              {/* Schedule Health */}
-              <div style={{ ...S.card, marginBottom: '18px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '18px' }}>
-                  <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: '600' }}>Schedule Health</h3>
-                  <button onClick={refreshScheduleHealth} style={{ background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', color: C.textSec, fontSize: '0.72rem', fontFamily: FONT }}>Refresh</button>
-                </div>
-                {scheduleHealthLoading ? (
-                  <div style={{ padding: '24px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading...</div>
-                ) : scheduleHealth.length === 0 ? (
-                  <div style={{ padding: '24px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem', lineHeight: 1.7 }}>
-                    No schedules to monitor. Create one above.
-                  </div>
-                ) : (
-                  <>
-                    <div style={{ display: 'grid', gridTemplateColumns: '86px minmax(150px, 1fr) 90px 170px', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '4px' }}>
-                      {['Health', 'Task', 'Frequency', 'Next Run'].map(col => (
-                        <div key={col} style={{ padding: '0 8px', fontSize: '0.67rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
-                      ))}
+                {/* ── Create Schedule ── */}
+                <div style={{ ...S.card, marginBottom: '18px' }}>
+                  <h3 style={{ margin: '0 0 16px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Create Schedule</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '28px' }}>
+                    {/* Left */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                      <label style={{ ...S.label, fontSize: '0.62rem' }}>Task Description (must include a frequency)</label>
+                      <textarea
+                        rows={4}
+                        placeholder="Example: email me a daily dataset report"
+                        value={scheduleInput}
+                        onChange={e => { setScheduleInput(e.target.value); setScheduleError(null); setScheduleSuccess(null) }}
+                        style={{ ...S.textarea, fontFamily: FONT, fontSize: '0.76rem', marginBottom: '8px' }}
+                      />
+                      <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '18px', lineHeight: 1.6 }}>
+                        Try: "generate a daily dataset report" · "email me a weekly dataset report on Monday"
+                        {selectedDatasetId && activeDs && <span style={{ color: C.accent }}> · {activeDs.filename} active</span>}
+                      </div>
+                      <button
+                        onClick={handleCreateSchedule}
+                        disabled={scheduleCreating || !scheduleInput.trim()}
+                        style={{ ...S.btnPrimary, alignSelf: 'flex-start', background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: scheduleCreating ? 'none' : '0 0 18px #6366f125', opacity: (scheduleCreating || !scheduleInput.trim()) ? 0.6 : 1 }}
+                      >
+                        {scheduleCreating ? 'Saving…' : 'Save Schedule'}
+                      </button>
+                      {scheduleError && (
+                        <div style={{ marginTop: '12px', background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.79rem', color: C.danger }}>{scheduleError}</div>
+                      )}
+                      {scheduleSuccess && (
+                        <div style={{ marginTop: '12px', background: C.successSoft, border: `1px solid ${C.success}40`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.79rem', color: C.success }}>{scheduleSuccess}</div>
+                      )}
                     </div>
-                    {scheduleHealth.map((sh, idx) => {
-                      const hColor  = sh.health === 'Healthy' ? C.success : sh.health === 'Missed' ? C.danger : sh.health === 'Delayed' ? C.warn : C.textSec
-                      const hBg     = sh.health === 'Healthy' ? C.successSoft : sh.health === 'Missed' ? C.dangerSoft : sh.health === 'Delayed' ? C.warnSoft : 'transparent'
-                      const notLast = idx < scheduleHealth.length - 1
-                      return (
-                        <div key={sh.id}>
-                          <div style={{ display: 'grid', gridTemplateColumns: '86px minmax(150px, 1fr) 90px 170px', padding: '9px 0', borderBottom: notLast ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
-                            <div style={{ padding: '0 8px' }}>
-                              <div style={S.badge(hColor, hBg)}>
-                                <div style={S.dot(hColor)} />
-                                {sh.health}
-                              </div>
-                            </div>
-                            <div style={{ padding: '0 8px', fontSize: '0.82rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sh.input_text}>
-                              {sh.input_text}
-                            </div>
-                            <div style={{ padding: '0 8px', fontSize: '0.8rem', color: C.textSec }}>
-                              {sh.frequency}{sh.day_of_week ? ` · ${sh.day_of_week}` : ''}
-                            </div>
-                            <div style={{ padding: '0 8px' }}>
-                              {sh.health === 'Paused' ? (
-                                <span style={{ fontSize: '0.74rem', color: C.textMuted }}>—</span>
-                              ) : sh.overdue_label ? (
-                                <span style={{ fontSize: '0.74rem', color: hColor, fontWeight: '600' }}>{sh.overdue_label}</span>
-                              ) : sh.next_run_at ? (
-                                <span style={{ fontSize: '0.74rem', color: C.textSec, whiteSpace: 'nowrap' }}>{new Date(sh.next_run_at).toLocaleString()}</span>
-                              ) : (
-                                <span style={{ fontSize: '0.74rem', color: C.textMuted }}>—</span>
-                              )}
-                            </div>
+                    {/* Right */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {/* Dataset */}
+                      <div>
+                        <label style={{ ...S.label, fontSize: '0.62rem' }}>Dataset</label>
+                        <div style={{ position: 'relative' }}>
+                          <select
+                            value={selectedDatasetId ?? ''}
+                            onChange={e => setSelectedDatasetId(e.target.value ? Number(e.target.value) : null)}
+                            style={{ width: '100%', padding: '9px 32px 9px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', color: selectedDatasetId ? C.text : C.textMuted, fontSize: '0.79rem', fontFamily: FONT, cursor: 'pointer', appearance: 'none', outline: 'none' }}
+                          >
+                            <option value=''>No dataset selected</option>
+                            {datasetList.map(ds => (
+                              <option key={ds.id} value={ds.id}>
+                                {ds.filename} · {(ds.row_count || 0).toLocaleString()} rows
+                              </option>
+                            ))}
+                          </select>
+                          <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: C.textMuted }}>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
                           </div>
-                          <div style={{ padding: '0 8px 8px', borderBottom: !explainData[`schedule_health:${sh.id}`] && notLast ? `1px solid ${C.border}` : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                            <span style={{ fontSize: '0.7rem', color: sh.health === 'Missed' ? C.danger : sh.health === 'Delayed' ? C.warn : C.textMuted }}>
-                              {sh.recommendation}
-                            </span>
-                            <button
-                              onClick={() => handleExplain('schedule_health', sh.id)}
-                              disabled={explainLoading.has(`schedule_health:${sh.id}`)}
-                              style={{ flexShrink: 0, background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '5px', padding: '2px 8px', fontSize: '0.65rem', cursor: explainLoading.has(`schedule_health:${sh.id}`) ? 'not-allowed' : 'pointer', color: C.textMuted, fontFamily: FONT, opacity: explainLoading.has(`schedule_health:${sh.id}`) ? 0.6 : 1 }}
-                            >
-                              {explainLoading.has(`schedule_health:${sh.id}`) ? '…' : explainData[`schedule_health:${sh.id}`] ? 'Hide' : 'Explain'}
-                            </button>
-                          </div>
-                          {explainData[`schedule_health:${sh.id}`] && (
-                            <div style={{ margin: '2px 0 10px', padding: '10px 12px', background: C.accentSoft, border: `1px solid ${C.accent}25`, borderRadius: '8px', borderBottom: notLast ? `1px solid ${C.border}` : 'none' }}>
-                              <div style={{ fontSize: '0.65rem', color: C.accent, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>
-                                {explainData[`schedule_health:${sh.id}`].source === 'ai' ? 'AI Explanation' : 'Explanation'}
-                              </div>
-                              <p style={{ margin: '0 0 6px', fontSize: '0.78rem', color: C.text, lineHeight: 1.6 }}>
-                                {explainData[`schedule_health:${sh.id}`].explanation}
-                              </p>
-                              {explainData[`schedule_health:${sh.id}`].recommended_actions?.length > 0 && (
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                  {explainData[`schedule_health:${sh.id}`].recommended_actions.map((a, i) => (
-                                    <div key={i} style={{ fontSize: '0.72rem', color: C.textSec }}>• {a}</div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
                         </div>
-                      )
-                    })}
-                  </>
-                )}
-              </div>
-
-              {/* Schedule list */}
-              <div style={S.card}>
-                <h3 style={{ margin: '0 0 18px', fontSize: '0.92rem', fontWeight: '600' }}>Schedules</h3>
-                {scheduledLoading ? (
-                  <div style={{ fontSize: '0.82rem', color: C.textSec, textAlign: 'center', padding: '16px 0' }}>Loading...</div>
-                ) : scheduledList.length === 0 ? (
-                  <div style={{ fontSize: '0.82rem', color: C.textMuted, textAlign: 'center', padding: '16px 0' }}>
-                    No scheduled workflows yet. Create one above.
+                      </div>
+                      {/* Info box */}
+                      <div style={{ padding: '12px 14px', background: `${C.accent}08`, border: `1px solid ${C.accent}20`, borderRadius: '8px' }}>
+                        <div style={{ fontSize: '0.67rem', color: C.accent, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>How it works</div>
+                        <p style={{ margin: 0, fontSize: '0.72rem', color: C.textMuted, lineHeight: 1.6 }}>
+                          Write a natural language task that includes a frequency word (daily, weekly, monthly). The AI interpreter will parse your intent and schedule it automatically.
+                        </p>
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <div style={{ overflowX: 'auto' }}>
-                    <div style={{ minWidth: '900px' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 2fr) 100px 130px 120px 90px 45px 72px 120px', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '4px' }}>
-                        {['Task', 'Frequency', 'Next Run', 'Last Run', 'Status', 'Runs', 'State', ''].map(col => (
-                          <div key={col} style={{ padding: '0 8px', fontSize: '0.67rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
+                </div>
+
+                {/* ── Schedule Health stat cards ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '18px' }}>
+                  {SCHED_STATS.map(({ label, value, sub, accent, icon }) => (
+                    <div key={label} style={{ ...S.card, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: '14px' }}>
+                      <div style={{ width: 44, height: 44, borderRadius: '12px', background: accent + '18', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: accent }}>
+                        {icon}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '0.6rem', color: C.textMuted, fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>{label}</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '600', color: C.text, letterSpacing: '-0.3px', lineHeight: 1 }}>{value}</div>
+                        <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '3px' }}>{sub}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ── Your Schedules table ── */}
+                <div style={S.card}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '18px' }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Your Schedules</h3>
+                    </div>
+                  </div>
+                  {scheduledLoading ? (
+                    <div style={{ padding: '40px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading…</div>
+                  ) : scheduledList.length === 0 ? (
+                    <div style={{ padding: '40px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem', lineHeight: 1.7 }}>
+                      No scheduled workflows yet.<br />Create one above to get started.
+                    </div>
+                  ) : (
+                    <>
+                      {/* Column headers */}
+                      <div style={{ display: 'grid', gridTemplateColumns: COLS, borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '2px' }}>
+                        {['Task', 'Frequency', 'Next Run', 'Last Run', 'Status', 'Actions'].map(col => (
+                          <div key={col} style={{ padding: '0 12px', fontSize: '0.63rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
                         ))}
                       </div>
                       {scheduledList.map((sw, idx) => {
-                        const failed  = sw.last_status === 'failed'
-                        const scColor = sw.last_status === 'completed' ? C.success : sw.last_status === 'failed' ? C.danger : C.textMuted
-                        const scBg    = sw.last_status === 'completed' ? C.successSoft : sw.last_status === 'failed' ? C.dangerSoft : 'transparent'
                         const notLast = idx < scheduledList.length - 1
+                        const failed  = sw.last_status === 'failed'
+                        const stColor = sw.enabled ? C.success : C.warn
+                        const stBg    = sw.enabled ? C.successSoft : C.warnSoft
+                        const isLoading = schedulePauseLoading.has(sw.id)
                         return (
-                          <div key={sw.id}>
-                            <div style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'minmax(150px, 2fr) 100px 130px 120px 90px 45px 72px 120px',
-                              padding: '8px 0',
-                              borderBottom: (!failed || !sw.last_error) && notLast ? `1px solid ${C.border}` : 'none',
-                              alignItems: 'center',
-                            }}>
-                              <div style={{ padding: '0 8px', fontSize: '0.8rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sw.input_text}>
-                                {sw.input_text}
+                          <div key={sw.id} style={{ borderRadius: '4px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: COLS, padding: '10px 0', borderBottom: (!failed || !sw.last_error) && notLast ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
+                              {/* Task */}
+                              <div style={{ padding: '0 12px', overflow: 'hidden' }}>
+                                <div style={{ fontSize: '0.75rem', fontWeight: '400', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sw.input_text}>{sw.input_text}</div>
+                                {sw.run_count > 0 && <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '1px' }}>{sw.run_count} run{sw.run_count !== 1 ? 's' : ''}</div>}
                               </div>
-                              <div style={{ padding: '0 8px', fontSize: '0.8rem', color: C.textSec }}>
-                                {sw.frequency}{sw.day_of_week ? ` · ${sw.day_of_week}` : ''}
+                              {/* Frequency */}
+                              <div style={{ padding: '0 12px', fontSize: '0.72rem', color: C.textMuted, textTransform: 'capitalize' }}>
+                                {sw.frequency}{sw.day_of_week ? ` on ${sw.day_of_week}` : ''}
                               </div>
-                              <div style={{ padding: '0 8px', fontSize: '0.74rem', color: C.textSec, whiteSpace: 'nowrap' }}>
-                                {new Date(sw.next_run_at).toLocaleString()}
+                              {/* Next Run */}
+                              <div style={{ padding: '0 12px', fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
+                                {sw.next_run_at ? new Date(sw.next_run_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
                               </div>
-                              <div style={{ padding: '0 8px', fontSize: '0.74rem', color: C.textSec, whiteSpace: 'nowrap' }}>
-                                {sw.last_run_at ? new Date(sw.last_run_at).toLocaleString() : '—'}
+                              {/* Last Run */}
+                              <div style={{ padding: '0 12px', fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
+                                {sw.last_run_at ? new Date(sw.last_run_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
                               </div>
-                              <div style={{ padding: '0 8px' }}>
-                                {sw.last_status ? (
-                                  <div style={S.badge(scColor, scBg)}>
-                                    <div style={S.dot(scColor)} />
-                                    {sw.last_status}
-                                  </div>
-                                ) : (
-                                  <span style={{ fontSize: '0.75rem', color: C.textMuted }}>—</span>
-                                )}
-                              </div>
-                              <div style={{ padding: '0 8px', fontSize: '0.8rem', color: C.textSec, textAlign: 'center' }}>
-                                {sw.run_count ?? 0}
-                              </div>
-                              <div style={{ padding: '0 8px' }}>
-                                <div style={S.badge(sw.enabled ? C.success : C.textSec, sw.enabled ? C.successSoft : 'transparent')}>
-                                  <div style={S.dot(sw.enabled ? C.success : C.textSec)} />
+                              {/* Status */}
+                              <div style={{ padding: '0 12px' }}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: stBg, color: stColor, border: `1px solid ${stColor}28`, borderRadius: '20px', padding: '3px 9px', fontSize: '0.67rem', fontWeight: '600', letterSpacing: '0.03em', whiteSpace: 'nowrap' }}>
+                                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: stColor, display: 'inline-block' }}/>
                                   {sw.enabled ? 'Active' : 'Paused'}
-                                </div>
+                                </span>
                               </div>
-                              <div style={{ padding: '0 8px', display: 'flex', gap: '4px' }}>
-                                {sw.enabled ? (
-                                  <button
-                                    onClick={() => handlePauseSchedule(sw.id)}
-                                    disabled={schedulePauseLoading.has(sw.id)}
-                                    style={{ background: C.warnSoft, border: `1px solid ${C.warn}40`, color: C.warn, borderRadius: '6px', padding: '3px 8px', fontSize: '0.72rem', cursor: schedulePauseLoading.has(sw.id) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: schedulePauseLoading.has(sw.id) ? 0.6 : 1 }}
-                                  >
-                                    Pause
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => handleResumeSchedule(sw.id)}
-                                    disabled={schedulePauseLoading.has(sw.id)}
-                                    style={{ background: C.successSoft, border: `1px solid ${C.success}40`, color: C.success, borderRadius: '6px', padding: '3px 8px', fontSize: '0.72rem', cursor: schedulePauseLoading.has(sw.id) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: schedulePauseLoading.has(sw.id) ? 0.6 : 1 }}
-                                  >
-                                    Resume
-                                  </button>
-                                )}
+                              {/* Actions */}
+                              <div style={{ padding: '0 12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                {/* Pause / Resume */}
+                                <button
+                                  onClick={() => sw.enabled ? handlePauseSchedule(sw.id) : handleResumeSchedule(sw.id)}
+                                  disabled={isLoading}
+                                  title={sw.enabled ? 'Pause' : 'Resume'}
+                                  style={{ width: 30, height: 30, borderRadius: '7px', border: `1px solid ${C.border}`, background: 'transparent', color: sw.enabled ? C.warn : C.success, cursor: isLoading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: isLoading ? 0.5 : 1, transition: 'background 0.12s' }}
+                                  onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
+                                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                >
+                                  {sw.enabled
+                                    ? <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                                    : <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>}
+                                </button>
+                                {/* Delete */}
                                 <button
                                   onClick={() => handleDeleteSchedule(sw.id)}
-                                  style={{ background: C.dangerSoft, border: `1px solid ${C.danger}40`, color: C.danger, borderRadius: '6px', padding: '3px 8px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: FONT }}
+                                  title="Delete"
+                                  style={{ width: 30, height: 30, borderRadius: '7px', border: `1px solid ${C.border}`, background: 'transparent', color: C.danger, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.12s' }}
+                                  onMouseEnter={e => e.currentTarget.style.background = C.dangerSoft}
+                                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                                 >
-                                  Delete
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
                                 </button>
                               </div>
                             </div>
                             {failed && sw.last_error && (
-                              <div style={{ padding: '0 8px 8px', borderBottom: notLast ? `1px solid ${C.border}` : 'none' }}>
-                                <span style={{ fontSize: '0.72rem', color: C.danger }}>Error: {sw.last_error}</span>
+                              <div style={{ padding: '0 12px 8px', borderBottom: notLast ? `1px solid ${C.border}` : 'none' }}>
+                                <span style={{ fontSize: '0.69rem', color: C.danger, opacity: 0.85 }}>↳ {sw.last_error}</span>
                               </div>
                             )}
                           </div>
                         )
                       })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>}
+                    </>
+                  )}
+                </div>
+              </>
+            })()}
 
             {/* ── History ──────────────────────────────────────────── */}
             {activeNav === 'history' && (() => {
@@ -3859,8 +3984,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
               const COLS = 'minmax(170px, 1.5fr) minmax(130px, 1fr) 108px 78px 148px minmax(120px, 1fr) 96px'
               return <>
                 {/* ── Page header ── */}
-                <div style={{ marginBottom: '22px' }}>
-                  <p style={{ margin: 0, color: C.textSec, fontSize: '0.76rem' }}>View, manage and rerun all your workflow executions.</p>
+                <div style={{ marginBottom: '16px' }}>
+                  <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>View, manage and rerun all your workflow executions.</p>
                 </div>
                 {/* ── Stat cards ── */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '22px' }}>
@@ -3870,9 +3995,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                         {icon}
                       </div>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: '0.64rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>{label}</div>
-                        <div style={{ fontSize: '1.55rem', fontWeight: '700', color: C.text, letterSpacing: '-0.5px', lineHeight: 1 }}>{value}</div>
-                        <div style={{ fontSize: '0.68rem', color: C.textSec, marginTop: '3px' }}>{sub}</div>
+                        <div style={{ fontSize: '0.6rem', color: C.textMuted, fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>{label}</div>
+                        <div style={{ fontSize: '1.25rem', fontWeight: '600', color: C.text, letterSpacing: '-0.3px', lineHeight: 1 }}>{value}</div>
+                        <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '3px' }}>{sub}</div>
                       </div>
                     </div>
                   ))}
@@ -3881,8 +4006,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                 <div style={S.card}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: historyMsg ? '10px' : '20px' }}>
                     <div>
-                      <h3 style={{ margin: '0 0 4px', fontSize: '0.92rem', fontWeight: '600' }}>Recent Activity</h3>
-                      <p style={{ margin: 0, color: C.textSec, fontSize: '0.72rem' }}>Your latest workflow executions</p>
+                      <h3 style={{ margin: '0 0 4px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Recent Activity</h3>
+                      <p style={{ margin: 0, color: C.textMuted, fontSize: '0.7rem' }}>Your latest workflow executions</p>
                     </div>
                   </div>
                   {historyMsg && (
@@ -3901,7 +4026,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                       { label: 'Result' },
                       { label: 'Actions' },
                     ].map(({ label, icon }) => (
-                      <div key={label} style={{ padding: '0 12px', fontSize: '0.63rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <div key={label} style={{ padding: '0 12px', fontSize: '0.63rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'flex', alignItems: 'center', gap: '4px' }}>
                         {icon && <span style={{ opacity: 0.7 }}>{icon}</span>}
                         {label}
                       </div>
@@ -3934,7 +4059,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                               {meta.icon}
                             </div>
                             <div style={{ overflow: 'hidden' }}>
-                              <div style={{ fontSize: '0.82rem', fontWeight: '600', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.intent || summary}>{summary}</div>
+                              <div style={{ fontSize: '0.75rem', fontWeight: '400', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.intent || summary}>{summary}</div>
                               <div style={{ fontSize: '0.68rem', color: C.textMuted, marginTop: '1px' }}>{meta.label}</div>
                             </div>
                           </div>
@@ -3946,7 +4071,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
                                 </div>
                                 <div style={{ overflow: 'hidden' }}>
-                                  <div style={{ fontSize: '0.78rem', fontWeight: '500', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.dataset_name}</div>
+                                  <div style={{ fontSize: '0.73rem', fontWeight: '400', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.dataset_name}</div>
                                   {row.dataset_row_count != null && <div style={{ fontSize: '0.67rem', color: C.textMuted, marginTop: '1px' }}>{row.dataset_row_count.toLocaleString()} rows</div>}
                                 </div>
                               </div>
@@ -3966,13 +4091,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                             </span>
                           </div>
                           {/* Duration */}
-                          <div style={{ padding: '0 12px', fontSize: '0.78rem', fontWeight: '500', color: duration === 'Instant' ? C.success : C.textSec, fontFamily: MONO }}>
+                          <div style={{ padding: '0 12px', fontSize: '0.72rem', fontWeight: '400', color: duration === 'Instant' ? C.success : C.textMuted, fontFamily: MONO }}>
                             {duration}
                           </div>
                           {/* Started */}
                           <div style={{ padding: '0 12px' }}>
                             {row.started_at ? <>
-                              <div style={{ fontSize: '0.77rem', color: C.text, whiteSpace: 'nowrap' }}>{new Date(row.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                              <div style={{ fontSize: '0.72rem', color: C.textSec, whiteSpace: 'nowrap' }}>{new Date(row.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
                               <div style={{ fontSize: '0.67rem', color: C.textMuted, marginTop: '1px' }}>{fmtRelTime(row.started_at)}</div>
                             </> : <span style={{ color: C.textMuted, fontSize: '0.75rem' }}>—</span>}
                           </div>
@@ -3980,11 +4105,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                           <div style={{ padding: '0 12px', overflow: 'hidden' }}>
                             {isFail ? (
                               <div>
-                                <div style={{ fontSize: '0.77rem', fontWeight: '500', color: C.danger }}>Execution failed</div>
+                                <div style={{ fontSize: '0.72rem', fontWeight: '400', color: C.danger }}>Execution failed</div>
                                 {row.error_message && <div style={{ fontSize: '0.67rem', color: C.danger, opacity: 0.7, marginTop: '1px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.error_message.slice(0, 48)}{row.error_message.length > 48 ? '…' : ''}</div>}
                               </div>
                             ) : isOk ? (
-                              <div style={{ fontSize: '0.77rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.summary}>{row.summary || 'Completed successfully'}</div>
+                              <div style={{ fontSize: '0.72rem', color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.summary}>{row.summary || 'Completed successfully'}</div>
                             ) : (
                               <div style={{ fontSize: '0.77rem', color: C.warn }}>In progress…</div>
                             )}
@@ -4008,22 +4133,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
             {/* ── Usage ────────────────────────────────────────────── */}
             {activeNav === 'usage' && <>
-              <div style={{ marginBottom: '28px' }}>
-                <p style={{ margin: 0, color: C.textSec, fontSize: '0.855rem' }}>Track task usage, workflow success rates, and system health.</p>
+              <div style={{ marginBottom: '16px' }}>
+                <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Track task usage, workflow success rates, and system health.</p>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '22px' }}>
                 {STAT_CARDS.map(({ label, value, accent }) => (
                   <div key={label} style={{ ...S.card, padding: '20px', position: 'relative', overflow: 'hidden' }}>
                     <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: accent, opacity: 0.7 }} />
-                    <div style={{ fontSize: '0.68rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '12px' }}>{label}</div>
-                    <div style={{ fontSize: '1.8rem', fontWeight: '700', color: accent, letterSpacing: '-1px', lineHeight: 1 }}>{usageLoading ? '…' : (statValues[label] ?? value)}</div>
+                    <div style={{ fontSize: '0.6rem', color: C.textMuted, fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '10px' }}>{label}</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: '600', color: accent, letterSpacing: '-0.3px', lineHeight: 1 }}>{usageLoading ? '…' : (statValues[label] ?? value)}</div>
                   </div>
                 ))}
               </div>
               {/* Workflow Health */}
               <div style={{ ...S.card, marginBottom: '18px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '18px' }}>
-                  <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: '600' }}>Workflow Health</h3>
+                  <h3 style={{ margin: 0, fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Workflow Health</h3>
                   <button onClick={refreshInsights} style={{ background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '6px', padding: '4px 10px', cursor: 'pointer', color: C.textSec, fontSize: '0.72rem', fontFamily: FONT }}>Refresh</button>
                 </div>
                 {insightsLoading ? (
@@ -4036,7 +4161,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   <>
                     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) 90px 80px 80px 150px', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '4px' }}>
                       {['Workflow', 'Health', 'Success', 'Avg Time', 'Last Run'].map(col => (
-                        <div key={col} style={{ padding: '0 8px', fontSize: '0.67rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
+                        <div key={col} style={{ padding: '0 8px', fontSize: '0.67rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
                       ))}
                     </div>
                     {insights.map((wf, idx) => {
@@ -4049,7 +4174,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                       return (
                         <div key={wf.workflow_id}>
                           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) 90px 80px 80px 150px', padding: '9px 0', borderBottom: notLast ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
-                            <div style={{ padding: '0 8px', fontSize: '0.82rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wf.workflow_name}>
+                            <div style={{ padding: '0 8px', fontSize: '0.75rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wf.workflow_name}>
                               {wf.workflow_name}
                             </div>
                             <div style={{ padding: '0 8px' }}>
@@ -4058,13 +4183,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                                 {wf.health}
                               </div>
                             </div>
-                            <div style={{ padding: '0 8px', fontSize: '0.8rem', color: C.textSec }}>
+                            <div style={{ padding: '0 8px', fontSize: '0.73rem', color: C.textMuted }}>
                               {Math.round(wf.success_rate * 100)}%
                             </div>
-                            <div style={{ padding: '0 8px', fontSize: '0.75rem', color: C.textSec, fontFamily: MONO }}>
+                            <div style={{ padding: '0 8px', fontSize: '0.72rem', color: C.textMuted, fontFamily: MONO }}>
                               {avgDur}
                             </div>
-                            <div style={{ padding: '0 8px', fontSize: '0.72rem', color: C.textSec, whiteSpace: 'nowrap' }}>
+                            <div style={{ padding: '0 8px', fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
                               {wf.last_run ? new Date(wf.last_run).toLocaleString() : '—'}
                             </div>
                           </div>
@@ -4085,7 +4210,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                               <div style={{ fontSize: '0.65rem', color: C.accent, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>
                                 {explainData[`workflow_health:${wf.workflow_id}`].source === 'ai' ? 'AI Explanation' : 'Explanation'}
                               </div>
-                              <p style={{ margin: '0 0 6px', fontSize: '0.78rem', color: C.text, lineHeight: 1.6 }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '0.75rem', color: C.textSec, lineHeight: 1.6 }}>
                                 {explainData[`workflow_health:${wf.workflow_id}`].explanation}
                               </p>
                               {explainData[`workflow_health:${wf.workflow_id}`].recommended_actions?.length > 0 && (
@@ -4105,10 +4230,10 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
               </div>
 
               <div style={S.card}>
-                <h3 style={{ margin: '0 0 18px', fontSize: '0.92rem', fontWeight: '600' }}>Recent Usage Events</h3>
+                <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Recent Usage Events</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 200px', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px' }}>
                   {['Event Type', 'Source', 'Time'].map(col => (
-                    <div key={col} style={{ padding: '0 10px', fontSize: '0.67rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
+                    <div key={col} style={{ padding: '0 10px', fontSize: '0.67rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
                   ))}
                 </div>
                 {usageLoading ? (
@@ -4117,9 +4242,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   <div style={{ padding: '36px 10px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>No usage events recorded yet.</div>
                 ) : usage.data.recent_events.map(ev => (
                   <div key={ev.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 200px', borderBottom: `1px solid ${C.border}`, padding: '10px 0', alignItems: 'center' }}>
-                    <div style={{ padding: '0 10px', fontSize: '0.82rem', color: C.text }}>{ev.event_type || '—'}</div>
-                    <div style={{ padding: '0 10px', fontSize: '0.82rem', color: C.textSec }}>{ev.source || '—'}</div>
-                    <div style={{ padding: '0 10px', fontSize: '0.77rem', color: C.textSec, whiteSpace: 'nowrap' }}>
+                    <div style={{ padding: '0 10px', fontSize: '0.75rem', color: C.textSec }}>{ev.event_type || '—'}</div>
+                    <div style={{ padding: '0 10px', fontSize: '0.75rem', color: C.textMuted }}>{ev.source || '—'}</div>
+                    <div style={{ padding: '0 10px', fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
                       {ev.created_at ? new Date(ev.created_at).toLocaleString() : '—'}
                     </div>
                   </div>
@@ -4129,11 +4254,49 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
 
             {/* ── Settings ─────────────────────────────────────────── */}
             {activeNav === 'settings' && <>
-              <div style={{ marginBottom: '28px' }}>
-                <p style={{ margin: 0, color: C.textSec, fontSize: '0.855rem' }}>Local environment configuration and demo account details.</p>
+              <div style={{ marginBottom: '16px' }}>
+                <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Local environment configuration and demo account details.</p>
               </div>
+
+              {/* Theme selector */}
+              <div style={{ ...S.card, marginBottom: '14px' }}>
+                <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Appearance</h3>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  {[
+                    { id: 'light',  label: 'Light',  icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg> },
+                    { id: 'dark',   label: 'Dark',   icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> },
+                    { id: 'system', label: 'System', icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> },
+                  ].map(({ id, label, icon }) => {
+                    const active = theme === id
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => setTheme(id)}
+                        style={{
+                          flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
+                          padding: '14px 10px', borderRadius: '10px', cursor: 'pointer', fontFamily: FONT,
+                          border: `1px solid ${active ? C.accent : C.border}`,
+                          background: active ? C.accentSoft : C.bg,
+                          color: active ? C.accent : C.textSec,
+                          transition: 'border-color 0.15s, background 0.15s, color 0.15s',
+                        }}
+                        onMouseEnter={e => { if (!active) { e.currentTarget.style.borderColor = C.borderAlt; e.currentTarget.style.background = C.borderAlt } }}
+                        onMouseLeave={e => { if (!active) { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = C.bg } }}
+                      >
+                        {icon}
+                        <span style={{ fontSize: '0.73rem', fontWeight: active ? '600' : '400' }}>{label}</span>
+                        {active && <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: C.accent, display: 'block' }} />}
+                      </button>
+                    )
+                  })}
+                </div>
+                <p style={{ margin: '12px 0 0', fontSize: '0.68rem', color: C.textMuted, lineHeight: 1.5 }}>
+                  System follows your OS preference. Saved automatically.
+                </p>
+              </div>
+
               <div style={S.card}>
-                <h3 style={{ margin: '0 0 18px', fontSize: '0.92rem', fontWeight: '600' }}>Account</h3>
+                <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Account</h3>
                 {[
                   { label: 'Name',      value: user?.name  || '—' },
                   { label: 'Email',     value: user?.email || '—' },
@@ -4141,8 +4304,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired }) {
                   { label: 'Workspace', value: 'Default Workspace' },
                 ].map(({ label, value }) => (
                   <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: `1px solid ${C.border}` }}>
-                    <span style={{ fontSize: '0.82rem', color: C.textSec }}>{label}</span>
-                    <span style={{ fontSize: '0.82rem', color: C.text, fontWeight: '500' }}>{value}</span>
+                    <span style={{ fontSize: '0.75rem', color: C.textMuted }}>{label}</span>
+                    <span style={{ fontSize: '0.75rem', color: C.textSec, fontWeight: '400' }}>{value}</span>
                   </div>
                 ))}
               </div>
@@ -4162,6 +4325,12 @@ function App() {
     try { return JSON.parse(localStorage.getItem('ts_user')) } catch { return null }
   })
   const [sessionExpired, setSessionExpired] = useState(false)
+  const [theme,          setThemeState]     = useState(() => localStorage.getItem('ts_theme') || 'dark')
+
+  function handleThemeChange(t) {
+    setThemeState(t)
+    localStorage.setItem('ts_theme', t)
+  }
 
   function handleSignIn(newToken, newUser) {
     localStorage.setItem('ts_token', newToken)
@@ -4187,7 +4356,7 @@ function App() {
     return <LoginView onSignIn={handleSignIn} sessionExpired={sessionExpired} />
   }
 
-  return <DashboardView token={token} user={user} onLogout={handleLogout} onSessionExpired={handleSessionExpired} />
+  return <DashboardView token={token} user={user} onLogout={handleLogout} onSessionExpired={handleSessionExpired} theme={theme} setTheme={handleThemeChange} />
 }
 
 export default App
