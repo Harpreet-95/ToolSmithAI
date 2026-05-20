@@ -294,3 +294,26 @@ export async function deleteReport(reportId, token) {
   });
   return parseResponse(res);
 }
+
+export async function exportReport(reportId, token, format = 'json') {
+  const res = await fetch(`/v1/reports/${reportId}/export?format=${format}`, {
+    headers: AUTH_HEADERS(token),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let msg;
+    try { msg = JSON.parse(text)?.message || text; } catch { msg = text; }
+    throw new Error(`${res.status}: ${msg}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const cd = res.headers.get('Content-Disposition') || '';
+  const match = cd.match(/filename="([^"]+)"/);
+  a.download = match ? match[1] : `report_${reportId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

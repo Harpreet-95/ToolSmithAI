@@ -6,7 +6,7 @@ import secrets
 
 import pandas as pd
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
@@ -1227,6 +1227,51 @@ def delete_report_route(report_id: int, user: AuthenticatedUser = Depends(requir
         if not deleted:
             return JSONResponse(status_code=404, content=build_error_response("Report not found"))
         return {"status": "success", "data": {"deleted_id": report_id}}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/reports/{report_id}/export")
+def export_report_route(
+    report_id: int,
+    format: str = Query(default="json"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> Response:
+    if format != "json":
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response(
+                f"Unsupported export format '{format}'. Supported formats: json"
+            ),
+        )
+    try:
+        import json as _json
+        report = get_report_by_id(report_id, str(user.user_id))
+        if report is None:
+            return JSONResponse(status_code=404, content=build_error_response("Report not found"))
+        safe = "".join(
+            c if (c.isalnum() or c in " .-_") else "_"
+            for c in report.get("title", "")
+        )[:60].strip().replace(" ", "_")
+        filename = f"{safe}_report.json" if safe.strip("_") else f"report_{report_id}.json"
+        payload = {
+            "export_format": "json",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "report": {
+                "id":               report["id"],
+                "title":            report["title"],
+                "task_type":        report["task_type"],
+                "status":           report["status"],
+                "dataset_filename": report.get("dataset_filename"),
+                "created_at":       report["created_at"],
+                "content":          report.get("content"),
+            },
+        }
+        return Response(
+            content=_json.dumps(payload, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 

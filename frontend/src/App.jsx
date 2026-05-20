@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport } from './api/client'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport } from './api/client'
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C_DARK = {
@@ -4298,6 +4298,18 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                 {selectedReportLoading ? (
                                   <div style={{ padding: '24px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading report…</div>
                                 ) : selectedReportData?.content?.sections?.length > 0 ? (
+                                  <>
+                                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
+                                    <button
+                                      onClick={() => exportReport(r.id, token)}
+                                      style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '5px 11px', fontSize: '0.72rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '500' }}
+                                      onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent }}
+                                      onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textSec }}
+                                    >
+                                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                      Download JSON
+                                    </button>
+                                  </div>
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                     {selectedReportData.content.sections.map((section, i) => (
                                       <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px' }}>
@@ -4313,6 +4325,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                       </div>
                                     ))}
                                   </div>
+                                  </>
                                 ) : (
                                   <div style={{ fontSize: '0.78rem', color: C.textMuted }}>No report content available.</div>
                                 )}
