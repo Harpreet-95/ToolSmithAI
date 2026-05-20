@@ -1231,45 +1231,156 @@ def delete_report_route(report_id: int, user: AuthenticatedUser = Depends(requir
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
+def _build_pdf_bytes(report: dict) -> bytes:
+    """Generate a clean PDF from a saved report dict. Uses fpdf2 (pure Python, no browser)."""
+    from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
+
+    def _s(text) -> str:
+        """Sanitise text to Latin-1 for core-font compatibility."""
+        return (str(text)
+                .replace("—", "-").replace("–", "-")
+                .replace("’", "'").replace("‘", "'")
+                .replace("“", '"').replace("”", '"')
+                .replace("·", ".").replace("→", "->")
+                .encode("latin-1", errors="replace").decode("latin-1"))
+
+    title      = _s(report.get("title", "Untitled Report"))
+    task_type  = report.get("task_type", "")
+    status     = _s(report.get("status", "completed").title())
+    dataset    = _s(report.get("dataset_filename") or "Not specified")
+    created    = _s((report.get("created_at") or "")[:19].replace("T", " ") + " UTC")
+    sections   = (report.get("content") or {}).get("sections", [])
+    type_label = _s({
+        "generate_dataset_report": "Dataset Report",
+        "email_dataset_report":    "Emailed Dataset Report",
+    }.get(task_type, task_type.replace("_", " ").title()))
+
+    pdf = FPDF()
+    pdf.set_margins(20, 20, 20)
+    pdf.set_auto_page_break(auto=True, margin=25)
+    pdf.add_page()
+
+    # Header row: brand left, timestamp right
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(99, 102, 241)
+    pdf.cell(80, 7, "ToolSmithAI")
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(160, 176, 204)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    pdf.cell(0, 7, f"Exported {stamp}", align="R",
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    # Accent rule under header
+    pdf.set_draw_color(99, 102, 241)
+    pdf.set_line_width(0.5)
+    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+    pdf.ln(7)
+
+    # Report title
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.set_text_color(22, 22, 44)
+    pdf.multi_cell(0, 9, title)
+    pdf.ln(3)
+
+    # Metadata rows
+    for label, value in [
+        ("Type",    type_label),
+        ("Status",  status),
+        ("Dataset", dataset),
+        ("Created", created),
+    ]:
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(100, 110, 140)
+        pdf.cell(26, 6, f"{label}:")
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(44, 54, 80)
+        pdf.cell(0, 6, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    pdf.ln(5)
+
+    # Divider before sections
+    pdf.set_draw_color(210, 220, 235)
+    pdf.set_line_width(0.3)
+    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+    pdf.ln(6)
+
+    # Report sections
+    for section in sections:
+        heading = _s(section.get("heading", ""))
+        items   = section.get("items", [])
+
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(99, 102, 241)
+        pdf.cell(0, 5, heading.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(1)
+
+        for item in items:
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.set_text_color(99, 102, 241)
+            pdf.cell(6, 5, "->")
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(44, 54, 80)
+            pdf.multi_cell(0, 5, _s(item), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        pdf.ln(3)
+
+    return bytes(pdf.output())
+
+
+_EXPORT_FORMATS = {"json", "pdf"}
+
+
 @router.get("/reports/{report_id}/export")
 def export_report_route(
     report_id: int,
     format: str = Query(default="json"),
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> Response:
-    if format != "json":
+    if format not in _EXPORT_FORMATS:
         return JSONResponse(
             status_code=400,
             content=build_error_response(
-                f"Unsupported export format '{format}'. Supported formats: json"
+                f"Unsupported export format '{format}'. "
+                f"Supported formats: {', '.join(sorted(_EXPORT_FORMATS))}"
             ),
         )
     try:
-        import json as _json
         report = get_report_by_id(report_id, str(user.user_id))
         if report is None:
             return JSONResponse(status_code=404, content=build_error_response("Report not found"))
+
         safe = "".join(
             c if (c.isalnum() or c in " .-_") else "_"
             for c in report.get("title", "")
         )[:60].strip().replace(" ", "_")
-        filename = f"{safe}_report.json" if safe.strip("_") else f"report_{report_id}.json"
-        payload = {
-            "export_format": "json",
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "report": {
-                "id":               report["id"],
-                "title":            report["title"],
-                "task_type":        report["task_type"],
-                "status":           report["status"],
-                "dataset_filename": report.get("dataset_filename"),
-                "created_at":       report["created_at"],
-                "content":          report.get("content"),
-            },
-        }
+
+        if format == "pdf":
+            filename   = f"{safe}_report.pdf" if safe.strip("_") else f"report_{report_id}.pdf"
+            content    = _build_pdf_bytes(report)
+            media_type = "application/pdf"
+        else:
+            import json as _json
+            filename   = f"{safe}_report.json" if safe.strip("_") else f"report_{report_id}.json"
+            payload = {
+                "export_format": "json",
+                "exported_at":   datetime.now(timezone.utc).isoformat(),
+                "report": {
+                    "id":               report["id"],
+                    "title":            report["title"],
+                    "task_type":        report["task_type"],
+                    "status":           report["status"],
+                    "dataset_filename": report.get("dataset_filename"),
+                    "created_at":       report["created_at"],
+                    "content":          report.get("content"),
+                },
+            }
+            content    = _json.dumps(payload, indent=2).encode()
+            media_type = "application/json"
+
         return Response(
-            content=_json.dumps(payload, indent=2),
-            media_type="application/json",
+            content=content,
+            media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
