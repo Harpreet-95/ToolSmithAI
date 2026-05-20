@@ -859,6 +859,282 @@ def _build_anomaly_section(
     }
 
 
+def _build_trend_section(
+    row_count: int,
+    column_count: int,
+    numeric_profile: dict,
+    categorical_profile: dict,
+    missing_values: dict,
+    date_profile: dict,
+) -> dict:
+    """Build deterministic trend intelligence from stored profile data only.
+
+    No AI. No forecasting. No future predictions.
+    Every trend statement is derived from stored profile values.
+    Maximum 6 trends, sorted by strength (high first).
+    Shows a fallback item when no profile data yields signals.
+    """
+    trends: list[dict] = []
+
+    # ── 1. Time-series direction from pct_change ──────────────────────────────
+    try:
+        date_cols      = date_profile.get("date_columns") or []
+        trend_insights = date_profile.get("trend_insights") or []
+        date_col_name  = date_cols[0]["column"] if date_cols else "date"
+        for ti in trend_insights[:3]:
+            try:
+                col = ti.get("column", "")
+                pct = ti.get("pct_change")
+                if pct is None:
+                    continue
+                pct     = float(pct)
+                abs_pct = abs(pct)
+                if not math.isfinite(pct):
+                    continue
+
+                direction = "stable" if abs_pct <= 5 else ("up" if pct > 0 else "down")
+                strength  = "high" if abs_pct >= 100 else ("medium" if abs_pct >= 30 else "low")
+                pct_str   = f"+{round(pct, 1)}%" if pct >= 0 else f"{round(pct, 1)}%"
+                dir_label = {"up": "Increasing", "down": "Decreasing", "stable": "Stable"}.get(direction, direction.title())
+
+                trends.append({
+                    "title":       f"{col} — {dir_label} Trend",
+                    "description": (
+                        f"{col} shows a {dir_label.lower()} pattern between the first and "
+                        f"second half of the dataset when sorted by {date_col_name}."
+                    ),
+                    "direction": direction,
+                    "strength":  strength,
+                    "category":  "time_series",
+                    "evidence":  (
+                        f"{pct_str} change from first to second half "
+                        f"(sorted by {date_col_name})."
+                    ),
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # ── 2. Completeness stability ─────────────────────────────────────────────
+    total_cells = row_count * column_count
+    if total_cells > 0:
+        try:
+            total_missing = sum(
+                v for v in missing_values.values()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+            )
+            completeness = (1 - total_missing / total_cells) * 100
+            if completeness >= 98:
+                trends.append({
+                    "title":       "Excellent Data Completeness",
+                    "description": "Dataset integrity is high, supporting reliable trend analysis.",
+                    "direction":   "stable",
+                    "strength":    "high",
+                    "category":    "completeness",
+                    "evidence":    (
+                        f"{round(completeness, 1)}% of cells contain values "
+                        f"across {column_count} columns."
+                    ),
+                })
+            elif completeness >= 80:
+                trends.append({
+                    "title":       "Adequate Data Completeness",
+                    "description": (
+                        "Moderate completeness — gaps may introduce discontinuities "
+                        "in trend analysis."
+                    ),
+                    "direction":   "stable",
+                    "strength":    "medium",
+                    "category":    "completeness",
+                    "evidence":    (
+                        f"{round(completeness, 1)}% of cells contain values "
+                        f"({int(total_missing):,} missing)."
+                    ),
+                })
+            else:
+                trends.append({
+                    "title":       "Low Completeness — Trend Reliability Reduced",
+                    "description": (
+                        "Significant missing data introduces uncertainty "
+                        "in trend interpretation."
+                    ),
+                    "direction":   "volatile",
+                    "strength":    "medium",
+                    "category":    "completeness",
+                    "evidence":    (
+                        f"{round(completeness, 1)}% completeness "
+                        f"({int(total_missing):,} missing cells across {column_count} columns)."
+                    ),
+                })
+        except Exception:
+            pass
+
+    # ── 3. Distribution concentration (top categorical column) ────────────────
+    if row_count > 0 and categorical_profile:
+        try:
+            best_col      = None
+            best_entries  = None
+            best_dom      = 0.0
+            for col, entries in categorical_profile.items():
+                if not entries:
+                    continue
+                top_count = entries[0].get("count", 0)
+                if not isinstance(top_count, (int, float)) or top_count <= 0:
+                    continue
+                d = top_count / row_count
+                if d > best_dom:
+                    best_dom     = d
+                    best_col     = col
+                    best_entries = entries
+
+            if best_col and best_entries:
+                top_value    = str(best_entries[0].get("value", ""))
+                unique_count = len(best_entries)
+                pct_dom      = round(best_dom * 100, 1)
+                val_label    = f"{unique_count} distinct value{'s' if unique_count != 1 else ''} observed."
+
+                if best_dom >= 0.80:
+                    trends.append({
+                        "title":       f"Concentrated Distribution: {best_col}",
+                        "description": (
+                            f"Column '{best_col}' is dominated by a single value, "
+                            "indicating low distributional variety."
+                        ),
+                        "direction": "stable",
+                        "strength":  "high",
+                        "category":  "distribution",
+                        "evidence":  f'"{top_value}" holds {pct_dom}% of rows. {val_label}',
+                    })
+                elif best_dom >= 0.50:
+                    trends.append({
+                        "title":       f"Moderate Concentration: {best_col}",
+                        "description": (
+                            f"Column '{best_col}' has a leading category but retains "
+                            "meaningful distributional variety."
+                        ),
+                        "direction": "stable",
+                        "strength":  "medium",
+                        "category":  "distribution",
+                        "evidence":  f'"{top_value}" leads at {pct_dom}% of rows. {val_label}',
+                    })
+                else:
+                    trends.append({
+                        "title":       f"Balanced Distribution: {best_col}",
+                        "description": (
+                            f"Column '{best_col}' is spread across categories, "
+                            "supporting stable segmentation analysis."
+                        ),
+                        "direction": "stable",
+                        "strength":  "low",
+                        "category":  "distribution",
+                        "evidence":  f'"{top_value}" leads at {pct_dom}% of rows. {val_label}',
+                    })
+        except Exception:
+            pass
+
+    # ── 4. Numeric spread (most notable column) ───────────────────────────────
+    if numeric_profile:
+        try:
+            best_col   = None
+            best_ratio = 0.0
+            best_stats = {}
+            for col, stats in numeric_profile.items():
+                try:
+                    mn   = stats.get("min")
+                    mx   = stats.get("max")
+                    mean = stats.get("mean")
+                    if mn is None or mx is None or mean is None:
+                        continue
+                    mn, mx, mean = float(mn), float(mx), float(mean)
+                    if not (math.isfinite(mn) and math.isfinite(mx) and math.isfinite(mean)):
+                        continue
+                    if mean == 0:
+                        continue
+                    ratio = (mx - mn) / abs(mean)
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_col   = col
+                        best_stats = stats
+                except Exception:
+                    continue
+
+            if best_col:
+                mn   = float(best_stats["min"])
+                mx   = float(best_stats["max"])
+                mean = float(best_stats["mean"])
+                ev   = (
+                    f"Range {_safe_fmt(mn)} to {_safe_fmt(mx)}, "
+                    f"Mean {_safe_fmt(mean)}. "
+                    f"Spread/mean ratio: {round(best_ratio, 1)}x."
+                )
+                if best_ratio > 10:
+                    trends.append({
+                        "title":       f"High Value Dispersion: {best_col}",
+                        "description": (
+                            f"'{best_col}' shows wide numeric spread relative to its mean, "
+                            "indicating volatile or heterogeneous values."
+                        ),
+                        "direction": "volatile",
+                        "strength":  "medium",
+                        "category":  "distribution",
+                        "evidence":  ev,
+                    })
+                elif best_ratio > 3:
+                    trends.append({
+                        "title":       f"Moderate Value Spread: {best_col}",
+                        "description": (
+                            f"'{best_col}' shows moderate numeric spread, "
+                            "typical of datasets with natural variation."
+                        ),
+                        "direction": "stable",
+                        "strength":  "low",
+                        "category":  "distribution",
+                        "evidence":  ev,
+                    })
+                else:
+                    trends.append({
+                        "title":       f"Tightly Grouped Values: {best_col}",
+                        "description": (
+                            f"'{best_col}' values cluster closely around the mean, "
+                            "indicating a consistent numeric distribution."
+                        ),
+                        "direction": "stable",
+                        "strength":  "low",
+                        "category":  "distribution",
+                        "evidence":  ev,
+                    })
+        except Exception:
+            pass
+
+    # ── Sort high → medium → low, cap at 6 ───────────────────────────────────
+    _STR_ORDER = {"high": 0, "medium": 1, "low": 2}
+    trends.sort(key=lambda t: _STR_ORDER.get(t.get("strength", "low"), 2))
+    trends = trends[:6]
+
+    # ── Fallback: always show the section so users know it ran ────────────────
+    # Same rationale as the anomaly section: an empty card looks like a bug,
+    # and enterprise users need confirmation that analysis was attempted.
+    if not trends:
+        trends = [{
+            "title":       "No Significant Trends Detected",
+            "description": "Insufficient profile data to establish directional patterns.",
+            "direction":   "stable",
+            "strength":    "low",
+            "category":    "time_series",
+            "evidence":    (
+                f"Dataset of {row_count:,} rows and {column_count} columns "
+                "did not yield measurable trend signals."
+            ),
+        }]
+
+    return {
+        "type":    "trend",
+        "heading": "Trend Intelligence",
+        "trends":  trends,
+    }
+
+
 def generate_dataset_report(dataset: dict) -> dict:
     """
     Build a structured report from a stored dataset summary row.
@@ -987,6 +1263,12 @@ def generate_dataset_report(dataset: dict) -> dict:
 
     # ── Anomaly Detection ─────────────────────────────────────────────────────
     sections.append(_build_anomaly_section(
+        row_count, column_count,
+        numeric_profile, categorical_profile, missing_values, date_profile,
+    ))
+
+    # ── Trend Intelligence ────────────────────────────────────────────────────
+    sections.append(_build_trend_section(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
     ))

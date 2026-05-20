@@ -1423,6 +1423,57 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     pdf.ln(2)
                 except Exception:
                     pass
+        elif sec_type == "trend":
+            _DIR_RGB = {
+                "up":       ( 16, 185, 129),
+                "down":     (248, 113, 113),
+                "stable":   ( 99, 102, 241),
+                "volatile": (245, 158,  11),
+            }
+            _STR_RGB = {
+                "high":   (248, 113, 113),
+                "medium": (245, 158,  11),
+                "low":    (100, 116, 139),
+            }
+            for trend in section.get("trends", []):
+                try:
+                    direction   = str(trend.get("direction",   "stable")).lower()
+                    strength    = str(trend.get("strength",    "low")).lower()
+                    category    = _s(str(trend.get("category",    "")))
+                    title       = _s(str(trend.get("title",       "")))
+                    description = _s(str(trend.get("description", "")))
+                    evidence    = _s(str(trend.get("evidence",    "")))
+                    dir_symbol  = {"up": "[UP]", "down": "[DOWN]", "stable": "[STABLE]", "volatile": "[VOLATILE]"}.get(direction, f"[{direction.upper()}]")
+                    rgb_dir     = _DIR_RGB.get(direction, (100, 116, 139))
+                    rgb_str     = _STR_RGB.get(strength,  (100, 116, 139))
+                    # Direction + strength prefix on one line
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb_dir)
+                    pdf.cell(22, 5, dir_symbol)
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb_str)
+                    pdf.cell(20, 5, f"[{strength.upper()}]")
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if category:
+                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_text_color(140, 155, 180)
+                        pdf.cell(0, 4, f"  Category: {category}",
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if description:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(88, 104, 130)
+                        pdf.multi_cell(0, 4.5, f"  {description}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if evidence:
+                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_text_color(140, 155, 180)
+                        pdf.multi_cell(0, 4, f"  Evidence: {evidence}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
         elif sec_type == "anomaly":
             _SEV_RGB = {
                 "high":   (248, 113, 113),
@@ -1613,6 +1664,20 @@ def export_report_route(
                                 w.writerow([heading, chart_type, s_name, label, val])
                             except Exception:
                                 pass
+                elif sec_type == "trend":
+                    for trend in section.get("trends", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                trend.get("direction",   ""),
+                                trend.get("strength",    ""),
+                                trend.get("category",    ""),
+                                trend.get("title",       ""),
+                                trend.get("description", ""),
+                                trend.get("evidence",    ""),
+                            ])
+                        except Exception:
+                            pass
                 elif sec_type == "anomaly":
                     for anomaly in section.get("anomalies", []):
                         try:

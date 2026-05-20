@@ -1669,6 +1669,66 @@ function ReportSection({ section, C }) {
               </div>
             )
           }
+          case 'trend': {
+            const trends = section.trends || []
+            if (!trends.length) {
+              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No trend data available.</div>
+            }
+            const DIR = {
+              up:       { color: C.success, bg: C.successSoft, symbol: '↑', label: 'UP'       },
+              down:     { color: C.danger,  bg: C.dangerSoft,  symbol: '↓', label: 'DOWN'     },
+              stable:   { color: C.accent,  bg: C.accentSoft,  symbol: '→', label: 'STABLE'   },
+              volatile: { color: C.warn,    bg: C.warnSoft,    symbol: '↕', label: 'VOLATILE' },
+            }
+            const STR = {
+              high:   { color: C.danger,  bg: C.dangerSoft  },
+              medium: { color: C.warn,    bg: C.warnSoft    },
+              low:    { color: C.textSec, bg: C.borderAlt   },
+            }
+            const CAT_LABEL = {
+              time_series:  'Time Series',
+              distribution: 'Distribution',
+              completeness: 'Completeness',
+              growth:       'Growth',
+              decline:      'Decline',
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {trends.map((t, j) => {
+                  try {
+                    const d = DIR[t.direction] || DIR.stable
+                    const s = STR[t.strength]  || STR.low
+                    return (
+                      <div key={j} style={{ background: C.bg, border: `1px solid ${d.color}22`, borderLeft: `3px solid ${d.color}`, borderRadius: '9px', padding: '10px 13px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px', flexWrap: 'wrap' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: d.bg, color: d.color, borderRadius: '4px', padding: '1px 7px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', flexShrink: 0 }}>
+                            {d.symbol} {d.label}
+                          </span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', background: s.bg, color: s.color, borderRadius: '4px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', flexShrink: 0 }}>
+                            {(t.strength || 'low').toUpperCase()}
+                          </span>
+                          <span style={{ fontSize: '0.62rem', color: C.textMuted, background: C.borderAlt, borderRadius: '4px', padding: '1px 6px', fontWeight: '500' }}>
+                            {CAT_LABEL[t.category] || t.category || 'Unknown'}
+                          </span>
+                          <span style={{ fontSize: '0.78rem', fontWeight: '600', color: C.text }}>
+                            {t.title || '—'}
+                          </span>
+                        </div>
+                        {t.description && (
+                          <div style={{ fontSize: '0.74rem', color: C.textSec, lineHeight: 1.55, marginBottom: '4px' }}>{t.description}</div>
+                        )}
+                        {t.evidence && (
+                          <div style={{ fontSize: '0.69rem', color: C.textMuted, fontFamily: MONO, lineHeight: 1.5 }}>{t.evidence}</div>
+                        )}
+                      </div>
+                    )
+                  } catch (_) {
+                    return null
+                  }
+                })}
+              </div>
+            )
+          }
           case 'anomaly': {
             const anomalies = section.anomalies || []
             if (!anomalies.length) {
