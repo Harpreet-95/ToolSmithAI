@@ -37,8 +37,34 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
         return {**base, "dataset_report": None,
                 "dataset_report_error": "No uploaded dataset found. Please upload a CSV file first."}
 
-    return {**base, "dataset_report": generate_dataset_report(dataset),
-            "dataset_report_error": None}
+    report = generate_dataset_report(dataset)
+
+    report_id = None
+    report_save_warning = None
+    try:
+        from data.report_service import save_report
+        title = "{} — {}".format(
+            dataset["filename"],
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+        )
+        report_id = save_report(
+            user_id=user_id,
+            title=title,
+            task_type="generate_dataset_report",
+            content=report,
+            status="completed",
+            dataset_id=dataset["id"],
+        )
+    except Exception as exc:
+        report_save_warning = f"Report generated but could not be saved: {exc}"
+
+    return {
+        **base,
+        "dataset_report": report,
+        "dataset_report_error": None,
+        "report_id": report_id,
+        "report_save_warning": report_save_warning,
+    }
 
 
 def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None) -> dict:
@@ -74,6 +100,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
 
     # Reuse report from context if a prior step already generated it;
     # otherwise generate fresh — this keeps the step self-contained when run standalone.
+    report_from_ctx = bool((ctx or {}).get("dataset_report"))
     report = (ctx or {}).get("dataset_report") or generate_dataset_report(dataset)
     body = format_report_as_email_body(report, dataset["filename"])
     subject = f"Dataset Report — {dataset['filename']}"
@@ -87,8 +114,36 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
     else:
         email_delivery = send_real_email(to=to_address, subject=subject, body=body)
 
-    return {**base, "dataset_report": report, "email_delivery": email_delivery,
-            "dataset_report_error": None}
+    # Only save when the report was freshly generated — if it came from ctx it was
+    # already saved by the preceding generate_dataset_report step.
+    report_id = None
+    report_save_warning = None
+    if not report_from_ctx:
+        try:
+            from data.report_service import save_report
+            title = "{} — {}".format(
+                dataset["filename"],
+                datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+            )
+            report_id = save_report(
+                user_id=user_id,
+                title=title,
+                task_type="email_dataset_report",
+                content=report,
+                status="completed",
+                dataset_id=dataset["id"],
+            )
+        except Exception as exc:
+            report_save_warning = f"Report generated but could not be saved: {exc}"
+
+    return {
+        **base,
+        "dataset_report": report,
+        "dataset_report_error": None,
+        "email_delivery": email_delivery,
+        "report_id": report_id,
+        "report_save_warning": report_save_warning,
+    }
 
 
 def run_analyze_dataset_plan(plan: dict, user_id: str | None, dataset_id: int | None = None) -> dict:
