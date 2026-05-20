@@ -4303,6 +4303,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                     {[
                                       { fmt: 'json', label: 'Download JSON' },
                                       { fmt: 'pdf',  label: 'Download PDF'  },
+                                      { fmt: 'csv',  label: 'Download CSV'  },
                                     ].map(({ fmt, label }) => (
                                       <button key={fmt}
                                         onClick={() => exportReport(r.id, token, fmt)}

@@ -1328,7 +1328,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
     return bytes(pdf.output())
 
 
-_EXPORT_FORMATS = {"json", "pdf"}
+_EXPORT_FORMATS = {"json", "pdf", "csv"}
 
 
 @router.get("/reports/{report_id}/export")
@@ -1359,6 +1359,24 @@ def export_report_route(
             filename   = f"{safe}_report.pdf" if safe.strip("_") else f"report_{report_id}.pdf"
             content    = _build_pdf_bytes(report)
             media_type = "application/pdf"
+        elif format == "csv":
+            import csv, io
+            filename   = f"{safe}_report.csv" if safe.strip("_") else f"report_{report_id}.csv"
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            # Metadata block at the top so the file is self-contained
+            w.writerow(["# title",            report.get("title", "")])
+            w.writerow(["# task_type",         report.get("task_type", "")])
+            w.writerow(["# dataset_filename",  report.get("dataset_filename") or ""])
+            w.writerow(["# created_at",        (report.get("created_at") or "")[:19].replace("T", " ")])
+            w.writerow([])
+            w.writerow(["section", "item"])
+            for section in (report.get("content") or {}).get("sections", []):
+                heading = section.get("heading", "")
+                for item in section.get("items", []):
+                    w.writerow([heading, item])
+            content    = buf.getvalue().encode("utf-8-sig")  # utf-8-sig adds BOM for Excel
+            media_type = "text/csv"
         else:
             import json as _json
             filename   = f"{safe}_report.json" if safe.strip("_") else f"report_{report_id}.json"
