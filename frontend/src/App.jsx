@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport } from './api/client'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification } from './api/client'
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C_DARK = {
@@ -47,6 +47,18 @@ const FONT      = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO      = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
 const SIDEBAR_W = 216
 const HEADER_H  = 56
+
+function _relTime(iso) {
+  if (!iso) return ''
+  const diff = Date.now() - new Date(iso).getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return 'just now'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
 
 // ─── Shared style primitives ───────────────────────────────────────────────────
 function makeS(C) {
@@ -1866,6 +1878,10 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [reportEmailInput,      setReportEmailInput]      = useState('')
   const [reportEmailStatus,     setReportEmailStatus]     = useState(null)
   const [reportEmailSending,    setReportEmailSending]    = useState(false)
+  const [notifications,  setNotifications]  = useState([])
+  const [notifOpen,      setNotifOpen]      = useState(false)
+  const [notifLoading,   setNotifLoading]   = useState(false)
+  const [notifError,     setNotifError]     = useState(null)
   const prevSummaryIdRef = useRef(null)
   const dsFileInputRef        = useRef(null)
   const composerFileInputRef  = useRef(null)
@@ -2213,6 +2229,35 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   }
 
   useEffect(() => { if (activeNav === 'reports') refreshReports() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function refreshNotifications() {
+    setNotifLoading(true)
+    setNotifError(null)
+    getNotifications(token)
+      .then(d => setNotifications(d?.data ?? []))
+      .catch(err => { if (is401(err)) onSessionExpired(); else setNotifError('Could not load notifications.') })
+      .finally(() => setNotifLoading(false))
+  }
+
+  useEffect(() => { refreshNotifications() }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleMarkNotifRead(id) {
+    try {
+      await markNotificationRead(id, token)
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: 1 } : n))
+    } catch (err) {
+      if (is401(err)) onSessionExpired()
+    }
+  }
+
+  async function handleDeleteNotif(id) {
+    try {
+      await deleteNotification(id, token)
+      setNotifications(prev => prev.filter(n => n.id !== id))
+    } catch (err) {
+      if (is401(err)) onSessionExpired()
+    }
+  }
 
   async function handleSelectReport(id) {
     if (selectedReportId === id) {
@@ -2602,13 +2647,59 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           {/* Right icon cluster */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
             {/* Bell */}
-            <div style={{ position: 'relative', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px', cursor: 'pointer', color: C.textSec }}
-              onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
-              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-              </svg>
+            <div style={{ position: 'relative' }}>
+              {notifOpen && (
+                <div style={{ position: 'fixed', inset: 0, zIndex: 199 }} onClick={() => setNotifOpen(false)} />
+              )}
+              <div
+                onClick={() => setNotifOpen(o => !o)}
+                style={{ position: 'relative', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px', cursor: 'pointer', color: notifOpen ? C.accent : C.textSec, background: notifOpen ? C.accentSoft : 'transparent' }}
+                onMouseEnter={e => { if (!notifOpen) e.currentTarget.style.background = C.borderAlt }}
+                onMouseLeave={e => { if (!notifOpen) e.currentTarget.style.background = 'transparent' }}
+              >
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+                {notifications.filter(n => !n.read).length > 0 && (
+                  <div style={{ position: 'absolute', top: '7px', right: '7px', width: '7px', height: '7px', borderRadius: '50%', background: C.danger, border: `1.5px solid ${C.bg}`, pointerEvents: 'none' }} />
+                )}
+              </div>
+              {notifOpen && (
+                <div style={{ position: 'absolute', top: '44px', right: 0, width: '320px', maxHeight: '400px', overflowY: 'auto', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', zIndex: 200, boxShadow: '0 8px 32px rgba(0,0,0,0.28)' }}>
+                  <div style={{ padding: '12px 14px 8px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, background: C.surface }}>
+                    <span style={{ fontSize: '0.8rem', fontWeight: '600', color: C.text }}>Notifications</span>
+                    {notifications.filter(n => !n.read).length > 0 && (
+                      <span style={{ fontSize: '0.68rem', color: C.textMuted, background: C.borderAlt, borderRadius: '10px', padding: '1px 7px' }}>
+                        {notifications.filter(n => !n.read).length} unread
+                      </span>
+                    )}
+                  </div>
+                  {notifLoading ? (
+                    <div style={{ padding: '24px', textAlign: 'center', fontSize: '0.8rem', color: C.textMuted }}>Loading…</div>
+                  ) : notifError ? (
+                    <div style={{ padding: '24px', textAlign: 'center', fontSize: '0.8rem', color: C.danger }}>{notifError}</div>
+                  ) : notifications.length === 0 ? (
+                    <div style={{ padding: '32px 20px', textAlign: 'center', fontSize: '0.82rem', color: C.textMuted }}>No notifications yet.</div>
+                  ) : (
+                    notifications.map(n => (
+                      <div key={n.id} style={{ padding: '10px 14px', borderBottom: `1px solid ${C.border}`, background: n.read ? 'transparent' : C.accentSoft }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px', marginBottom: '3px' }}>
+                          <span style={{ fontSize: '0.82rem', fontWeight: n.read ? '400' : '600', color: C.text, flex: 1, lineHeight: '1.35' }}>{n.title}</span>
+                          <div style={{ display: 'flex', gap: '2px', flexShrink: 0, marginTop: '1px' }}>
+                            {!n.read && (
+                              <button onClick={() => handleMarkNotifRead(n.id)} title="Mark as read" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, fontSize: '0.72rem', padding: '1px 3px', fontFamily: FONT, lineHeight: 1 }}>✓</button>
+                            )}
+                            <button onClick={() => handleDeleteNotif(n.id)} title="Dismiss" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, fontSize: '0.9rem', padding: '0 3px', lineHeight: 1 }}>×</button>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: '0.76rem', color: C.textSec, lineHeight: '1.4', marginBottom: '3px' }}>{n.message}</div>
+                        <div style={{ fontSize: '0.68rem', color: C.textMuted }}>{_relTime(n.created_at)}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
             {/* Help */}
             <div style={{ width: '36px', height: '36px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: C.textSec }}
