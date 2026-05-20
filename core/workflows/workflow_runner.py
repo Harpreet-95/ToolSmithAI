@@ -55,6 +55,18 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
             status="completed",
             dataset_id=dataset["id"],
         )
+        try:
+            from data.notification_service import create_notification
+            create_notification(
+                user_id=user_id,
+                title="Report saved",
+                message=f"'{title}' was generated and saved.",
+                type="report",
+                status="success",
+                related_report_id=report_id,
+            )
+        except Exception:
+            pass
     except Exception as exc:
         report_save_warning = f"Report generated but could not be saved: {exc}"
 
@@ -135,6 +147,36 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             )
         except Exception as exc:
             report_save_warning = f"Report generated but could not be saved: {exc}"
+
+    if to_address is not None:
+        try:
+            from data.notification_service import create_notification
+            sent = email_delivery.get("sent", False)
+            reason = email_delivery.get("reason", "")
+            simulated = not sent and "disabled" in reason.lower()
+            if sent or simulated:
+                create_notification(
+                    user_id=user_id,
+                    title="Report emailed",
+                    message=(
+                        f"Report emailed to {to_address} (simulated)." if simulated
+                        else f"Report emailed to {to_address}."
+                    ),
+                    type="email",
+                    status="success",
+                    related_report_id=report_id,
+                )
+            else:
+                create_notification(
+                    user_id=user_id,
+                    title="Email delivery failed",
+                    message=reason or "Report email could not be sent.",
+                    type="email",
+                    status="error",
+                    related_report_id=report_id,
+                )
+        except Exception:
+            pass
 
     return {
         **base,
@@ -293,6 +335,19 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
         }
         for s in step_statuses
     ]
+
+    if final_status == "failed" and user_id is not None:
+        try:
+            from data.notification_service import create_notification
+            create_notification(
+                user_id=user_id,
+                title="Workflow failed",
+                message=error_msg or "A workflow step did not complete successfully.",
+                type="workflow",
+                status="error",
+            )
+        except Exception:
+            pass
 
     return {
         "plan_id":        plan_id,
