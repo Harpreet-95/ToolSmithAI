@@ -272,3 +272,25 @@ export async function runWorkflowById(id, token) {
   });
   return parseResponse(res);
 }
+
+export async function getReports(token) {
+  const res = await fetch('/v1/reports', {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function getReportById(reportId, token) {
+  const res = await fetch(`/v1/reports/${reportId}`, {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function deleteReport(reportId, token) {
+  const res = await fetch(`/v1/reports/${reportId}`, {
+    method: 'DELETE',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
