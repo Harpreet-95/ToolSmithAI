@@ -1316,23 +1316,187 @@ def _build_pdf_bytes(report: dict) -> bytes:
     pdf.line(20, pdf.get_y(), 190, pdf.get_y())
     pdf.ln(6)
 
-    # Report sections
+    # Report sections — dispatched on section.type for v2 compatibility.
+    # Sections without 'type' (v1 saved reports) default to 'text'.
+    # Unknown future types fall back to plain text rendering; never crash.
     for section in sections:
-        heading = _s(section.get("heading", ""))
-        items   = section.get("items", [])
+        sec_type = section.get("type", "text")
+        heading  = _s(section.get("heading", ""))
 
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_text_color(99, 102, 241)
         pdf.cell(0, 5, heading.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(1)
 
-        for item in items:
-            pdf.set_font("Helvetica", "B", 9)
-            pdf.set_text_color(99, 102, 241)
-            pdf.cell(6, 5, "->")
-            pdf.set_font("Helvetica", "", 9)
-            pdf.set_text_color(44, 54, 80)
-            pdf.multi_cell(0, 5, _s(item), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        if sec_type == "text":
+            for item in section.get("items", []):
+                pdf.set_font("Helvetica", "B", 9)
+                pdf.set_text_color(99, 102, 241)
+                pdf.cell(6, 5, "->")
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(44, 54, 80)
+                pdf.multi_cell(0, 5, _s(item), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == "kpi":
+            for kpi in section.get("kpis", []):
+                try:
+                    label    = _s(str(kpi.get("label", "")))
+                    raw_val  = kpi.get("value")
+                    fmt      = kpi.get("format", "number")
+                    trend    = kpi.get("trend", "neutral")
+                    desc     = _s(str(kpi.get("description", "")))
+                    if raw_val is None:
+                        val_str = "-"
+                    elif fmt == "percent":
+                        val_str = f"{raw_val}%"
+                    elif fmt == "currency":
+                        val_str = f"${float(raw_val):,.2f}"
+                    elif fmt == "number":
+                        val_str = f"{int(raw_val):,}"
+                    else:
+                        val_str = _s(str(raw_val))
+                    trend_marker = {"up": "[+]", "down": "[-]", "neutral": "[ ]"}.get(trend, "[ ]")
+                    line = f"{trend_marker}  {label}: {val_str}"
+                    if desc:
+                        line += f"   ({desc})"
+                    pdf.set_font("Helvetica", "", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.multi_cell(0, 5, _s(line), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                except Exception:
+                    pass
+        elif sec_type == "executive_summary":
+            summary       = _s(str(section.get("summary", "")))
+            takeaways     = section.get("key_takeaways", [])
+            risks         = section.get("risks", [])
+            opportunities = section.get("opportunities", [])
+            if summary:
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(44, 54, 80)
+                pdf.multi_cell(0, 5, summary, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(2)
+            for cat_label, items, rgb in [
+                ("Key Takeaways", takeaways,     (99,  102, 241)),
+                ("Risks",         risks,          (248, 113, 113)),
+                ("Opportunities", opportunities,  (16,  185, 129)),
+            ]:
+                if items:
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(0, 5, cat_label.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    for item in items:
+                        try:
+                            pdf.set_font("Helvetica", "", 9)
+                            pdf.set_text_color(44, 54, 80)
+                            pdf.multi_cell(0, 5, _s(f"  • {item}"),
+                                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        except Exception:
+                            pass
+                    pdf.ln(1)
+        elif sec_type == "recommendation":
+            _PRIORITY_RGB = {"high": (248,113,113), "medium": (245,158,11), "low": (100,116,139)}
+            for rec in section.get("recommendations", []):
+                try:
+                    priority   = str(rec.get("priority",   "low")).lower()
+                    title      = _s(str(rec.get("title",      "")))
+                    reason     = _s(str(rec.get("reason",     "")))
+                    action     = _s(str(rec.get("action_type","")).replace("_", " ").title())
+                    confidence = _s(str(rec.get("confidence", "")))
+                    rgb        = _PRIORITY_RGB.get(priority, (100,116,139))
+                    # Priority label + title on one line
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(22, 5, f"[{priority.upper()}]")
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if reason:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(88, 104, 130)
+                        pdf.multi_cell(0, 4.5, f"  {reason}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    meta_parts = []
+                    if action:     meta_parts.append(f"Action: {action}")
+                    if confidence: meta_parts.append(f"Confidence: {confidence}")
+                    if meta_parts:
+                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_text_color(140, 155, 180)
+                        pdf.cell(0, 4, f"  {' | '.join(meta_parts)}",
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+        elif sec_type == "anomaly":
+            _SEV_RGB = {
+                "high":   (248, 113, 113),
+                "medium": (245, 158,  11),
+                "low":    ( 16, 185, 129),
+            }
+            for anomaly in section.get("anomalies", []):
+                try:
+                    severity    = str(anomaly.get("severity", "low")).lower()
+                    category    = _s(str(anomaly.get("category", "")))
+                    title       = _s(str(anomaly.get("title", "")))
+                    description = _s(str(anomaly.get("description", "")))
+                    evidence    = _s(str(anomaly.get("evidence", "")))
+                    rgb         = _SEV_RGB.get(severity, (100, 116, 139))
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(22, 5, f"[{severity.upper()}]")
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if category:
+                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_text_color(140, 155, 180)
+                        pdf.cell(0, 4, f"  Category: {category}",
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if description:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(88, 104, 130)
+                        pdf.multi_cell(0, 4.5, f"  {description}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if evidence:
+                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_text_color(140, 155, 180)
+                        pdf.multi_cell(0, 4, f"  Evidence: {evidence}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+        elif sec_type == "chart":
+            chart      = section.get("chart", {})
+            chart_type = _s(chart.get("chart_type", "bar"))
+            labels     = chart.get("labels", [])
+            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_text_color(120, 130, 160)
+            pdf.cell(0, 4, f"Chart type: {chart_type}  |  {len(labels)} data points",
+                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(1)
+            for s_entry in chart.get("series", []):
+                try:
+                    s_name = _s(str(s_entry.get("name", "")))
+                    s_data = s_entry.get("data", [])
+                    for i, label in enumerate(labels):
+                        val = s_data[i] if i < len(s_data) else None
+                        if val is None:
+                            val_str = "-"
+                        elif isinstance(val, float) and val == int(val):
+                            val_str = f"{int(val):,}"
+                        elif isinstance(val, (int, float)):
+                            val_str = f"{val:,}"
+                        else:
+                            val_str = _s(str(val))
+                        suffix = f"  [{s_name}]" if s_name else ""
+                        pdf.set_font("Helvetica", "", 9)
+                        pdf.set_text_color(44, 54, 80)
+                        pdf.multi_cell(0, 5, f"  {_s(str(label))}: {val_str}{suffix}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                except Exception:
+                    pass
+        else:
+            # Unknown future section types: safe string fallback, never crash.
+            for item in section.get("items", []):
+                pdf.set_font("Helvetica", "", 9)
+                pdf.set_text_color(44, 54, 80)
+                pdf.multi_cell(0, 5, _s(str(item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
         pdf.ln(3)
 
@@ -1383,9 +1547,86 @@ def export_report_route(
             w.writerow([])
             w.writerow(["section", "item"])
             for section in (report.get("content") or {}).get("sections", []):
-                heading = section.get("heading", "")
-                for item in section.get("items", []):
-                    w.writerow([heading, item])
+                sec_type = section.get("type", "text")
+                heading  = section.get("heading", "")
+                if sec_type == "text":
+                    for item in section.get("items", []):
+                        w.writerow([heading, item])
+                elif sec_type == "kpi":
+                    for kpi in section.get("kpis", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                kpi.get("label", ""),
+                                kpi.get("value", ""),
+                                kpi.get("format", ""),
+                                kpi.get("trend", ""),
+                                kpi.get("description", ""),
+                            ])
+                        except Exception:
+                            pass
+                elif sec_type == "executive_summary":
+                    summary = section.get("summary", "")
+                    if summary:
+                        try:
+                            w.writerow([heading, "summary", summary])
+                        except Exception:
+                            pass
+                    for item in section.get("key_takeaways", []):
+                        try:
+                            w.writerow([heading, "key_takeaway", item])
+                        except Exception:
+                            pass
+                    for item in section.get("risks", []):
+                        try:
+                            w.writerow([heading, "risk", item])
+                        except Exception:
+                            pass
+                    for item in section.get("opportunities", []):
+                        try:
+                            w.writerow([heading, "opportunity", item])
+                        except Exception:
+                            pass
+                elif sec_type == "recommendation":
+                    for rec in section.get("recommendations", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                rec.get("priority",    ""),
+                                rec.get("action_type", ""),
+                                rec.get("confidence",  ""),
+                                rec.get("title",       ""),
+                                rec.get("reason",      ""),
+                            ])
+                        except Exception:
+                            pass
+                elif sec_type == "chart":
+                    chart      = section.get("chart", {})
+                    chart_type = chart.get("chart_type", "bar")
+                    labels     = chart.get("labels", [])
+                    for s_entry in chart.get("series", []):
+                        s_name = s_entry.get("name", "")
+                        s_data = s_entry.get("data", [])
+                        for i, label in enumerate(labels):
+                            try:
+                                val = s_data[i] if i < len(s_data) else ""
+                                w.writerow([heading, chart_type, s_name, label, val])
+                            except Exception:
+                                pass
+                elif sec_type == "anomaly":
+                    for anomaly in section.get("anomalies", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                anomaly.get("severity",    ""),
+                                anomaly.get("category",    ""),
+                                anomaly.get("title",       ""),
+                                anomaly.get("description", ""),
+                                anomaly.get("evidence",    ""),
+                            ])
+                        except Exception:
+                            pass
+                # Unknown future types: omitted until a row format is defined.
             content    = buf.getvalue().encode("utf-8-sig")  # utf-8-sig adds BOM for Excel
             media_type = "text/csv"
         else:

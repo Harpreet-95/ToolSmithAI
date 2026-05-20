@@ -1453,6 +1453,291 @@ function MultiStepResult({ result, C, S }) {
   )
 }
 
+// ─── Report section renderer — type-dispatched ────────────────────────────────
+// Handles both v1 reports (no 'type' field) and v2 reports ('type' present).
+// Add new cases here as enterprise section types are introduced.
+function ReportSection({ section, C }) {
+  const secType = section.type || 'text'
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px' }}>
+      <div style={{ fontSize: '0.64rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>
+        {section.heading}
+      </div>
+      {(() => {
+        switch (secType) {
+          case 'kpi': {
+            const fmtVal = (value, format) => {
+              if (value == null) return '—'
+              if (format === 'percent')  return `${value}%`
+              if (format === 'currency') return `$${Number(value).toLocaleString()}`
+              if (format === 'number')   return Number(value).toLocaleString()
+              return String(value)
+            }
+            const TrendIcon = ({ trend }) => {
+              if (trend === 'up')   return <span style={{ fontSize: '0.75rem', color: C.success, fontWeight: '700', lineHeight: 1 }}>↑</span>
+              if (trend === 'down') return <span style={{ fontSize: '0.75rem', color: C.danger,  fontWeight: '700', lineHeight: 1 }}>↓</span>
+              return <span style={{ fontSize: '0.75rem', color: C.textMuted, lineHeight: 1 }}>—</span>
+            }
+            return (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px' }}>
+                {(section.kpis || []).map((kpi, j) => (
+                  <div key={j} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '11px 13px' }}>
+                    <div style={{ fontSize: '0.61rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>
+                      {kpi.label || '—'}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px', marginBottom: '3px' }}>
+                      <span style={{ fontSize: '1.25rem', fontWeight: '700', color: C.text, letterSpacing: '-0.5px', lineHeight: 1 }}>
+                        {fmtVal(kpi.value, kpi.format)}
+                      </span>
+                      <TrendIcon trend={kpi.trend} />
+                    </div>
+                    {kpi.description && (
+                      <div style={{ fontSize: '0.66rem', color: C.textMuted, lineHeight: 1.4 }}>{kpi.description}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+          }
+          case 'recommendation': {
+            const recs = section.recommendations || []
+            if (!recs.length) {
+              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No recommendations available.</div>
+            }
+            const PRIORITY = {
+              high:   { color: C.danger,  bg: C.dangerSoft,  label: 'HIGH'   },
+              medium: { color: C.warn,    bg: C.warnSoft,    label: 'MEDIUM' },
+              low:    { color: C.success, bg: C.successSoft, label: 'LOW'    },
+            }
+            const ACTION_LABEL = {
+              review:     'Review',
+              clean_data: 'Clean Data',
+              monitor:    'Monitor',
+              segment:    'Segment',
+              schedule:   'Schedule',
+              export:     'Export',
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {recs.map((rec, j) => {
+                  const p = PRIORITY[rec.priority] || PRIORITY.low
+                  return (
+                    <div key={j} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '10px 13px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px', flexWrap: 'wrap' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', background: p.bg, color: p.color, borderRadius: '4px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', flexShrink: 0 }}>
+                          {p.label}
+                        </span>
+                        <span style={{ fontSize: '0.78rem', fontWeight: '600', color: C.text }}>
+                          {rec.title || '—'}
+                        </span>
+                      </div>
+                      {rec.reason && (
+                        <div style={{ fontSize: '0.74rem', color: C.textSec, lineHeight: 1.55, marginBottom: '5px' }}>{rec.reason}</div>
+                      )}
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {rec.action_type && (
+                          <span style={{ fontSize: '0.62rem', color: C.textMuted, background: C.borderAlt, borderRadius: '4px', padding: '1px 6px', fontWeight: '500' }}>
+                            {ACTION_LABEL[rec.action_type] || rec.action_type}
+                          </span>
+                        )}
+                        {rec.confidence && (
+                          <span style={{ fontSize: '0.62rem', color: C.textMuted, background: C.borderAlt, borderRadius: '4px', padding: '1px 6px', fontWeight: '500' }}>
+                            {rec.confidence} confidence
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          }
+          case 'executive_summary': {
+            const { summary, key_takeaways: takeaways, risks, opportunities } = section
+            const hasContent = summary || takeaways?.length || risks?.length || opportunities?.length
+            if (!hasContent) {
+              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No executive summary available.</div>
+            }
+            const renderList = (label, items, dotColor) => {
+              if (!items?.length) return null
+              return (
+                <div style={{ marginTop: '10px' }}>
+                  <div style={{ fontSize: '0.62rem', fontWeight: '700', color: dotColor, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px' }}>{label}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {items.map((item, j) => (
+                      <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '7px', fontSize: '0.76rem', color: C.text, lineHeight: 1.55 }}>
+                        <span style={{ color: dotColor, fontWeight: '700', flexShrink: 0, marginTop: '1px' }}>•</span>
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            }
+            return (
+              <div>
+                {summary && <p style={{ margin: '0 0 2px', fontSize: '0.82rem', color: C.text, lineHeight: 1.65 }}>{summary}</p>}
+                {renderList('Key Takeaways', takeaways,     C.accent)}
+                {renderList('Risks',         risks,         C.danger)}
+                {renderList('Opportunities', opportunities, C.success)}
+              </div>
+            )
+          }
+          case 'chart': {
+            const chart      = section.chart || {}
+            const chartType  = chart.chart_type || 'bar'
+            const labels     = chart.labels || []
+            const series     = chart.series || []
+            const firstSer   = series[0] || {}
+            const serData    = firstSer.data || []
+            const seriesName = firstSer.name || ''
+
+            if (!labels.length) {
+              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No chart data available.</div>
+            }
+
+            if (chartType === 'bar') {
+              const nums   = serData.map(v => (typeof v === 'number' && isFinite(v) ? v : 0))
+              const maxVal = Math.max(...nums, 1)
+              const n      = labels.length
+              const BAR_W  = Math.max(18, Math.min(52, Math.floor(420 / n)))
+              const GAP    = 7
+              const V_SPC  = 16   // space above bars for value labels
+              const CH     = 120  // chart bar area height
+              const LBL_H  = 34   // label area below baseline
+              const SVG_W  = n * (BAR_W + GAP) + GAP
+              const SVG_H  = V_SPC + CH + LBL_H
+              const BASE_Y = V_SPC + CH
+
+              return (
+                <div style={{ overflowX: 'auto' }}>
+                  <svg
+                    viewBox={`0 0 ${SVG_W} ${SVG_H}`}
+                    width="100%"
+                    style={{ display: 'block', minWidth: `${Math.min(SVG_W, 200)}px`, maxWidth: `${SVG_W}px` }}
+                    aria-label={section.heading}
+                  >
+                    <line x1={0} y1={BASE_Y} x2={SVG_W} y2={BASE_Y} stroke={C.border} strokeWidth={1} />
+                    {labels.map((label, i) => {
+                      const val    = nums[i] || 0
+                      const barH   = Math.max(2, Math.round((val / maxVal) * CH * 0.92))
+                      const x      = GAP + i * (BAR_W + GAP)
+                      const y      = BASE_Y - barH
+                      const valStr = val >= 10000 ? `${(val / 1000).toFixed(1)}k` : val.toLocaleString()
+                      const lbl    = String(label)
+                      const short  = lbl.length > 9 ? lbl.slice(0, 8) + '…' : lbl
+                      return (
+                        <g key={i}>
+                          <rect x={x} y={y} width={BAR_W} height={barH} fill={C.accent} rx={2} opacity={0.82} />
+                          {barH > 10 && (
+                            <text x={x + BAR_W / 2} y={y - 3} textAnchor="middle" fontSize={8} fill={C.textSec} fontFamily="sans-serif">
+                              {valStr}
+                            </text>
+                          )}
+                          <text x={x + BAR_W / 2} y={BASE_Y + 13} textAnchor="middle" fontSize={7.5} fill={C.textMuted} fontFamily="sans-serif">
+                            {short}
+                          </text>
+                        </g>
+                      )
+                    })}
+                  </svg>
+                  {seriesName && (
+                    <div style={{ fontSize: '0.65rem', color: C.textMuted, textAlign: 'center', marginTop: '5px' }}>{seriesName}</div>
+                  )}
+                </div>
+              )
+            }
+
+            // Fallback for line, pie, and any unsupported chart_type: readable value list
+            return (
+              <div>
+                <div style={{ fontSize: '0.65rem', color: C.textMuted, marginBottom: '8px', textTransform: 'capitalize' }}>
+                  {chartType} · {labels.length} data points
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                  {labels.map((label, i) => {
+                    const val = serData[i]
+                    return (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.73rem', padding: '3px 0', borderBottom: `1px solid ${C.border}` }}>
+                        <span style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{label}</span>
+                        <span style={{ color: C.textSec, fontWeight: '500' }}>{val != null ? Number(val).toLocaleString() : '—'}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                {seriesName && <div style={{ fontSize: '0.65rem', color: C.textMuted, marginTop: '8px' }}>{seriesName}</div>}
+              </div>
+            )
+          }
+          case 'anomaly': {
+            const anomalies = section.anomalies || []
+            if (!anomalies.length) {
+              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No anomalies detected.</div>
+            }
+            const SEV = {
+              high:   { color: C.danger,  bg: C.dangerSoft,  label: 'HIGH'   },
+              medium: { color: C.warn,    bg: C.warnSoft,    label: 'MEDIUM' },
+              low:    { color: C.success, bg: C.successSoft, label: 'LOW'    },
+            }
+            const CAT_LABEL = {
+              missing_data: 'Missing Data',
+              distribution: 'Distribution',
+              sample_size:  'Sample Size',
+              schema:       'Schema',
+              trend:        'Trend',
+              quality:      'Quality',
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {anomalies.map((a, j) => {
+                  try {
+                    const s = SEV[a.severity] || SEV.low
+                    return (
+                      <div key={j} style={{ background: C.bg, border: `1px solid ${s.color}28`, borderLeft: `3px solid ${s.color}`, borderRadius: '9px', padding: '10px 13px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px', flexWrap: 'wrap' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', background: s.bg, color: s.color, borderRadius: '4px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', flexShrink: 0 }}>
+                            {s.label}
+                          </span>
+                          <span style={{ fontSize: '0.62rem', color: C.textMuted, background: C.borderAlt, borderRadius: '4px', padding: '1px 6px', fontWeight: '500' }}>
+                            {CAT_LABEL[a.category] || a.category || 'Unknown'}
+                          </span>
+                          <span style={{ fontSize: '0.78rem', fontWeight: '600', color: C.text }}>
+                            {a.title || '—'}
+                          </span>
+                        </div>
+                        {a.description && (
+                          <div style={{ fontSize: '0.74rem', color: C.textSec, lineHeight: 1.55, marginBottom: '4px' }}>{a.description}</div>
+                        )}
+                        {a.evidence && (
+                          <div style={{ fontSize: '0.69rem', color: C.textMuted, fontFamily: MONO, lineHeight: 1.5 }}>{a.evidence}</div>
+                        )}
+                      </div>
+                    )
+                  } catch (_) {
+                    return null
+                  }
+                })}
+              </div>
+            )
+          }
+          case 'text':
+          default:
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {(section.items || []).map((item, j) => (
+                  <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>
+                    <span style={{ color: C.accent, flexShrink: 0, fontWeight: '700' }}>→</span>
+                    <span>{typeof item === 'string' ? item : JSON.stringify(item)}</span>
+                  </div>
+                ))}
+              </div>
+            )
+        }
+      })()}
+    </div>
+  )
+}
+
 // ─── Workflow result renderer ──────────────────────────────────────────────────
 function WorkflowResult({ result, C, S }) {
   if (result.task_type === 'multi_step' || result.workflow_steps) {
@@ -1607,17 +1892,7 @@ function WorkflowResult({ result, C, S }) {
         {sectionLabel('Dataset Report')}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {result.dataset_report.sections.map((section, i) => (
-            <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px' }}>
-              <div style={{ fontSize: '0.64rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>{section.heading}</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {section.items.map((item, j) => (
-                  <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>
-                    <span style={{ color: C.accent, flexShrink: 0, fontWeight: '700' }}>→</span>
-                    <span>{item}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ReportSection key={i} section={section} C={C} />
           ))}
         </div>
       </>}
@@ -3286,6 +3561,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {/* ── Saved Workflows ──────────────────────────────────── */}
             {activeNav === 'workflows' && <>
               <div style={{ marginBottom: '18px' }}>
+                <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Workflows</h2>
                 <p style={{ margin: 0, color: C.textMuted, fontSize: '0.78rem' }}>Save named workflows and re-run them from the dashboard at any time.</p>
               </div>
 
@@ -3509,6 +3785,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                 {/* Page header */}
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '12px' }}>
                   <div>
+                    <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Datasets</h2>
                     <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Upload, inspect, and manage your data sources.</p>
                   </div>
                   <div style={{ display: 'flex', gap: '10px', alignItems: 'center', paddingTop: '4px', flexShrink: 0 }}>
@@ -4036,6 +4313,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               const COLS = 'minmax(180px, 2fr) 120px 150px 150px 100px 148px'
               return <>
                 <div style={{ marginBottom: '16px' }}>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Scheduled</h2>
                   <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Workflows saved to run automatically at a recurring interval.</p>
                 </div>
 
@@ -4274,7 +4552,10 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               const statusBg    = s => s === 'completed' ? C.successSoft : s === 'failed' ? C.dangerSoft : C.warnSoft
               return <>
                 <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>All recent scheduled workflow runs, newest first.</p>
+                  <div>
+                    <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Scheduler Activity</h2>
+                    <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>All recent scheduled workflow runs, newest first.</p>
+                  </div>
                   <button onClick={refreshSchedRuns} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.68rem', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '5px' }}>
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.28-4.5"/></svg>
                     Refresh
@@ -4370,6 +4651,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               return <>
                 {/* ── Page header ── */}
                 <div style={{ marginBottom: '16px' }}>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>History</h2>
                   <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>View, manage and rerun all your workflow executions.</p>
                 </div>
                 {/* ── Stat cards ── */}
@@ -4522,7 +4804,10 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               const typeColor = t => t === 'email_dataset_report' ? '#06b6d4' : C.accent
               return <>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                  <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Reports saved automatically after every dataset analysis or email workflow.</p>
+                  <div>
+                    <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Reports</h2>
+                    <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Reports saved automatically after every dataset analysis or email workflow.</p>
+                  </div>
                   <button onClick={refreshReports} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.68rem', fontWeight: '400', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '5px' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>Refresh
                   </button>
@@ -4610,17 +4895,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                   </div>
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                     {selectedReportData.content.sections.map((section, i) => (
-                                      <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px' }}>
-                                        <div style={{ fontSize: '0.64rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>{section.heading}</div>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                          {section.items.map((item, j) => (
-                                            <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>
-                                              <span style={{ color: C.accent, flexShrink: 0, fontWeight: '700' }}>→</span>
-                                              <span>{item}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </div>
+                                      <ReportSection key={i} section={section} C={C} />
                                     ))}
                                   </div>
 
@@ -4676,6 +4951,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {/* ── Usage ────────────────────────────────────────────── */}
             {activeNav === 'usage' && <>
               <div style={{ marginBottom: '16px' }}>
+                <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Usage</h2>
                 <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Track task usage, workflow success rates, and system health.</p>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '22px' }}>
@@ -4797,6 +5073,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {/* ── Settings ─────────────────────────────────────────── */}
             {activeNav === 'settings' && <>
               <div style={{ marginBottom: '16px' }}>
+                <h2 style={{ margin: '0 0 4px', fontSize: '1.4rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Settings</h2>
                 <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Local environment configuration and demo account details.</p>
               </div>
 

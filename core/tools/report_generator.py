@@ -158,6 +158,707 @@ def _ai_generate_narrative(sections: list[dict]) -> dict | None:
         return None
 
 
+def _build_kpi_section(
+    row_count: int,
+    column_count: int,
+    numeric_profile: dict,
+    missing_values: dict,
+    categorical_profile: dict,
+) -> dict:
+    """Build a KPI section (max 6 cards) derived from stored dataset profile data.
+
+    Every KPI is computed defensively — invalid values are skipped, never raised.
+    The section is pre-stamped with type='kpi' so the setdefault loop leaves it alone.
+    """
+    kpis: list[dict] = []
+
+    # 1. Total Records
+    kpis.append({
+        "label": "Total Records",
+        "value": row_count,
+        "format": "number",
+        "trend": "neutral",
+        "description": "Rows in the uploaded dataset",
+    })
+
+    # 2. Total Features
+    kpis.append({
+        "label": "Total Features",
+        "value": column_count,
+        "format": "number",
+        "trend": "neutral",
+        "description": "Columns analysed",
+    })
+
+    # 3. Data Completeness — (1 - missing_cells / total_cells) * 100
+    total_cells = row_count * column_count
+    if total_cells > 0:
+        try:
+            total_missing = sum(
+                v for v in missing_values.values()
+                if isinstance(v, (int, float)) and math.isfinite(v)
+            )
+            completeness = round((1 - total_missing / total_cells) * 100, 1)
+            trend = "up" if completeness >= 95 else ("down" if completeness < 80 else "neutral")
+            kpis.append({
+                "label": "Data Completeness",
+                "value": completeness,
+                "format": "percent",
+                "trend": trend,
+                "description": "Non-null cells across all columns",
+            })
+        except Exception:
+            pass
+
+    # 4. Columns with Missing Data
+    try:
+        cols_with_gaps = sum(
+            1 for v in missing_values.values()
+            if isinstance(v, (int, float)) and v > 0
+        )
+        kpis.append({
+            "label": "Columns with Gaps",
+            "value": cols_with_gaps,
+            "format": "number",
+            "trend": "down" if cols_with_gaps > 0 else "neutral",
+            "description": f"Of {column_count} total columns",
+        })
+    except Exception:
+        pass
+
+    # 5. Numeric Columns
+    numeric_count = len(numeric_profile)
+    if numeric_count > 0 and len(kpis) < 6:
+        kpis.append({
+            "label": "Numeric Columns",
+            "value": numeric_count,
+            "format": "number",
+            "trend": "neutral",
+            "description": "Columns with quantitative values",
+        })
+
+    # 6. Categorical Columns
+    cat_count = len(categorical_profile)
+    if cat_count > 0 and len(kpis) < 6:
+        kpis.append({
+            "label": "Categorical Columns",
+            "value": cat_count,
+            "format": "number",
+            "trend": "neutral",
+            "description": "Columns with category values",
+        })
+
+    return {
+        "type": "kpi",
+        "heading": "Key Metrics",
+        "kpis": kpis[:6],
+    }
+
+
+def _build_chart_sections(
+    categorical_profile: dict,
+    missing_values: dict,
+    row_count: int,
+    date_profile: dict,
+) -> list[dict]:
+    """Build chart sections from stored profile data. Returns [] on any failure.
+
+    Uses only pre-computed profile JSON — never requires the raw DataFrame.
+    All sections are pre-stamped type='chart' so the setdefault loop ignores them.
+    """
+    charts: list[dict] = []
+
+    # 1. Categorical bar chart — the column with the most distinct top values
+    try:
+        best = max(
+            ((col, entries) for col, entries in categorical_profile.items() if entries),
+            key=lambda x: len(x[1]),
+            default=None,
+        )
+        if best:
+            col_name, entries = best
+            top    = entries[:10]
+            labels = [str(e.get("value", "")) for e in top]
+            data   = [int(e.get("count", 0))  for e in top]
+            if labels and any(d > 0 for d in data):
+                charts.append({
+                    "type": "chart",
+                    "heading": f"{col_name} — Category Breakdown",
+                    "chart": {
+                        "chart_type": "bar",
+                        "labels": labels,
+                        "series": [{"name": "Count", "data": data}],
+                    },
+                })
+    except Exception:
+        pass
+
+    # 2. Missing values bar chart — only columns that have at least one missing value
+    try:
+        missing_entries = sorted(
+            [
+                (col, int(cnt))
+                for col, cnt in missing_values.items()
+                if isinstance(cnt, (int, float)) and math.isfinite(cnt) and cnt > 0
+            ],
+            key=lambda x: x[1],
+            reverse=True,
+        )[:8]
+        if missing_entries:
+            charts.append({
+                "type": "chart",
+                "heading": "Missing Values by Column",
+                "chart": {
+                    "chart_type": "bar",
+                    "labels": [col for col, _ in missing_entries],
+                    "series": [{"name": "Missing Count", "data": [cnt for _, cnt in missing_entries]}],
+                },
+            })
+    except Exception:
+        pass
+
+    return charts
+
+
+def _build_executive_summary_section(
+    filename: str,
+    row_count: int,
+    column_count: int,
+    numeric_profile: dict,
+    categorical_profile: dict,
+    missing_values: dict,
+    date_profile: dict,
+) -> dict:
+    """Build a deterministic executive summary from stored profile data.
+
+    No AI call. No hallucinated claims. Every statement is derived from stored
+    profile values only. Called after date_profile is computed so all data is
+    available. Pre-stamped type='executive_summary' so the setdefault loop ignores it.
+    """
+    numeric_count = len(numeric_profile)
+    cat_count     = len(categorical_profile)
+
+    # ── Completeness ─────────────────────────────────────────────────────────
+    total_cells = row_count * column_count
+    completeness_pct: float | None = None
+    if total_cells > 0:
+        try:
+            total_missing = sum(
+                v for v in missing_values.values()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+            )
+            completeness_pct = round((1 - total_missing / total_cells) * 100, 1)
+        except Exception:
+            pass
+
+    # ── Summary paragraph ────────────────────────────────────────────────────
+    parts: list[str] = [
+        f"This dataset contains {row_count:,} records across {column_count} fields."
+    ]
+    if completeness_pct is not None:
+        if completeness_pct >= 95:
+            parts.append(f"Data completeness is high at {completeness_pct}%.")
+        elif completeness_pct >= 80:
+            parts.append(f"Data completeness is moderate at {completeness_pct}%.")
+        else:
+            parts.append(f"Data completeness is low at {completeness_pct}%.")
+    if numeric_count > 0 and cat_count > 0:
+        parts.append(
+            f"It includes {numeric_count} numeric and {cat_count} "
+            f"categorical column{'s' if cat_count > 1 else ''}."
+        )
+    elif numeric_count > 0:
+        parts.append(f"It includes {numeric_count} numeric column{'s' if numeric_count > 1 else ''}.")
+    elif cat_count > 0:
+        parts.append(f"It includes {cat_count} categorical column{'s' if cat_count > 1 else ''}.")
+    summary = " ".join(parts)
+
+    # ── Key takeaways ─────────────────────────────────────────────────────────
+    takeaways: list[str] = []
+
+    if row_count >= 10_000:
+        takeaways.append(f"{row_count:,} records provide a substantial sample for analysis.")
+    elif row_count >= 1_000:
+        takeaways.append(f"{row_count:,} records are available for analysis.")
+    else:
+        takeaways.append(f"Dataset contains {row_count:,} records — a relatively small sample.")
+
+    try:
+        by_mean = sorted(
+            [(col, s) for col, s in numeric_profile.items() if s.get("mean") is not None],
+            key=lambda x: abs(float(x[1]["mean"])),
+            reverse=True,
+        )
+        if by_mean:
+            col_name, stats = by_mean[0]
+            takeaways.append(
+                f"{col_name} is the primary numeric indicator "
+                f"with a mean of {_safe_fmt(stats['mean'])}."
+            )
+    except Exception:
+        pass
+
+    try:
+        if categorical_profile:
+            best = max(
+                categorical_profile.items(),
+                key=lambda x: x[1][0]["count"] if x[1] else 0,
+                default=None,
+            )
+            if best:
+                col_name, entries = best
+                if entries:
+                    top = entries[0]
+                    takeaways.append(
+                        f'"{top["value"]}" is the most frequent value in {col_name} '
+                        f"({top['count']:,} records)."
+                    )
+    except Exception:
+        pass
+
+    try:
+        date_cols = date_profile.get("date_columns") or []
+        if date_cols:
+            dc   = date_cols[0]
+            days = dc.get("range_days", 0)
+            takeaways.append(
+                f"Dataset spans {days:,} day{'s' if days != 1 else ''} "
+                f"of {dc['column']} data."
+            )
+    except Exception:
+        pass
+
+    # ── Risks ────────────────────────────────────────────────────────────────
+    risks: list[str] = []
+
+    try:
+        cols_with_missing = [
+            col for col, cnt in missing_values.items()
+            if isinstance(cnt, (int, float)) and cnt > 0
+        ]
+        if cols_with_missing:
+            n = len(cols_with_missing)
+            risks.append(
+                f"Data quality: {n} column{'s' if n > 1 else ''} contain missing values."
+            )
+    except Exception:
+        pass
+
+    if row_count < 100:
+        risks.append("Small sample size may limit statistical reliability of findings.")
+
+    if completeness_pct is not None and completeness_pct < 80:
+        risks.append(
+            f"Low data completeness ({completeness_pct}%) may affect analysis accuracy."
+        )
+
+    # ── Opportunities ─────────────────────────────────────────────────────────
+    opportunities: list[str] = []
+
+    if cat_count > 0:
+        opportunities.append(
+            f"Categorical breakdowns across {cat_count} "
+            f"column{'s' if cat_count > 1 else ''} enable segmentation and group analysis."
+        )
+
+    try:
+        if numeric_count >= 2:
+            opportunities.append(
+                f"{numeric_count} numeric columns support correlation "
+                "and comparative analysis."
+            )
+    except Exception:
+        pass
+
+    try:
+        if date_profile.get("date_columns"):
+            opportunities.append(
+                "A date column is present — time-series and trend analysis are available."
+            )
+    except Exception:
+        pass
+
+    return {
+        "type": "executive_summary",
+        "heading": "Executive Summary",
+        "summary": summary,
+        "key_takeaways": takeaways[:4],
+        "risks": risks[:3],
+        "opportunities": opportunities[:3],
+    }
+
+
+def _build_recommendation_section(
+    row_count: int,
+    column_count: int,
+    numeric_profile: dict,
+    categorical_profile: dict,
+    missing_values: dict,
+    date_profile: dict,
+) -> dict | None:
+    """Build deterministic recommended actions from stored profile data.
+
+    Returns None when no recommendations apply so the caller can skip the section.
+    Maximum 5 recommendations, ordered by priority (high first).
+    No AI call. No hallucinated claims — every recommendation is gated on a
+    verifiable profile fact.
+    """
+    numeric_count = len(numeric_profile)
+    cat_count     = len(categorical_profile)
+
+    total_cells = row_count * column_count
+    completeness_pct: float | None = None
+    if total_cells > 0:
+        try:
+            total_missing = sum(
+                v for v in missing_values.values()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+            )
+            completeness_pct = round((1 - total_missing / total_cells) * 100, 1)
+        except Exception:
+            pass
+
+    recs: list[dict] = []
+
+    # 1. Missing data — highest urgency if completeness is critically low
+    try:
+        cols_with_missing = [
+            col for col, cnt in missing_values.items()
+            if isinstance(cnt, (int, float)) and cnt > 0
+        ]
+        if cols_with_missing:
+            n        = len(cols_with_missing)
+            priority = "high" if (completeness_pct is not None and completeness_pct < 80) else "medium"
+            recs.append({
+                "title":       "Review and Clean Missing Data",
+                "reason":      (
+                    f"{n} column{'s' if n > 1 else ''} contain missing values. "
+                    "Clean or impute before relying on analysis conclusions."
+                ),
+                "priority":    priority,
+                "action_type": "clean_data",
+                "confidence":  "high",
+            })
+    except Exception:
+        pass
+
+    # 2. Small sample — statistical reliability concern
+    if row_count < 100:
+        recs.append({
+            "title":       "Validate Sample Representativeness",
+            "reason":      (
+                f"Only {row_count:,} records are present. "
+                "Verify the sample is representative before drawing conclusions."
+            ),
+            "priority":    "high",
+            "action_type": "review",
+            "confidence":  "high",
+        })
+
+    # 3. Date column — time-series and scheduling opportunity
+    try:
+        date_cols = date_profile.get("date_columns") or []
+        if date_cols:
+            col_name = date_cols[0]["column"]
+            recs.append({
+                "title":       "Schedule Recurring Trend Monitoring",
+                "reason":      (
+                    f"A date column ({col_name}) is present. "
+                    "Set up a scheduled report to track changes over time automatically."
+                ),
+                "priority":    "medium",
+                "action_type": "schedule",
+                "confidence":  "high",
+            })
+    except Exception:
+        pass
+
+    # 4. Categorical columns — segmentation opportunity
+    if cat_count > 0:
+        try:
+            best = max(
+                categorical_profile.items(),
+                key=lambda x: len(x[1]),
+                default=None,
+            )
+            col_hint = f" (starting with {best[0]})" if best else ""
+            recs.append({
+                "title":       "Segment Analysis by Category",
+                "reason":      (
+                    f"{cat_count} categorical column{'s' if cat_count > 1 else ''} "
+                    f"available{col_hint}. Filter or group by these fields to uncover "
+                    "segment-level insights."
+                ),
+                "priority":    "medium",
+                "action_type": "segment",
+                "confidence":  "medium",
+            })
+        except Exception:
+            pass
+
+    # 5. Multiple numeric columns — correlation analysis
+    if numeric_count >= 2 and len(recs) < 5:
+        recs.append({
+            "title":       "Investigate Numeric Relationships",
+            "reason":      (
+                f"{numeric_count} numeric columns are available. "
+                "Compare indicators for correlations or anomalies that may drive outcomes."
+            ),
+            "priority":    "medium",
+            "action_type": "review",
+            "confidence":  "medium",
+        })
+
+    # 6. Large dataset — automation opportunity (low priority, fill remaining slot)
+    if row_count >= 10_000 and len(recs) < 5:
+        recs.append({
+            "title":       "Automate with Scheduled Reporting",
+            "reason":      (
+                f"With {row_count:,} records, this dataset benefits from regular "
+                "automated analysis. Schedule recurring reports to monitor key metrics."
+            ),
+            "priority":    "low",
+            "action_type": "schedule",
+            "confidence":  "medium",
+        })
+
+    if not recs:
+        return None
+
+    return {
+        "type":            "recommendation",
+        "heading":         "Recommended Actions",
+        "recommendations": recs[:5],
+    }
+
+
+def _build_anomaly_section(
+    row_count: int,
+    column_count: int,
+    numeric_profile: dict,
+    categorical_profile: dict,
+    missing_values: dict,
+    date_profile: dict,
+) -> dict:
+    """Build deterministic anomaly/risk detection from stored profile data only.
+
+    No AI. No row-level access. No hallucinated claims.
+    All thresholds are conservative and evidence-based.
+    Maximum 8 anomalies, sorted high → medium → low.
+    Shows an all-clear item when none are found so users know the check ran.
+    """
+    anomalies: list[dict] = []
+
+    # ── 1. Per-column missing data ────────────────────────────────────────────
+    if row_count > 0:
+        for col, cnt in missing_values.items():
+            try:
+                if not isinstance(cnt, (int, float)) or not math.isfinite(cnt) or cnt <= 0:
+                    continue
+                rate = cnt / row_count
+                if rate >= 0.25:
+                    anomalies.append({
+                        "title":       f"High Missing Rate: {col}",
+                        "description": f"Column '{col}' has a critically high proportion of missing values.",
+                        "severity":    "high",
+                        "category":    "missing_data",
+                        "evidence":    f"{int(cnt):,} of {row_count:,} rows ({round(rate * 100, 1)}%) are null.",
+                    })
+                elif rate >= 0.10:
+                    anomalies.append({
+                        "title":       f"Moderate Missing Rate: {col}",
+                        "description": f"Column '{col}' has a notable proportion of missing values.",
+                        "severity":    "medium",
+                        "category":    "missing_data",
+                        "evidence":    f"{int(cnt):,} of {row_count:,} rows ({round(rate * 100, 1)}%) are null.",
+                    })
+            except Exception:
+                continue
+
+    # ── 2. Dataset-level completeness ─────────────────────────────────────────
+    total_cells = row_count * column_count
+    if total_cells > 0:
+        try:
+            total_missing = sum(
+                v for v in missing_values.values()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+            )
+            completeness = (1 - total_missing / total_cells) * 100
+            if completeness < 80:
+                anomalies.append({
+                    "title":       "Low Dataset Completeness",
+                    "description": "Overall data completeness is critically low and may distort analysis.",
+                    "severity":    "high",
+                    "category":    "missing_data",
+                    "evidence":    (
+                        f"{round(completeness, 1)}% of all cells contain values "
+                        f"({int(total_missing):,} missing across {column_count} columns)."
+                    ),
+                })
+            elif completeness < 95:
+                anomalies.append({
+                    "title":       "Reduced Dataset Completeness",
+                    "description": "Overall data completeness is below the recommended 95% threshold.",
+                    "severity":    "medium",
+                    "category":    "missing_data",
+                    "evidence":    (
+                        f"{round(completeness, 1)}% of all cells contain values "
+                        f"({int(total_missing):,} missing across {column_count} columns)."
+                    ),
+                })
+        except Exception:
+            pass
+
+    # ── 3. Small sample size ──────────────────────────────────────────────────
+    if row_count < 30:
+        anomalies.append({
+            "title":       "Very Small Sample Size",
+            "description": "Fewer than 30 rows — statistical findings are unreliable.",
+            "severity":    "high",
+            "category":    "sample_size",
+            "evidence":    f"Dataset contains only {row_count:,} record{'s' if row_count != 1 else ''}.",
+        })
+    elif row_count < 100:
+        anomalies.append({
+            "title":       "Small Sample Size",
+            "description": "Fewer than 100 rows — findings may not generalise to a broader population.",
+            "severity":    "medium",
+            "category":    "sample_size",
+            "evidence":    f"Dataset contains {row_count:,} records.",
+        })
+
+    # ── 4. Dominant category imbalance ────────────────────────────────────────
+    if row_count > 0:
+        for col, entries in categorical_profile.items():
+            try:
+                if not entries:
+                    continue
+                top_count = entries[0].get("count", 0)
+                if not isinstance(top_count, (int, float)) or top_count <= 0:
+                    continue
+                dominance = top_count / row_count
+                top_value = str(entries[0].get("value", ""))
+                if dominance >= 0.90:
+                    anomalies.append({
+                        "title":       f"Extreme Category Dominance: {col}",
+                        "description": f"A single value dominates '{col}', indicating a near-constant field.",
+                        "severity":    "high",
+                        "category":    "distribution",
+                        "evidence":    (
+                            f'"{top_value}" appears in {round(dominance * 100, 1)}% of rows '
+                            f"({int(top_count):,} of {row_count:,})."
+                        ),
+                    })
+                elif dominance >= 0.80:
+                    anomalies.append({
+                        "title":       f"Category Imbalance: {col}",
+                        "description": f"Column '{col}' is heavily skewed toward one value.",
+                        "severity":    "medium",
+                        "category":    "distribution",
+                        "evidence":    (
+                            f'"{top_value}" appears in {round(dominance * 100, 1)}% of rows '
+                            f"({int(top_count):,} of {row_count:,})."
+                        ),
+                    })
+            except Exception:
+                continue
+
+    # ── 5. Numeric spread warning ─────────────────────────────────────────────
+    for col, stats in numeric_profile.items():
+        try:
+            mn   = stats.get("min")
+            mx   = stats.get("max")
+            mean = stats.get("mean")
+            if mn is None or mx is None or mean is None:
+                continue
+            mn   = float(mn)
+            mx   = float(mx)
+            mean = float(mean)
+            if not (math.isfinite(mn) and math.isfinite(mx) and math.isfinite(mean)):
+                continue
+            if mn > 0 and mx / mn > 1000:
+                anomalies.append({
+                    "title":       f"Extreme Value Range: {col}",
+                    "description": f"Column '{col}' spans an unusually wide numeric range (>1000x).",
+                    "severity":    "medium",
+                    "category":    "distribution",
+                    "evidence":    (
+                        f"Min={_safe_fmt(mn)}, Max={_safe_fmt(mx)} "
+                        f"(ratio {round(mx / mn):,}x). Mean={_safe_fmt(mean)}."
+                    ),
+                })
+            elif mean > 0 and mx > 10 * mean:
+                anomalies.append({
+                    "title":       f"Potential Outlier in {col}",
+                    "description": f"Maximum value in '{col}' is far above the column mean, suggesting outliers.",
+                    "severity":    "medium",
+                    "category":    "distribution",
+                    "evidence":    (
+                        f"Max={_safe_fmt(mx)} vs Mean={_safe_fmt(mean)} "
+                        f"({round(mx / mean, 1)}x the mean). Min={_safe_fmt(mn)}."
+                    ),
+                })
+        except Exception:
+            continue
+
+    # ── 6. Date/trend risk ────────────────────────────────────────────────────
+    try:
+        for ti in (date_profile.get("trend_insights") or []):
+            try:
+                pct = ti.get("pct_change")
+                col = ti.get("column", "")
+                if pct is None:
+                    continue
+                pct = float(pct)
+                if not math.isfinite(pct):
+                    continue
+                if abs(pct) >= 200:
+                    direction = "increase" if pct > 0 else "decrease"
+                    anomalies.append({
+                        "title":       f"Large Trend Shift: {col}",
+                        "description": (
+                            f"Column '{col}' shows a sharp {direction} between "
+                            "the first and second half of the time range."
+                        ),
+                        "severity":    "medium",
+                        "category":    "trend",
+                        "evidence":    (
+                            f"{round(pct, 1)}% change from first to second half "
+                            "of the dataset (sorted by date)."
+                        ),
+                    })
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # ── Sort high → medium → low, cap at 8 ───────────────────────────────────
+    _SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
+    anomalies.sort(key=lambda a: _SEV_ORDER.get(a.get("severity", "low"), 2))
+    anomalies = anomalies[:8]
+
+    # ── All-clear fallback (explicit confirmation the check ran) ──────────────
+    # Enterprise users need to know the section ran and found nothing,
+    # not an empty or missing card that looks like a rendering failure.
+    if not anomalies:
+        anomalies = [{
+            "title":       "No Major Anomalies Detected",
+            "description": "All deterministic checks passed within expected thresholds.",
+            "severity":    "low",
+            "category":    "quality",
+            "evidence":    (
+                f"Dataset of {row_count:,} rows and {column_count} columns "
+                "passed all risk checks."
+            ),
+        }]
+
+    return {
+        "type":      "anomaly",
+        "heading":   "Anomalies & Data Risks",
+        "anomalies": anomalies,
+    }
+
+
 def generate_dataset_report(dataset: dict) -> dict:
     """
     Build a structured report from a stored dataset summary row.
@@ -180,6 +881,11 @@ def generate_dataset_report(dataset: dict) -> dict:
             f'"{filename}" contains {row_count:,} rows and {column_count} columns.',
         ],
     })
+
+    # ── Key Metrics (KPI) ─────────────────────────────────────────────────────
+    sections.append(_build_kpi_section(
+        row_count, column_count, numeric_profile, missing_values, categorical_profile,
+    ))
 
     # ── Numeric Insights ──────────────────────────────────────────────────────
     num_entries = [
@@ -279,6 +985,45 @@ def generate_dataset_report(dataset: dict) -> dict:
             )
         sections.append({"heading": "Trend Insights", "items": trend_items})
 
+    # ── Anomaly Detection ─────────────────────────────────────────────────────
+    sections.append(_build_anomaly_section(
+        row_count, column_count,
+        numeric_profile, categorical_profile, missing_values, date_profile,
+    ))
+
+    # ── Chart Sections ────────────────────────────────────────────────────────
+    for chart_sec in _build_chart_sections(
+        categorical_profile, missing_values, row_count, date_profile
+    ):
+        sections.append(chart_sec)
+
+    # ── Recommendations (inserted after KPI for executive-first report flow) ──
+    rec_sec = _build_recommendation_section(
+        row_count, column_count,
+        numeric_profile, categorical_profile, missing_values, date_profile,
+    )
+    if rec_sec is not None:
+        # KPI section was appended second (after Overview), so it's always at
+        # index 1 before any inserts.  Find it by type for resilience.
+        kpi_pos = next((i for i, s in enumerate(sections) if s.get("type") == "kpi"), 1)
+        sections.insert(kpi_pos + 1, rec_sec)
+
+    # ── Executive Summary (prepended so it leads the report) ─────────────────
+    # Built after all other sections so date_profile and completeness are known.
+    # Note: if ENABLE_AI_REPORT_NARRATIVE=true, the AI will also insert its own
+    # Executive Summary at position 0, placing it before this deterministic one.
+    # Since AI narrative is disabled by default, this is not an issue in practice.
+    sections.insert(0, _build_executive_summary_section(
+        filename, row_count, column_count,
+        numeric_profile, categorical_profile, missing_values, date_profile,
+    ))
+
+    # ── Schema v2: stamp every section with its type before returning ──────────
+    # Renderers and exporters key off section.type to dispatch correctly.
+    # Existing saved reports that lack this field default to "text" on read.
+    for s in sections:
+        s.setdefault("type", "text")
+
     # ── AI Executive Narrative (optional) ─────────────────────────────────────
     # Runs after all deterministic sections are complete.
     # On any failure the report returns unchanged without AI content.
@@ -292,10 +1037,10 @@ def generate_dataset_report(dataset: dict) -> dict:
         for r in ai_narrative["risk_notes"]:
             exec_items.append(f"Note: {r}")
         # Prepend so Executive Summary is first in the report and in email bodies.
-        sections.insert(0, {"heading": "Executive Summary", "items": exec_items})
-        return {"sections": sections, "ai_narrative": ai_narrative}
+        sections.insert(0, {"type": "text", "heading": "Executive Summary", "items": exec_items})
+        return {"version": 2, "sections": sections, "ai_narrative": ai_narrative}
 
-    return {"sections": sections}
+    return {"version": 2, "sections": sections}
 
 
 def format_report_as_email_body(report: dict, filename: str) -> str:
