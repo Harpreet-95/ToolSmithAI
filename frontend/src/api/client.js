@@ -326,3 +326,26 @@ export async function emailReport(reportId, recipientEmail, token) {
   });
   return parseResponse(res);
 }
+
+export async function getNotifications(token) {
+  const res = await fetch('/v1/notifications', {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function markNotificationRead(id, token) {
+  const res = await fetch(`/v1/notifications/${id}/read`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function deleteNotification(id, token) {
+  const res = await fetch(`/v1/notifications/${id}`, {
+    method: 'DELETE',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
