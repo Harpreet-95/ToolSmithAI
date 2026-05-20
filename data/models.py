@@ -101,6 +101,27 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_usage_events_tenant_id  ON usage_events (tenant_id);
         CREATE INDEX IF NOT EXISTS idx_usage_events_created_at ON usage_events (created_at);
+
+        CREATE TABLE IF NOT EXISTS reports (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     TEXT    NOT NULL,
+            title       TEXT    NOT NULL,
+            task_type   TEXT    NOT NULL,
+            status      TEXT    NOT NULL DEFAULT 'completed',
+            dataset_id  INTEGER REFERENCES datasets(id) ON DELETE SET NULL,
+            exec_id     INTEGER REFERENCES execution_history(id) ON DELETE SET NULL,
+            workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL,
+            schedule_id INTEGER REFERENCES scheduled_workflows(id) ON DELETE SET NULL,
+            content_json TEXT   NOT NULL,
+            summary_text TEXT,
+            created_at  TEXT    NOT NULL,
+            updated_at  TEXT    NOT NULL,
+            expires_at  TEXT,
+            share_token TEXT    UNIQUE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reports_user_id    ON reports (user_id);
+        CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports (created_at);
     """)
     conn.commit()
 
