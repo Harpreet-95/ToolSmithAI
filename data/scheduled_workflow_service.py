@@ -302,19 +302,84 @@ def run_due_workflows() -> None:
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     due = get_due_scheduled_workflows(now_iso)
     for wf in due:
-        wid = wf["id"]
+        wid     = wf["id"]
+        user_id = wf["user_id"]
         next_run = _compute_next_run_at(wf["frequency"], wf.get("day_of_week"))
         # Advance next_run_at BEFORE executing to prevent duplicate runs
         mark_scheduled_workflow_run(wid, next_run)
+
+        run_id = None
+        try:
+            from data.scheduler_run_service import create_schedule_run
+            run_id = create_schedule_run(wid, user_id, trigger_type="scheduled")
+        except Exception:
+            pass
+
         try:
             result = handle_input(
                 wf["input_text"],
-                user_id=wf["user_id"],
+                user_id=user_id,
                 dataset_id=wf.get("dataset_id"),
             )
             status, warn_msg = _classify_result(result)
             update_scheduled_workflow_outcome(wid, status=status, error=warn_msg)
             logger.info("Scheduled workflow %s %s. Next run: %s", wid, status, next_run)
+
+            related_report_id = None
+            try:
+                data = result.get("data", {}) if isinstance(result, dict) else {}
+                related_report_id = data.get("report_id")
+            except Exception:
+                pass
+
+            if run_id is not None:
+                try:
+                    from data.scheduler_run_service import complete_schedule_run
+                    complete_schedule_run(run_id, related_report_id=related_report_id)
+                except Exception:
+                    pass
+
+            try:
+                from data.notification_service import create_notification
+                if warn_msg:
+                    create_notification(
+                        user_id=user_id,
+                        title="Scheduled run warning",
+                        message=f"'{wf['input_text'][:80]}': {warn_msg[:150]}",
+                        type="schedule",
+                        status="warn",
+                    )
+                else:
+                    create_notification(
+                        user_id=user_id,
+                        title="Scheduled run completed",
+                        message=f"'{wf['input_text'][:100]}' completed successfully.",
+                        type="schedule",
+                        status="success",
+                    )
+            except Exception:
+                pass
+
         except Exception as exc:
-            update_scheduled_workflow_outcome(wid, status="failed", error=str(exc)[:500])
+            err_msg = str(exc)[:500]
+            update_scheduled_workflow_outcome(wid, status="failed", error=err_msg)
             logger.error("Scheduled workflow %s failed: %s", wid, exc)
+
+            if run_id is not None:
+                try:
+                    from data.scheduler_run_service import fail_schedule_run
+                    fail_schedule_run(run_id, error_message=err_msg)
+                except Exception:
+                    pass
+
+            try:
+                from data.notification_service import create_notification
+                create_notification(
+                    user_id=user_id,
+                    title="Scheduled run failed",
+                    message=f"'{wf['input_text'][:80]}' failed: {err_msg[:150]}",
+                    type="schedule",
+                    status="error",
+                )
+            except Exception:
+                pass

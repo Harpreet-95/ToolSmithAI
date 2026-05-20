@@ -349,3 +349,25 @@ export async function deleteNotification(id, token) {
   });
   return parseResponse(res);
 }
+
+export async function getScheduleRuns(token) {
+  const res = await fetch('/v1/schedules/runs', {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function getScheduleRunHistory(scheduleId, token) {
+  const res = await fetch(`/v1/schedules/${scheduleId}/runs`, {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function runScheduleNow(scheduleId, token) {
+  const res = await fetch(`/v1/schedules/${scheduleId}/run-now`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}

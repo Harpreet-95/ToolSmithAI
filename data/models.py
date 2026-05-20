@@ -138,6 +138,24 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_notifications_user_id    ON notifications (user_id);
         CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at);
+
+        CREATE TABLE IF NOT EXISTS scheduled_workflow_runs (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            schedule_id          INTEGER NOT NULL REFERENCES scheduled_workflows(id) ON DELETE CASCADE,
+            user_id              TEXT    NOT NULL,
+            status               TEXT    NOT NULL,
+            started_at           TEXT    NOT NULL,
+            finished_at          TEXT,
+            duration_ms          INTEGER,
+            trigger_type         TEXT    NOT NULL DEFAULT 'scheduled',
+            error_message        TEXT,
+            related_execution_id INTEGER REFERENCES execution_history(id) ON DELETE SET NULL,
+            related_report_id    INTEGER REFERENCES reports(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule_id ON scheduled_workflow_runs (schedule_id);
+        CREATE INDEX IF NOT EXISTS idx_sched_runs_user_id     ON scheduled_workflow_runs (user_id);
+        CREATE INDEX IF NOT EXISTS idx_sched_runs_started_at  ON scheduled_workflow_runs (started_at);
     """)
     conn.commit()
 

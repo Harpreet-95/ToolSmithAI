@@ -27,6 +27,16 @@ from data.scheduled_workflow_service import (
     pause_scheduled_workflow,
     resume_scheduled_workflow,
     get_schedule_health,
+    get_scheduled_workflow_by_id,
+    update_scheduled_workflow_outcome,
+    _classify_result as classify_schedule_result,
+)
+from data.scheduler_run_service import (
+    create_schedule_run,
+    complete_schedule_run,
+    fail_schedule_run,
+    list_runs_for_schedule,
+    list_recent_runs_for_user,
 )
 from core.interpreter.task_interpreter import interpret_task
 from data.workflow_service import create_workflow, list_workflows, delete_workflow
@@ -1493,6 +1503,86 @@ def email_report_route(
         }
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/schedules/runs")
+def list_all_schedule_runs_route(user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    try:
+        runs = list_recent_runs_for_user(str(user.user_id))
+        return {"status": "success", "data": runs}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/schedules/{schedule_id}/runs")
+def list_schedule_runs_route(
+    schedule_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    wf = get_scheduled_workflow_by_id(schedule_id)
+    if wf is None or str(wf["user_id"]) != str(user.user_id):
+        return JSONResponse(status_code=404, content=build_error_response("Schedule not found"))
+    try:
+        runs = list_runs_for_schedule(schedule_id, str(user.user_id))
+        return {"status": "success", "data": runs}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/schedules/{schedule_id}/run-now")
+def run_schedule_now_route(
+    schedule_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    from core.input.input_handler import handle_input
+
+    wf = get_scheduled_workflow_by_id(schedule_id)
+    if wf is None or str(wf["user_id"]) != str(user.user_id):
+        return JSONResponse(status_code=404, content=build_error_response("Schedule not found"))
+
+    run_id = None
+    try:
+        run_id = create_schedule_run(schedule_id, str(user.user_id), trigger_type="manual")
+    except Exception:
+        pass
+
+    try:
+        result = handle_input(
+            wf["input_text"],
+            user_id=str(user.user_id),
+            dataset_id=wf.get("dataset_id"),
+        )
+        status, warn_msg = classify_schedule_result(result)
+        update_scheduled_workflow_outcome(schedule_id, status=status, error=warn_msg)
+
+        if run_id is not None:
+            try:
+                related_report_id = None
+                data = result.get("data", {}) if isinstance(result, dict) else {}
+                related_report_id = data.get("report_id")
+                complete_schedule_run(run_id, related_report_id=related_report_id)
+            except Exception:
+                pass
+
+        return {
+            "status": "success",
+            "data": result.get("data") if isinstance(result, dict) else result,
+        }
+    except Exception as exc:
+        err_msg = str(exc)[:500]
+        try:
+            update_scheduled_workflow_outcome(schedule_id, status="failed", error=err_msg)
+        except Exception:
+            pass
+        if run_id is not None:
+            try:
+                fail_schedule_run(run_id, error_message=err_msg)
+            except Exception:
+                pass
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Run failed", err_msg),
+        )
 
 
 @router.get("/notifications")

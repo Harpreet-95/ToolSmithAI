@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification } from './api/client'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow } from './api/client'
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C_DARK = {
@@ -58,6 +58,13 @@ function _relTime(iso) {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
+}
+
+function _fmtDuration(ms) {
+  if (ms == null) return '—'
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
 // ─── Shared style primitives ───────────────────────────────────────────────────
@@ -264,8 +271,9 @@ const NAV_ITEMS = [
   { id: 'overview',  label: 'Overview',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> },
   { id: 'workflows', label: 'Workflows',    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg> },
   { id: 'datasets',  label: 'Datasets',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> },
-  { id: 'scheduled', label: 'Scheduled',    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
-  { id: 'history',   label: 'History',      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
+  { id: 'scheduled',      label: 'Scheduled',       icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
+  { id: 'sched-activity', label: 'Sched. Activity', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
+  { id: 'history',        label: 'History',         icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
   { id: 'reports',   label: 'Reports',      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> },
   { id: 'usage',     label: 'Usage',        icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> },
   { id: 'settings',  label: 'Settings',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> },
@@ -1827,7 +1835,14 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [scheduleCreating,    setScheduleCreating]    = useState(false)
   const [scheduleError,       setScheduleError]       = useState(null)
   const [scheduleSuccess,     setScheduleSuccess]     = useState(null)
-  const [schedulePauseLoading, setSchedulePauseLoading] = useState(new Set())
+  const [schedulePauseLoading,  setSchedulePauseLoading]  = useState(new Set())
+  const [schedRuns,             setSchedRuns]             = useState([])
+  const [schedRunsLoading,      setSchedRunsLoading]      = useState(false)
+  const [schedRunsError,        setSchedRunsError]        = useState(null)
+  const [schedExpandedId,       setSchedExpandedId]       = useState(null)
+  const [schedRunHistories,     setSchedRunHistories]     = useState({})
+  const [schedRunHistLoading,   setSchedRunHistLoading]   = useState(new Set())
+  const [schedRunNowLoading,    setSchedRunNowLoading]    = useState(new Set())
   const [scheduleHealth,       setScheduleHealth]       = useState([])
   const [scheduleHealthLoading, setScheduleHealthLoading] = useState(false)
   const [workflowList,        setWorkflowList]        = useState([])
@@ -2116,6 +2131,48 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       setSchedulePauseLoading(s => { const n = new Set(s); n.delete(id); return n })
     }
   }
+
+  async function handleRunNow(id) {
+    setSchedRunNowLoading(s => new Set(s).add(id))
+    try {
+      await runScheduleNow(id, token)
+      refreshScheduled()
+      setSchedRunHistories(prev => { const n = { ...prev }; delete n[id]; return n })
+      refreshNotifications()
+    } catch (err) {
+      if (is401(err)) onSessionExpired()
+    } finally {
+      setSchedRunNowLoading(s => { const n = new Set(s); n.delete(id); return n })
+    }
+  }
+
+  async function handleExpandSchedule(id) {
+    if (schedExpandedId === id) { setSchedExpandedId(null); return }
+    setSchedExpandedId(id)
+    if (!schedRunHistories[id]) {
+      setSchedRunHistLoading(s => new Set(s).add(id))
+      try {
+        const d = await getScheduleRunHistory(id, token)
+        setSchedRunHistories(prev => ({ ...prev, [id]: d?.data ?? [] }))
+      } catch (err) {
+        if (is401(err)) onSessionExpired()
+        else setSchedRunHistories(prev => ({ ...prev, [id]: [] }))
+      } finally {
+        setSchedRunHistLoading(s => { const n = new Set(s); n.delete(id); return n })
+      }
+    }
+  }
+
+  function refreshSchedRuns() {
+    setSchedRunsLoading(true)
+    setSchedRunsError(null)
+    getScheduleRuns(token)
+      .then(d => setSchedRuns(d?.data ?? []))
+      .catch(err => { if (is401(err)) onSessionExpired(); else setSchedRunsError('Could not load run history.') })
+      .finally(() => setSchedRunsLoading(false))
+  }
+
+  useEffect(() => { if (activeNav === 'sched-activity') refreshSchedRuns() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function refreshRecommendations() {
     setRecLoading(true)
@@ -3976,7 +4033,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                   icon: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> },
               ]
               const activeDs = datasetList.find(d => d.id === selectedDatasetId)
-              const COLS = 'minmax(180px, 2fr) 120px 150px 150px 100px 110px'
+              const COLS = 'minmax(180px, 2fr) 120px 150px 150px 100px 148px'
               return <>
                 <div style={{ marginBottom: '16px' }}>
                   <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>Workflows saved to run automatically at a recurring interval.</p>
@@ -4091,13 +4148,24 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                         const stColor = sw.enabled ? C.success : C.warn
                         const stBg    = sw.enabled ? C.successSoft : C.warnSoft
                         const isLoading = schedulePauseLoading.has(sw.id)
+                        const isExpanded = schedExpandedId === sw.id
+                        const isHistLoading = schedRunHistLoading.has(sw.id)
+                        const isRunNow = schedRunNowLoading.has(sw.id)
+                        const runs = schedRunHistories[sw.id] || []
                         return (
                           <div key={sw.id} style={{ borderRadius: '4px' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: COLS, padding: '10px 0', borderBottom: (!failed || !sw.last_error) && notLast ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: COLS, padding: '10px 0', borderBottom: (!failed || !sw.last_error) && !isExpanded && notLast ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
                               {/* Task */}
-                              <div style={{ padding: '0 12px', overflow: 'hidden' }}>
-                                <div style={{ fontSize: '0.75rem', fontWeight: '400', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sw.input_text}>{sw.input_text}</div>
-                                {sw.run_count > 0 && <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '1px' }}>{sw.run_count} run{sw.run_count !== 1 ? 's' : ''}</div>}
+                              <div style={{ padding: '0 12px', overflow: 'hidden', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button onClick={() => handleExpandSchedule(sw.id)} title={isExpanded ? 'Collapse' : 'Expand run history'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: '2px', display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                                  {isExpanded
+                                    ? <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m18 15-6-6-6 6"/></svg>
+                                    : <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>}
+                                </button>
+                                <div style={{ overflow: 'hidden' }}>
+                                  <div style={{ fontSize: '0.75rem', fontWeight: '400', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sw.input_text}>{sw.input_text}</div>
+                                  {sw.run_count > 0 && <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '1px' }}>{sw.run_count} run{sw.run_count !== 1 ? 's' : ''}</div>}
+                                </div>
                               </div>
                               {/* Frequency */}
                               <div style={{ padding: '0 12px', fontSize: '0.72rem', color: C.textMuted, textTransform: 'capitalize' }}>
@@ -4133,6 +4201,19 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                     ? <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
                                     : <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>}
                                 </button>
+                                {/* Run Now */}
+                                <button
+                                  onClick={() => handleRunNow(sw.id)}
+                                  disabled={isRunNow}
+                                  title="Run Now"
+                                  style={{ width: 30, height: 30, borderRadius: '7px', border: `1px solid ${C.success}30`, background: isRunNow ? C.successSoft : 'transparent', color: C.success, cursor: isRunNow ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: isRunNow ? 0.6 : 1, transition: 'background 0.12s' }}
+                                  onMouseEnter={e => { if (!isRunNow) e.currentTarget.style.background = C.successSoft }}
+                                  onMouseLeave={e => { if (!isRunNow) e.currentTarget.style.background = 'transparent' }}
+                                >
+                                  {isRunNow
+                                    ? <div style={{ width: '9px', height: '9px', borderRadius: '50%', border: `2px solid ${C.success}40`, borderTopColor: C.success, animation: 'spin 0.75s linear infinite' }} />
+                                    : <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>}
+                                </button>
                                 {/* Delete */}
                                 <button
                                   onClick={() => handleDeleteSchedule(sw.id)}
@@ -4146,13 +4227,109 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                               </div>
                             </div>
                             {failed && sw.last_error && (
-                              <div style={{ padding: '0 12px 8px', borderBottom: notLast ? `1px solid ${C.border}` : 'none' }}>
+                              <div style={{ padding: '0 12px 8px', borderBottom: isExpanded || notLast ? `1px solid ${C.border}` : 'none' }}>
                                 <span style={{ fontSize: '0.69rem', color: C.danger, opacity: 0.85 }}>↳ {sw.last_error}</span>
+                              </div>
+                            )}
+                            {isExpanded && (
+                              <div style={{ padding: '10px 14px 14px', borderBottom: notLast ? `1px solid ${C.border}` : 'none', background: C.bg }}>
+                                <div style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>Run History</div>
+                                {isHistLoading ? (
+                                  <div style={{ fontSize: '0.78rem', color: C.textMuted }}>Loading…</div>
+                                ) : runs.length === 0 ? (
+                                  <div style={{ fontSize: '0.78rem', color: C.textMuted }}>No runs recorded yet.</div>
+                                ) : (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                                    {runs.slice(0, 8).map(run => (
+                                      <div key={run.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.72rem', flexWrap: 'wrap' }}>
+                                        <span style={{ minWidth: '70px', fontWeight: '600', color: run.status === 'completed' ? C.success : run.status === 'failed' ? C.danger : C.warn }}>{run.status}</span>
+                                        <span style={{ color: C.textMuted, minWidth: '72px' }}>{_relTime(run.started_at)}</span>
+                                        <span style={{ color: C.textMuted, minWidth: '46px' }}>{_fmtDuration(run.duration_ms)}</span>
+                                        {run.trigger_type === 'manual' && <span style={{ color: C.accent, fontSize: '0.65rem', background: C.accentSoft, borderRadius: '4px', padding: '0 5px' }}>manual</span>}
+                                        {run.related_report_id && (
+                                          <button onClick={() => { setSelectedReportId(run.related_report_id); setActiveNav('reports') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, fontSize: '0.7rem', padding: 0, textDecoration: 'underline', fontFamily: FONT }}>View Report</button>
+                                        )}
+                                        {run.status === 'failed' && run.error_message && (
+                                          <span style={{ color: C.danger, fontSize: '0.68rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '260px' }} title={run.error_message}>{run.error_message}</span>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
                         )
                       })}
+                    </>
+                  )}
+                </div>
+              </>
+            })()}
+
+            {/* ── Scheduler Activity ───────────────────────────────── */}
+            {activeNav === 'sched-activity' && (() => {
+              const RUN_COLS = 'minmax(180px, 2fr) 80px 90px 150px 70px minmax(120px, 1fr)'
+              const statusColor = s => s === 'completed' ? C.success : s === 'failed' ? C.danger : C.warn
+              const statusBg    = s => s === 'completed' ? C.successSoft : s === 'failed' ? C.dangerSoft : C.warnSoft
+              return <>
+                <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <p style={{ margin: 0, color: C.textMuted, fontSize: '0.75rem' }}>All recent scheduled workflow runs, newest first.</p>
+                  <button onClick={refreshSchedRuns} style={{ background: 'none', border: 'none', color: C.textMuted, fontSize: '0.68rem', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.28-4.5"/></svg>
+                    Refresh
+                  </button>
+                </div>
+                <div style={S.card}>
+                  {schedRunsLoading ? (
+                    <div style={{ padding: '40px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading…</div>
+                  ) : schedRunsError ? (
+                    <div style={{ padding: '40px 0', textAlign: 'center', color: C.danger, fontSize: '0.82rem' }}>{schedRunsError}</div>
+                  ) : schedRuns.length === 0 ? (
+                    <div style={{ padding: '40px 0', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem', lineHeight: 1.7 }}>
+                      No scheduled runs yet.<br />Runs will appear here after your first scheduled execution.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: RUN_COLS, borderBottom: `1px solid ${C.border}`, paddingBottom: '8px', marginBottom: '2px' }}>
+                        {['Task', 'Trigger', 'Status', 'Started', 'Duration', 'Details'].map(col => (
+                          <div key={col} style={{ padding: '0 10px', fontSize: '0.63rem', color: C.textSec, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{col}</div>
+                        ))}
+                      </div>
+                      {schedRuns.map((run, idx) => (
+                        <div key={run.id} style={{ display: 'grid', gridTemplateColumns: RUN_COLS, padding: '9px 0', borderBottom: idx < schedRuns.length - 1 ? `1px solid ${C.border}` : 'none', alignItems: 'center' }}>
+                          <div style={{ padding: '0 10px', overflow: 'hidden' }}>
+                            <div style={{ fontSize: '0.75rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={run.schedule_input_text || '—'}>{run.schedule_input_text || '—'}</div>
+                            {run.schedule_frequency && <div style={{ fontSize: '0.63rem', color: C.textMuted, textTransform: 'capitalize', marginTop: '1px' }}>{run.schedule_frequency}</div>}
+                          </div>
+                          <div style={{ padding: '0 10px' }}>
+                            <span style={{ fontSize: '0.67rem', background: run.trigger_type === 'manual' ? C.accentSoft : C.borderAlt, color: run.trigger_type === 'manual' ? C.accent : C.textMuted, borderRadius: '4px', padding: '2px 6px', fontWeight: '500' }}>
+                              {run.trigger_type || 'scheduled'}
+                            </span>
+                          </div>
+                          <div style={{ padding: '0 10px' }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: statusBg(run.status), color: statusColor(run.status), border: `1px solid ${statusColor(run.status)}28`, borderRadius: '20px', padding: '2px 8px', fontSize: '0.67rem', fontWeight: '600' }}>
+                              <span style={{ width: 4, height: 4, borderRadius: '50%', background: statusColor(run.status), display: 'inline-block' }}/>
+                              {run.status}
+                            </span>
+                          </div>
+                          <div style={{ padding: '0 10px', fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
+                            {run.started_at ? new Date(run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
+                          </div>
+                          <div style={{ padding: '0 10px', fontSize: '0.7rem', color: C.textMuted }}>
+                            {_fmtDuration(run.duration_ms)}
+                          </div>
+                          <div style={{ padding: '0 10px', fontSize: '0.72rem', overflow: 'hidden' }}>
+                            {run.status === 'failed' && run.error_message ? (
+                              <span style={{ color: C.danger, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }} title={run.error_message}>{run.error_message}</span>
+                            ) : run.related_report_id ? (
+                              <button onClick={() => { setSelectedReportId(run.related_report_id); setActiveNav('reports') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, fontSize: '0.7rem', padding: 0, textDecoration: 'underline', fontFamily: FONT }}>View Report</button>
+                            ) : (
+                              <span style={{ color: C.textMuted }}>—</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </>
                   )}
                 </div>
