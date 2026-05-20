@@ -41,7 +41,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
             "dataset_report_error": None}
 
 
-def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None) -> dict:
+def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None) -> dict:
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id, get_user_email
     from core.tools.report_generator import generate_dataset_report, format_report_as_email_body
     from core.email import send_real_email
@@ -78,14 +78,14 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
     body = format_report_as_email_body(report, dataset["filename"])
     subject = f"Dataset Report — {dataset['filename']}"
 
-    user_email = get_user_email(user_id)
-    if user_email is None:
+    to_address = recipient or get_user_email(user_id)
+    if to_address is None:
         email_delivery = {
             "sent": False,
-            "reason": "No email address found for your account.",
+            "reason": "No recipient email address. Please provide a recipient or ensure your account has an email.",
         }
     else:
-        email_delivery = send_real_email(to=user_email, subject=subject, body=body)
+        email_delivery = send_real_email(to=to_address, subject=subject, body=body)
 
     return {**base, "dataset_report": report, "email_delivery": email_delivery,
             "dataset_report_error": None}

@@ -20,10 +20,47 @@ def handle_fetch_report_data(params: dict) -> dict:
 
 
 def handle_send_email(params: dict) -> dict:
+    from core.config import ENABLE_REAL_EMAIL
+    from core.email import send_real_email
+
+    to = params.get("to")
+    subject = params.get("subject") or "ToolSmithAI Workflow Notification"
+    intent = params.get("intent", "")
+    task_type = params.get("task_type", "send_email")
+
+    if not ENABLE_REAL_EMAIL:
+        return {
+            "to": to,
+            "subject": subject,
+            "message": "Email sent successfully (simulated)",
+        }
+
+    if not to:
+        return {
+            "to": None,
+            "subject": subject,
+            "sent": False,
+            "message": "Email not sent: no recipient address provided.",
+        }
+
+    body = (
+        f"ToolSmithAI — Workflow Notification\n\n"
+        f"Task: {intent or subject}\n"
+        f"Type: {task_type}\n"
+        f"Status: Completed\n\n"
+        "Your workflow ran successfully.\n\n"
+        "— ToolSmithAI"
+    )
+    result = send_real_email(to=to, subject=subject, body=body)
     return {
-        "to": params.get("to"),
-        "subject": params.get("subject"),
-        "message": "Email sent successfully (simulated)",
+        "to": to,
+        "subject": subject,
+        "sent": result["sent"],
+        "message": (
+            f"Email delivered to {to}"
+            if result["sent"]
+            else f"Email failed: {result.get('reason', 'unknown error')}"
+        ),
     }
 
 

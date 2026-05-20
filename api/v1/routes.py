@@ -326,6 +326,7 @@ def verify_email(token: str) -> dict:
 class InterpretRequest(BaseModel):
     input: str
     dataset_id: int | None = None
+    recipient: str | None = None
 
 
 class WorkflowRunRequest(BaseModel):
@@ -351,7 +352,7 @@ def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(requi
     if not request.input.strip():
         return JSONResponse(status_code=400, content=build_error_response("Input cannot be empty"))
     try:
-        return handle_input(request.input, user_id=user.user_id, dataset_id=request.dataset_id)
+        return handle_input(request.input, user_id=user.user_id, dataset_id=request.dataset_id, recipient=request.recipient)
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 

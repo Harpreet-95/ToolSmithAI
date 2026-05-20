@@ -1787,6 +1787,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const S = makeS(C)
 
   const [taskInput, setTaskInput] = useState('')
+  const [recipientEmail, setRecipientEmail] = useState('')
   const [loading, setLoading]     = useState(false)
   const [result, setResult]           = useState(null)
   const [error, setError]             = useState(null)
@@ -2214,6 +2215,12 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       setValidationError('This task needs a dataset. Please choose or upload a dataset first.')
       return
     }
+    const EMAIL_KEYWORDS = ['email', 'send', 'mail']
+    const isEmailIntent = EMAIL_KEYWORDS.some(kw => trimmed.toLowerCase().includes(kw))
+    if (isEmailIntent && !recipientEmail.trim()) {
+      setValidationError('Please enter a recipient email address.')
+      return
+    }
     setLoading(true)
     setResultPanelOpen(true)
     try {
@@ -2223,7 +2230,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       } catch (wfErr) {
         if (is401(wfErr)) { onSessionExpired(); return }
         if (!wfErr.message.startsWith('404:')) throw wfErr
-        data = await interpretTask(trimmed, token, selectedDatasetId)
+        data = await interpretTask(trimmed, token, selectedDatasetId, recipientEmail.trim() || null)
       }
       setResult(data.data)
       getUsage(token).then(d => setUsage(d)).catch(() => {})
@@ -2723,6 +2730,23 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                     onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRunTask() } }}
                     style={{ ...S.textarea, fontFamily: FONT, fontSize: '0.82rem', background: C.bg, border: `1px solid ${C.border}`, marginBottom: '10px', resize: 'none', lineHeight: 1.65, padding: '11px 13px' }}
                   />
+
+                  {/* Recipient input — shown only for email intents */}
+                  {['email', 'send', 'mail'].some(kw => taskInput.toLowerCase().includes(kw)) && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+                      </svg>
+                      <input
+                        type="email"
+                        placeholder="Recipient email address"
+                        value={recipientEmail}
+                        onChange={e => { setRecipientEmail(e.target.value); setValidationError(null) }}
+                        style={{ flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 12px', fontSize: '0.78rem', color: C.text, fontFamily: FONT, outline: 'none' }}
+                        className="ts-input"
+                      />
+                    </div>
+                  )}
 
                   {validationError && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '8px 12px', marginBottom: '10px', background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '8px', fontSize: '0.78rem', color: C.danger }}>

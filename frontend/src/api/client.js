@@ -27,9 +27,10 @@ export async function verifyKey(token) {
   return parseResponse(res);
 }
 
-export async function interpretTask(task, token, datasetId = null) {
+export async function interpretTask(task, token, datasetId = null, recipient = null) {
   const body = { input: task };
   if (datasetId != null) body.dataset_id = datasetId;
+  if (recipient != null && recipient.trim() !== '') body.recipient = recipient.trim();
   const res = await fetch('/v1/interpret', {
     method: 'POST',
     headers: AUTH_HEADERS(token),
