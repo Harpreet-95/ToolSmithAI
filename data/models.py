@@ -122,6 +122,22 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_reports_user_id    ON reports (user_id);
         CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports (created_at);
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id              TEXT    NOT NULL,
+            type                 TEXT    NOT NULL DEFAULT 'info',
+            title                TEXT    NOT NULL,
+            message              TEXT    NOT NULL,
+            status               TEXT    NOT NULL DEFAULT 'info',
+            read                 INTEGER NOT NULL DEFAULT 0,
+            related_report_id    INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+            related_execution_id INTEGER REFERENCES execution_history(id) ON DELETE SET NULL,
+            created_at           TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_user_id    ON notifications (user_id);
+        CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications (created_at);
     """)
     conn.commit()
 
