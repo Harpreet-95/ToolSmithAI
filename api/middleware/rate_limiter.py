@@ -80,5 +80,15 @@ class AuthFailureRateLimiter:
 
         await self.app(scope, receive, send_wrapper)
 
-        if status_holder and status_holder[0] == 401:
+        # Only count credential failures on the login/register endpoints.
+        # Expired-token 401s on authenticated endpoints must not contribute to
+        # the brute-force counter — a single session expiry can produce a burst
+        # of simultaneous 401s that would otherwise trip the limiter instantly.
+        _CREDENTIAL_PATHS = {"/v1/auth/login", "/v1/auth/register"}
+        if (
+            status_holder
+            and status_holder[0] == 401
+            and scope.get("path") in _CREDENTIAL_PATHS
+            and scope.get("method") == "POST"
+        ):
             record["count"] += 1
