@@ -1135,6 +1135,168 @@ def _build_trend_section(
     }
 
 
+def _build_predictive_readiness_section(
+    row_count: int,
+    column_count: int,
+    numeric_profile: dict,
+    categorical_profile: dict,
+    missing_values: dict,
+    date_profile: dict,
+) -> dict:
+    """Assess whether the dataset is ready for future predictive analytics.
+
+    No predictions. No ML models. No forecasting claims.
+    Evaluates five readiness signals against conservative thresholds.
+    Each signal contributes 0 (missing), 10 (partial), or 20 (ready) points.
+    Maximum score = 100. Always returns a section — never omitted.
+    """
+    signals: list[dict] = []
+    score = 0
+
+    # ── Signal 1: Dataset size ────────────────────────────────────────────────
+    if row_count >= 1000:
+        s1, score = "ready", score + 20
+        desc1 = "Sufficient records for model training."
+        ev1   = f"{row_count:,} rows — meets the 1,000-row minimum threshold."
+    elif row_count >= 100:
+        s1, score = "partial", score + 10
+        desc1 = "Borderline sample size — models trained here may have limited reliability."
+        ev1   = f"{row_count:,} rows — below the recommended 1,000 rows for reliable training."
+    else:
+        s1    = "missing"
+        desc1 = "Too few records for reliable model training."
+        ev1   = f"Only {row_count:,} row{'s' if row_count != 1 else ''} — at least 100 required to proceed."
+    signals.append({"name": "Dataset Size", "status": s1, "description": desc1, "evidence": ev1})
+
+    # ── Signal 2: Numeric features ────────────────────────────────────────────
+    num_count = len(numeric_profile)
+    if num_count >= 2:
+        s2, score = "ready", score + 20
+        desc2 = "Multiple numeric features support quantitative modeling."
+        ev2   = f"{num_count} numeric columns available."
+    elif num_count == 1:
+        s2, score = "partial", score + 10
+        desc2 = "Only one numeric feature — additional measurable columns would improve model quality."
+        ev2   = "1 numeric column available; 2+ recommended for meaningful modeling."
+    else:
+        s2    = "missing"
+        desc2 = "No numeric features — quantitative modeling requires measurable numeric columns."
+        ev2   = "No numeric columns detected in the dataset."
+    signals.append({"name": "Numeric Features", "status": s2, "description": desc2, "evidence": ev2})
+
+    # ── Signal 3: Categorical segmentation ───────────────────────────────────
+    cat_count = len(categorical_profile)
+    if cat_count >= 1:
+        s3, score = "ready", score + 20
+        desc3 = "Categorical columns enable segment-level and classification modeling."
+        ev3   = f"{cat_count} categorical column{'s' if cat_count != 1 else ''} available."
+    else:
+        s3    = "missing"
+        desc3 = "No categorical columns — segmentation and classification modeling are not possible."
+        ev3   = "No categorical columns detected in the dataset."
+    signals.append({"name": "Categorical Segmentation", "status": s3, "description": desc3, "evidence": ev3})
+
+    # ── Signal 4: Data completeness ───────────────────────────────────────────
+    total_cells     = row_count * column_count
+    completeness_pct: float | None = None
+    if total_cells > 0:
+        try:
+            total_missing = sum(
+                v for v in missing_values.values()
+                if isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+            )
+            completeness_pct = round((1 - total_missing / total_cells) * 100, 1)
+        except Exception:
+            pass
+
+    if completeness_pct is not None:
+        if completeness_pct >= 95:
+            s4, score = "ready", score + 20
+            desc4 = "High data completeness supports clean model training."
+            ev4   = f"{completeness_pct}% of cells contain values."
+        elif completeness_pct >= 80:
+            s4, score = "partial", score + 10
+            desc4 = "Moderate completeness — missing values may need imputation before training."
+            ev4   = f"{completeness_pct}% of cells contain values; 95%+ is recommended."
+        else:
+            s4    = "missing"
+            desc4 = "Low completeness — significant imputation or data collection required before modeling."
+            ev4   = f"Only {completeness_pct}% of cells contain values."
+    else:
+        s4    = "missing"
+        desc4 = "Could not compute data completeness."
+        ev4   = "Insufficient row/column information to calculate completeness."
+    signals.append({"name": "Data Completeness", "status": s4, "description": desc4, "evidence": ev4})
+
+    # ── Signal 5: Time-series potential ──────────────────────────────────────
+    date_cols      = date_profile.get("date_columns") or []
+    trend_insights = date_profile.get("trend_insights") or []
+    if date_cols and trend_insights:
+        s5, score = "ready", score + 20
+        dc        = date_cols[0]
+        desc5 = "Date column with trend signals detected — time-series modeling is feasible."
+        ev5   = (
+            f"Column '{dc['column']}' present with {len(trend_insights)} trend "
+            f"signal{'s' if len(trend_insights) != 1 else ''}. "
+            f"Range: {dc.get('range_days', 0):,} days."
+        )
+    elif date_cols:
+        s5, score = "partial", score + 10
+        desc5 = "Date column present but no trend signals computed — time-series support is limited."
+        ev5   = f"Column '{date_cols[0]['column']}' detected; no trend insights available."
+    else:
+        s5    = "missing"
+        desc5 = "No date or timestamp column — time-series and forecasting models are not applicable."
+        ev5   = "No date columns detected in the dataset."
+    signals.append({"name": "Time-Series Potential", "status": s5, "description": desc5, "evidence": ev5})
+
+    # ── Readiness level ───────────────────────────────────────────────────────
+    readiness_level = "high" if score >= 80 else ("medium" if score >= 50 else "low")
+
+    # ── Next steps (only for missing or partial signals) ─────────────────────
+    next_steps: list[str] = []
+    status_map = {sig["name"]: sig["status"] for sig in signals}
+
+    if status_map.get("Dataset Size") != "ready":
+        next_steps.append(
+            "Collect more records — at least 1,000 rows are recommended for reliable model training."
+        )
+    if status_map.get("Numeric Features") != "ready":
+        next_steps.append(
+            "Add measurable numeric columns (e.g., revenue, quantity, duration) "
+            "to enable quantitative modeling."
+        )
+    if status_map.get("Categorical Segmentation") != "ready":
+        next_steps.append(
+            "Add grouping or category fields to enable segment-level prediction and classification."
+        )
+    if status_map.get("Data Completeness") != "ready":
+        next_steps.append(
+            "Review and clean missing values before applying predictive models; "
+            "consider imputation strategies."
+        )
+    if status_map.get("Time-Series Potential") != "ready":
+        next_steps.append(
+            "Add a timestamp or date column to unlock time-series analysis "
+            "and forecasting capabilities."
+        )
+
+    if not next_steps:
+        next_steps.append(
+            "Dataset meets all readiness criteria. "
+            "Consider scheduling a predictive analytics workflow."
+        )
+
+    return {
+        "type":            "predictive_readiness",
+        "heading":         "Predictive Readiness",
+        "readiness_score": score,
+        "readiness_level": readiness_level,
+        "signals":         signals,
+        "next_steps":      next_steps,
+    }
+
+
 def generate_dataset_report(dataset: dict) -> dict:
     """
     Build a structured report from a stored dataset summary row.
@@ -1269,6 +1431,12 @@ def generate_dataset_report(dataset: dict) -> dict:
 
     # ── Trend Intelligence ────────────────────────────────────────────────────
     sections.append(_build_trend_section(
+        row_count, column_count,
+        numeric_profile, categorical_profile, missing_values, date_profile,
+    ))
+
+    # ── Predictive Readiness ──────────────────────────────────────────────────
+    sections.append(_build_predictive_readiness_section(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
     ))

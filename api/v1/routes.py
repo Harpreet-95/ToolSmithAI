@@ -1423,6 +1423,70 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     pdf.ln(2)
                 except Exception:
                     pass
+        elif sec_type == "predictive_readiness":
+            pr_score = section.get("readiness_score")
+            pr_level = str(section.get("readiness_level", "low")).lower()
+            _PR_LV_RGB = {
+                "high":   ( 16, 185, 129),
+                "medium": (245, 158,  11),
+                "low":    (248, 113, 113),
+            }
+            _PR_ST_RGB = {
+                "ready":   ( 16, 185, 129),
+                "partial": (245, 158,  11),
+                "missing": (248, 113, 113),
+            }
+            _PR_ST_SYM = {"ready": "[OK]", "partial": "[~]", "missing": "[X]"}
+            lv_rgb = _PR_LV_RGB.get(pr_level, (100, 116, 139))
+            # Score + level line
+            score_str = str(pr_score) if pr_score is not None else "-"
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_text_color(*lv_rgb)
+            pdf.cell(0, 6, f"Score: {score_str} / 100  [{pr_level.upper()} READINESS]",
+                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(2)
+            # Signals
+            for sig in section.get("signals", []):
+                try:
+                    st_key  = str(sig.get("status", "missing")).lower()
+                    st_rgb  = _PR_ST_RGB.get(st_key, (100, 116, 139))
+                    st_sym  = _PR_ST_SYM.get(st_key, "[?]")
+                    name    = _s(str(sig.get("name",        "")))
+                    desc    = _s(str(sig.get("description", "")))
+                    ev      = _s(str(sig.get("evidence",    "")))
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*st_rgb)
+                    pdf.cell(12, 5, st_sym)
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.multi_cell(0, 5, name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if desc:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(88, 104, 130)
+                        pdf.multi_cell(0, 4.5, f"  {desc}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if ev:
+                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_text_color(140, 155, 180)
+                        pdf.multi_cell(0, 4, f"  Evidence: {ev}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                except Exception:
+                    pass
+            # Next steps
+            next_steps = section.get("next_steps", [])
+            if next_steps:
+                pdf.ln(1)
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_text_color(99, 102, 241)
+                pdf.cell(0, 5, "NEXT STEPS", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                for step in next_steps:
+                    try:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(44, 54, 80)
+                        pdf.multi_cell(0, 4.5, f"  -> {_s(str(step))}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
         elif sec_type == "trend":
             _DIR_RGB = {
                 "up":       ( 16, 185, 129),
@@ -1664,6 +1728,27 @@ def export_report_route(
                                 w.writerow([heading, chart_type, s_name, label, val])
                             except Exception:
                                 pass
+                elif sec_type == "predictive_readiness":
+                    pr_level = section.get("readiness_level", "")
+                    pr_score = section.get("readiness_score", "")
+                    for sig in section.get("signals", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                pr_level,
+                                pr_score,
+                                sig.get("name",        ""),
+                                sig.get("status",      ""),
+                                sig.get("description", ""),
+                                sig.get("evidence",    ""),
+                            ])
+                        except Exception:
+                            pass
+                    for step in section.get("next_steps", []):
+                        try:
+                            w.writerow([heading, "next_step", step])
+                        except Exception:
+                            pass
                 elif sec_type == "trend":
                     for trend in section.get("trends", []):
                         try:

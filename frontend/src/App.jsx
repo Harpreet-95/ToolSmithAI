@@ -1669,6 +1669,85 @@ function ReportSection({ section, C }) {
               </div>
             )
           }
+          case 'predictive_readiness': {
+            const prScore  = section.readiness_score
+            const prLevel  = section.readiness_level || 'low'
+            const signals  = section.signals   || []
+            const nexts    = section.next_steps || []
+            const PR_LEVEL = {
+              high:   { color: C.success, bg: C.successSoft, label: 'HIGH'   },
+              medium: { color: C.warn,    bg: C.warnSoft,    label: 'MEDIUM' },
+              low:    { color: C.danger,  bg: C.dangerSoft,  label: 'LOW'    },
+            }
+            const PR_STATUS = {
+              ready:   { color: C.success, bg: C.successSoft, symbol: '✓', label: 'READY'   },
+              partial: { color: C.warn,    bg: C.warnSoft,    symbol: '~', label: 'PARTIAL' },
+              missing: { color: C.danger,  bg: C.dangerSoft,  symbol: '✗', label: 'MISSING' },
+            }
+            const lv = PR_LEVEL[prLevel] || PR_LEVEL.low
+            return (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', background: lv.bg, border: `1px solid ${lv.color}30`, borderRadius: '10px', padding: '8px 14px', minWidth: '64px' }}>
+                    <span style={{ fontSize: '1.8rem', fontWeight: '800', color: lv.color, lineHeight: 1 }}>
+                      {prScore != null ? prScore : '—'}
+                    </span>
+                    <span style={{ fontSize: '0.55rem', color: lv.color, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginTop: '3px' }}>/ 100</span>
+                  </div>
+                  <div>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: lv.bg, color: lv.color, border: `1px solid ${lv.color}30`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.7rem', fontWeight: '600', letterSpacing: '0.04em' }}>
+                      <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: lv.color, flexShrink: 0 }} />
+                      {lv.label} READINESS
+                    </div>
+                    <div style={{ fontSize: '0.68rem', color: C.textMuted, marginTop: '5px' }}>
+                      {signals.length} signal{signals.length !== 1 ? 's' : ''} evaluated
+                    </div>
+                  </div>
+                </div>
+                {signals.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+                    {signals.map((sig, j) => {
+                      try {
+                        const st = PR_STATUS[sig.status] || PR_STATUS.missing
+                        return (
+                          <div key={j} style={{ background: C.bg, border: `1px solid ${C.border}`, borderLeft: `3px solid ${st.color}`, borderRadius: '8px', padding: '8px 11px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '3px', flexWrap: 'wrap' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', background: st.bg, color: st.color, borderRadius: '4px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.06em', flexShrink: 0 }}>
+                                {st.symbol} {st.label}
+                              </span>
+                              <span style={{ fontSize: '0.76rem', fontWeight: '600', color: C.text }}>{sig.name || '—'}</span>
+                            </div>
+                            {sig.description && (
+                              <div style={{ fontSize: '0.72rem', color: C.textSec, lineHeight: 1.5, marginBottom: '2px' }}>{sig.description}</div>
+                            )}
+                            {sig.evidence && (
+                              <div style={{ fontSize: '0.67rem', color: C.textMuted, fontFamily: MONO, lineHeight: 1.5 }}>{sig.evidence}</div>
+                            )}
+                          </div>
+                        )
+                      } catch (_) { return null }
+                    })}
+                  </div>
+                )}
+                {nexts.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.62rem', fontWeight: '700', color: C.accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px' }}>Next Steps</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {nexts.map((step, j) => (
+                        <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '7px', fontSize: '0.74rem', color: C.text, lineHeight: 1.55 }}>
+                          <span style={{ color: C.accent, fontWeight: '700', flexShrink: 0 }}>→</span>
+                          <span>{typeof step === 'string' ? step : JSON.stringify(step)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {!signals.length && !nexts.length && (
+                  <div style={{ fontSize: '0.75rem', color: C.textMuted }}>Not assessed.</div>
+                )}
+              </div>
+            )
+          }
           case 'trend': {
             const trends = section.trends || []
             if (!trends.length) {
