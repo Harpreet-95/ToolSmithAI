@@ -36,6 +36,7 @@ from data.db import get_connection
 from data.execution_history import enrich_execution_record, get_execution_by_id, get_repeated_intent_suggestions, get_workflow_success_insights, purge_old_execution_history
 from data.usage_service import count_usage_events, list_usage_events
 from data.report_service import list_reports_for_user, get_report_by_id, delete_report
+from data.notification_service import list_notifications_for_user, mark_notification_read, delete_notification
 
 
 def _compute_date_profile(
@@ -1490,6 +1491,43 @@ def email_report_route(
                 ),
             },
         }
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/notifications")
+def list_notifications_route(user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    try:
+        notifications = list_notifications_for_user(str(user.user_id))
+        return {"status": "success", "data": notifications}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/notifications/{notification_id}/read")
+def mark_notification_read_route(
+    notification_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        updated = mark_notification_read(notification_id, str(user.user_id))
+        if not updated:
+            return JSONResponse(status_code=404, content=build_error_response("Notification not found"))
+        return {"status": "success", "data": {"id": notification_id, "read": True}}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.delete("/notifications/{notification_id}")
+def delete_notification_route(
+    notification_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        deleted = delete_notification(notification_id, str(user.user_id))
+        if not deleted:
+            return JSONResponse(status_code=404, content=build_error_response("Notification not found"))
+        return {"status": "success", "data": {"deleted_id": notification_id}}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
