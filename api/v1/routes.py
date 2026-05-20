@@ -35,6 +35,7 @@ from data.audit import delete_audit_log_entries, purge_old_audit_db, purge_old_a
 from data.db import get_connection
 from data.execution_history import enrich_execution_record, get_execution_by_id, get_repeated_intent_suggestions, get_workflow_success_insights, purge_old_execution_history
 from data.usage_service import count_usage_events, list_usage_events
+from data.report_service import list_reports_for_user, get_report_by_id, delete_report
 
 
 def _compute_date_profile(
@@ -1197,6 +1198,37 @@ def assistant_explain(
 
     fallback = _deterministic_explain(request.context_type, context_data)
     return {"status": "success", "data": {**fallback, "source": "deterministic"}}
+
+
+@router.get("/reports")
+def list_reports_route(user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    try:
+        reports = list_reports_for_user(str(user.user_id))
+        return {"status": "success", "data": reports}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/reports/{report_id}")
+def get_report_route(report_id: int, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    try:
+        report = get_report_by_id(report_id, str(user.user_id))
+        if report is None:
+            return JSONResponse(status_code=404, content=build_error_response("Report not found"))
+        return {"status": "success", "data": report}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.delete("/reports/{report_id}")
+def delete_report_route(report_id: int, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    try:
+        deleted = delete_report(report_id, str(user.user_id))
+        if not deleted:
+            return JSONResponse(status_code=404, content=build_error_response("Report not found"))
+        return {"status": "success", "data": {"deleted_id": report_id}}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 @router.get("/health")
