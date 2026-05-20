@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport } from './api/client'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport } from './api/client'
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C_DARK = {
@@ -1863,6 +1863,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [selectedReportId,      setSelectedReportId]      = useState(null)
   const [selectedReportData,    setSelectedReportData]    = useState(null)
   const [selectedReportLoading, setSelectedReportLoading] = useState(false)
+  const [reportEmailInput,      setReportEmailInput]      = useState('')
+  const [reportEmailStatus,     setReportEmailStatus]     = useState(null)
+  const [reportEmailSending,    setReportEmailSending]    = useState(false)
   const prevSummaryIdRef = useRef(null)
   const dsFileInputRef        = useRef(null)
   const composerFileInputRef  = useRef(null)
@@ -2212,10 +2215,15 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   useEffect(() => { if (activeNav === 'reports') refreshReports() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSelectReport(id) {
-    if (selectedReportId === id) { setSelectedReportId(null); setSelectedReportData(null); return }
+    if (selectedReportId === id) {
+      setSelectedReportId(null); setSelectedReportData(null)
+      setReportEmailInput(''); setReportEmailStatus(null); setReportEmailSending(false)
+      return
+    }
     setSelectedReportId(id)
     setSelectedReportData(null)
     setSelectedReportLoading(true)
+    setReportEmailInput(''); setReportEmailStatus(null); setReportEmailSending(false)
     try {
       const d = await getReportById(id, token)
       setSelectedReportData(d?.data ?? null)
@@ -2223,6 +2231,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       if (is401(err)) onSessionExpired()
     } finally {
       setSelectedReportLoading(false)
+    }
+  }
+
+  async function handleEmailReport(reportId) {
+    const to = reportEmailInput.trim()
+    if (!to) { setReportEmailStatus({ ok: false, msg: 'Please enter a recipient email address.' }); return }
+    setReportEmailSending(true)
+    setReportEmailStatus(null)
+    try {
+      const d = await emailReport(reportId, to, token)
+      setReportEmailStatus({ ok: true, msg: d.data.message })
+    } catch (err) {
+      if (is401(err)) { onSessionExpired(); return }
+      setReportEmailStatus({ ok: false, msg: err.message.replace(/^\d+:\s*/, '') })
+    } finally {
+      setReportEmailSending(false)
     }
   }
 
@@ -4330,6 +4354,41 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                         </div>
                                       </div>
                                     ))}
+                                  </div>
+
+                                  {/* Email report section */}
+                                  <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: `1px solid ${C.border}` }}>
+                                    <div style={{ fontSize: '0.7rem', fontWeight: '500', color: C.textSec, marginBottom: '8px' }}>Email this report</div>
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                      <input
+                                        type="email"
+                                        placeholder="Recipient email address"
+                                        value={reportEmailInput}
+                                        onChange={e => { setReportEmailInput(e.target.value); setReportEmailStatus(null) }}
+                                        style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 11px', fontSize: '0.75rem', color: C.text, fontFamily: FONT, outline: 'none' }}
+                                        className="ts-input"
+                                      />
+                                      <button
+                                        onClick={() => handleEmailReport(r.id)}
+                                        disabled={reportEmailSending}
+                                        style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px 12px', fontSize: '0.72rem', color: C.textSec, cursor: reportEmailSending ? 'not-allowed' : 'pointer', fontFamily: FONT, fontWeight: '500', opacity: reportEmailSending ? 0.6 : 1, flexShrink: 0 }}
+                                        onMouseEnter={e => { if (!reportEmailSending) { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent } }}
+                                        onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textSec }}
+                                      >
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                                        {reportEmailSending ? 'Sending…' : 'Email Report'}
+                                      </button>
+                                    </div>
+                                    {reportEmailStatus && (
+                                      <div style={{ marginTop: '8px', fontSize: '0.72rem', color: reportEmailStatus.ok ? C.success : C.danger, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                          {reportEmailStatus.ok
+                                            ? <><polyline points="20 6 9 17 4 12"/></>
+                                            : <><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></>}
+                                        </svg>
+                                        {reportEmailStatus.msg}
+                                      </div>
+                                    )}
                                   </div>
                                   </>
                                 ) : (

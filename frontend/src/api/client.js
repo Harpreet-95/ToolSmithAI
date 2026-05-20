@@ -317,3 +317,12 @@ export async function exportReport(reportId, token, format = 'json') {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+export async function emailReport(reportId, recipientEmail, token) {
+  const res = await fetch(`/v1/reports/${reportId}/email`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({ recipient_email: recipientEmail }),
+  });
+  return parseResponse(res);
+}
