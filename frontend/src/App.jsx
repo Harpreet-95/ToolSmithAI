@@ -1790,6 +1790,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [loading, setLoading]     = useState(false)
   const [result, setResult]           = useState(null)
   const [error, setError]             = useState(null)
+  const [validationError, setValidationError] = useState(null)
   const [resultPanelOpen, setResultPanelOpen] = useState(false)
   const [activeNav,       setActiveNav]       = useState('overview')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
@@ -2186,7 +2187,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       .then(data => {
         const list = data?.data ?? []
         setDatasetList(list)
-        setSelectedDatasetId(prev => (prev === null && list.length > 0) ? list[0].id : prev)
       })
       .catch(err => { if (is401(err)) onSessionExpired() })
       .finally(() => setDatasetListLoading(false))
@@ -2196,16 +2196,24 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
   async function handleRunTask() {
     setError(null)
+    setValidationError(null)
+    setResult(null)
+    setResultPanelOpen(false)
     const trimmed = taskInput.trim()
     if (!trimmed) {
-      setError('Please enter a task description.')
+      setValidationError('Please enter a task description.')
       return
     }
     if (trimmed.length < 5) {
-      setError('Task description must be at least 5 characters.')
+      setValidationError('Task description must be at least 5 characters.')
       return
     }
-    setResult(null)
+    const DATASET_KEYWORDS = ['report', 'summary', 'dataset', 'spreadsheet', 'csv', 'excel', 'analysis', 'analyze']
+    const needsDataset = DATASET_KEYWORDS.some(kw => trimmed.toLowerCase().includes(kw))
+    if (needsDataset && !selectedDatasetId) {
+      setValidationError('This task needs a dataset. Please choose or upload a dataset first.')
+      return
+    }
     setLoading(true)
     setResultPanelOpen(true)
     try {
@@ -2716,6 +2724,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                     style={{ ...S.textarea, fontFamily: FONT, fontSize: '0.82rem', background: C.bg, border: `1px solid ${C.border}`, marginBottom: '10px', resize: 'none', lineHeight: 1.65, padding: '11px 13px' }}
                   />
 
+                  {validationError && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '8px 12px', marginBottom: '10px', background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '8px', fontSize: '0.78rem', color: C.danger }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      {validationError}
+                    </div>
+                  )}
+
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' }}>
                     <button onClick={() => composerFileInputRef.current && composerFileInputRef.current.click()} style={ghostBtn}>
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -2734,9 +2749,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                       {dsPickerOpen && (
                         <div style={{
                           position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 99,
-                          width: '300px', background: '#13151f',
+                          width: '300px', background: C.surface,
                           border: `1px solid ${C.borderAlt}`, borderRadius: '12px',
-                          boxShadow: '0 12px 40px rgba(0,0,0,0.6)', overflow: 'hidden',
+                          boxShadow: '0 12px 40px rgba(0,0,0,0.18)', overflow: 'hidden',
                         }}>
                           {/* Picker header */}
                           <div style={{ padding: '11px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -2804,6 +2819,19 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                     </button>
                   </div>
 
+                  {/* Dataset context bar */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '6px 10px', marginBottom: '10px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={selectedDatasetId && activeDs && activeDs.id === selectedDatasetId ? C.accent : C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                    </svg>
+                    {selectedDatasetId && activeDs && activeDs.id === selectedDatasetId ? (<>
+                      <span style={{ fontSize: '0.7rem', color: C.textSec, flexShrink: 0 }}>Using Dataset:</span>
+                      <span style={{ fontSize: '0.7rem', color: C.text, fontWeight: '500', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{activeDs.filename}</span>
+                      <button onClick={() => setDsPickerOpen(o => !o)} style={{ background: 'none', border: 'none', color: C.accent, fontSize: '0.68rem', fontWeight: '500', cursor: 'pointer', fontFamily: FONT, padding: 0, flexShrink: 0 }}>Change</button>
+                    </>) : (
+                      <span style={{ fontSize: '0.7rem', color: C.textMuted }}>No dataset selected</span>
+                    )}
+                  </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '4px' }}>
                     <span style={{ fontSize: '0.68rem', color: C.textMuted, flexShrink: 0, fontWeight: '500' }}>Try:</span>
