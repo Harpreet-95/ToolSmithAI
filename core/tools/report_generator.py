@@ -260,6 +260,7 @@ def _build_chart_sections(
     missing_values: dict,
     row_count: int,
     date_profile: dict,
+    numeric_profile: dict | None = None,
 ) -> list[dict]:
     """Build chart sections from stored profile data. Returns [] on any failure.
 
@@ -314,6 +315,56 @@ def _build_chart_sections(
                     "series": [{"name": "Missing Count", "data": [cnt for _, cnt in missing_entries]}],
                 },
             })
+    except Exception:
+        pass
+
+    # 3. Histogram chart — numeric column with highest std (most informative spread)
+    if numeric_profile:
+        try:
+            best_hist_col = max(
+                (
+                    (col, s)
+                    for col, s in numeric_profile.items()
+                    if s.get("histogram_bins") and any(b.get("count", 0) > 0 for b in s["histogram_bins"])
+                ),
+                key=lambda x: abs(float(x[1].get("std") or 0)),
+                default=None,
+            )
+            if best_hist_col:
+                col, stats = best_hist_col
+                bins   = stats["histogram_bins"]
+                labels = [f"{b['min']:.2f}" for b in bins]
+                data   = [b.get("count", 0) for b in bins]
+                if any(d > 0 for d in data):
+                    charts.append({
+                        "type":    "chart",
+                        "heading": f"{col} — Value Distribution",
+                        "chart":   {
+                            "chart_type": "bar",
+                            "labels":     labels,
+                            "series":     [{"name": "Count", "data": data}],
+                        },
+                    })
+        except Exception:
+            pass
+
+    # 4. Monthly trend chart — primary date column
+    try:
+        for dc in (date_profile.get("date_columns") or [])[:1]:
+            mc = dc.get("monthly_counts", [])
+            if len(mc) >= 2:
+                labels = [m.get("month", "") for m in mc]
+                data   = [m.get("count", 0) for m in mc]
+                col    = dc.get("column", "date")
+                charts.append({
+                    "type":    "chart",
+                    "heading": f"{col} — Monthly Volume",
+                    "chart":   {
+                        "chart_type": "bar",
+                        "labels":     labels,
+                        "series":     [{"name": "Records", "data": data}],
+                    },
+                })
     except Exception:
         pass
 
@@ -495,6 +546,7 @@ def _build_recommendation_section(
     categorical_profile: dict,
     missing_values: dict,
     date_profile: dict,
+    correlation_profile: list | None = None,
 ) -> dict | None:
     """Build deterministic recommended actions from stored profile data.
 
@@ -609,7 +661,71 @@ def _build_recommendation_section(
             "confidence":  "medium",
         })
 
-    # 6. Large dataset — automation opportunity (low priority, fill remaining slot)
+    # 6a. Outlier concentration — data quality action
+    if len(recs) < 5:
+        for col, stats in numeric_profile.items():
+            try:
+                oc = stats.get("outlier_count_iqr", 0)
+                nn = stats.get("non_null_count")
+                if not nn or nn == 0:
+                    continue
+                density = float(oc) / float(nn)
+                if density >= 0.10:
+                    recs.append({
+                        "title":       f"Investigate Outlier Concentration: {col}",
+                        "reason":      (
+                            f"{int(oc):,} outlier values in '{col}' "
+                            f"({round(density * 100, 1)}% via IQR). "
+                            "Review for data entry errors or genuine extreme values before analysis."
+                        ),
+                        "priority":    "high" if density >= 0.20 else "medium",
+                        "action_type": "review",
+                        "confidence":  "high",
+                    })
+                    break
+            except Exception:
+                continue
+
+    # 6b. Strong correlations — predictive modeling opportunity
+    if len(recs) < 5 and correlation_profile:
+        try:
+            strong = [p for p in correlation_profile if abs(p.get("correlation", 0)) >= 0.50]
+            if len(strong) >= 2:
+                top = strong[0]
+                recs.append({
+                    "title":       "Leverage Detected Feature Correlations",
+                    "reason":      (
+                        f"Strong correlation (r={round(top['correlation'], 2)}) between "
+                        f"'{top['column_a']}' and '{top['column_b']}'. "
+                        f"{len(strong)} correlated feature pairs may support predictive modeling."
+                    ),
+                    "priority":    "medium",
+                    "action_type": "review",
+                    "confidence":  "medium",
+                })
+        except Exception:
+            pass
+
+    # 6c. Daily granularity — forecasting workflow
+    if len(recs) < 5:
+        try:
+            for dc in (date_profile.get("date_columns") or [])[:1]:
+                if dc.get("inferred_granularity") == "daily":
+                    recs.append({
+                        "title":       "Enable Time-Series Forecasting Workflow",
+                        "reason":      (
+                            f"Column '{dc['column']}' has daily granularity over "
+                            f"{dc.get('range_days', 0):,} days. "
+                            "Daily data supports short-term trend monitoring and scheduling."
+                        ),
+                        "priority":    "medium",
+                        "action_type": "schedule",
+                        "confidence":  "high",
+                    })
+        except Exception:
+            pass
+
+    # 7. Large dataset — automation opportunity (low priority, fill remaining slot)
     if row_count >= 10_000 and len(recs) < 5:
         recs.append({
             "title":       "Automate with Scheduled Reporting",
@@ -639,6 +755,8 @@ def _build_anomaly_section(
     categorical_profile: dict,
     missing_values: dict,
     date_profile: dict,
+    correlation_profile: list | None = None,
+    categorical_meta: dict | None = None,
 ) -> dict:
     """Build deterministic anomaly/risk detection from stored profile data only.
 
@@ -831,6 +949,137 @@ def _build_anomaly_section(
                 continue
     except Exception:
         pass
+
+    # ── 7. High outlier density (IQR-based) ──────────────────────────────────
+    for col, stats in numeric_profile.items():
+        try:
+            oc = stats.get("outlier_count_iqr")
+            nn = stats.get("non_null_count")
+            if oc is None or not nn or nn == 0:
+                continue
+            density = float(oc) / float(nn)
+            if density >= 0.20:
+                anomalies.append({
+                    "title":       f"High Outlier Density: {col}",
+                    "description": f"Column '{col}' has a high proportion of IQR outliers.",
+                    "severity":    "high",
+                    "category":    "distribution",
+                    "evidence":    f"{int(oc):,} outliers in {int(nn):,} non-null values ({round(density * 100, 1)}%).",
+                })
+            elif density >= 0.10:
+                anomalies.append({
+                    "title":       f"Moderate Outlier Density: {col}",
+                    "description": f"Column '{col}' contains a notable proportion of IQR outliers.",
+                    "severity":    "medium",
+                    "category":    "distribution",
+                    "evidence":    f"{int(oc):,} outliers in {int(nn):,} non-null values ({round(density * 100, 1)}%).",
+                })
+        except Exception:
+            continue
+
+    # ── 8. Extreme variability (coefficient of variation) ────────────────────
+    for col, stats in numeric_profile.items():
+        try:
+            std  = stats.get("std")
+            mean = stats.get("mean")
+            if std is None or mean is None:
+                continue
+            std_f  = float(std)
+            mean_f = float(mean)
+            if not (math.isfinite(std_f) and math.isfinite(mean_f)) or mean_f == 0:
+                continue
+            cv = std_f / abs(mean_f)
+            if cv > 5.0:
+                anomalies.append({
+                    "title":       f"Extreme Variability: {col}",
+                    "description": f"Column '{col}' has an extreme coefficient of variation — values are highly unstable relative to the mean.",
+                    "severity":    "high",
+                    "category":    "distribution",
+                    "evidence":    f"CV={round(cv, 2)} (std={_safe_fmt(std_f)}, mean={_safe_fmt(mean_f)}).",
+                })
+            elif cv > 2.0:
+                anomalies.append({
+                    "title":       f"High Variability: {col}",
+                    "description": f"Column '{col}' shows high relative variability around its mean.",
+                    "severity":    "medium",
+                    "category":    "distribution",
+                    "evidence":    f"CV={round(cv, 2)} (std={_safe_fmt(std_f)}, mean={_safe_fmt(mean_f)}).",
+                })
+        except Exception:
+            continue
+
+    # ── 9. Sparse histogram distribution ─────────────────────────────────────
+    _sparse_best: tuple | None = None
+    _sparse_best_frac = 0.0
+    for col, stats in numeric_profile.items():
+        try:
+            bins = stats.get("histogram_bins", [])
+            if len(bins) < 5:
+                continue
+            empty = sum(1 for b in bins if b.get("count", 0) == 0)
+            frac  = empty / len(bins)
+            if frac > _sparse_best_frac:
+                _sparse_best_frac = frac
+                _sparse_best = (col, empty, len(bins))
+        except Exception:
+            continue
+    if _sparse_best and _sparse_best_frac > 0.50:
+        col, empty, total = _sparse_best
+        anomalies.append({
+            "title":       f"Sparse Distribution: {col}",
+            "description": f"Column '{col}' has large empty regions in its value distribution, suggesting gaps or multimodal patterns.",
+            "severity":    "medium",
+            "category":    "distribution",
+            "evidence":    f"{empty} of {total} histogram bins are empty ({round(_sparse_best_frac * 100, 0):.0f}% empty).",
+        })
+
+    # ── 10. Correlation risk (near-perfect collinearity) ─────────────────────
+    if correlation_profile:
+        _corr_added = 0
+        for pair in correlation_profile:
+            try:
+                c = float(pair.get("correlation", 0))
+                if abs(c) >= 0.90:
+                    a, b = pair.get("column_a", ""), pair.get("column_b", "")
+                    anomalies.append({
+                        "title":       f"Strong Collinearity: {a} & {b}",
+                        "description": f"Near-perfect correlation between '{a}' and '{b}' may indicate redundant or co-dependent features.",
+                        "severity":    "medium",
+                        "category":    "quality",
+                        "evidence":    f"Pearson r={round(c, 3)} (threshold: |r| ≥ 0.90).",
+                    })
+                    _corr_added += 1
+                    if _corr_added >= 2:
+                        break
+            except Exception:
+                continue
+
+    # ── 11. Entropy collapse (near-single-value categorical) ─────────────────
+    if categorical_meta:
+        for col, meta in categorical_meta.items():
+            try:
+                entropy    = meta.get("entropy_approx")
+                unique     = meta.get("unique_count", 1)
+                top_share  = float(meta.get("top_value_share", 0))
+                if entropy is None or unique <= 1:
+                    continue
+                # Skip if already captured by the ≥80% dominance check above
+                if top_share >= 0.80:
+                    continue
+                if float(entropy) < 0.30:
+                    anomalies.append({
+                        "title":       f"Low Categorical Diversity: {col}",
+                        "description": f"Column '{col}' has near-zero entropy — distributional variety is severely limited.",
+                        "severity":    "medium",
+                        "category":    "distribution",
+                        "evidence":    (
+                            f"Entropy={round(float(entropy), 3)}, "
+                            f"{unique} unique value{'s' if unique != 1 else ''}, "
+                            f"top-value share={round(top_share * 100, 1)}%."
+                        ),
+                    })
+            except Exception:
+                continue
 
     # ── Sort high → medium → low, cap at 8 ───────────────────────────────────
     _SEV_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -1107,6 +1356,87 @@ def _build_trend_section(
         except Exception:
             pass
 
+    # ── 5. Monthly volume pattern (from monthly_counts) ──────────────────────
+    try:
+        for dc in (date_profile.get("date_columns") or [])[:1]:
+            mc = dc.get("monthly_counts", [])
+            if len(mc) < 3:
+                break
+            counts = [m.get("count", 0) for m in mc if "count" in m]
+            if len(counts) < 3:
+                break
+            half       = max(len(counts) // 2, 1)
+            avg_first  = sum(counts[:half]) / half
+            avg_second = sum(counts[half:]) / max(len(counts) - half, 1)
+            col        = dc.get("column", "date")
+            if avg_second > avg_first * 1.15:
+                trends.append({
+                    "title":       f"Monthly Volume Growth: {col}",
+                    "description": "Record volume shows consistent growth in the second half of the observed period.",
+                    "direction":   "up",
+                    "strength":    "medium",
+                    "category":    "time_series",
+                    "evidence":    (
+                        f"First-half avg: {avg_first:.0f}/month → "
+                        f"Second-half avg: {avg_second:.0f}/month "
+                        f"({len(mc)} months observed)."
+                    ),
+                })
+            elif avg_second < avg_first * 0.85:
+                trends.append({
+                    "title":       f"Monthly Volume Decline: {col}",
+                    "description": "Record volume shows a declining pattern in the second half of the observed period.",
+                    "direction":   "down",
+                    "strength":    "medium",
+                    "category":    "time_series",
+                    "evidence":    (
+                        f"First-half avg: {avg_first:.0f}/month → "
+                        f"Second-half avg: {avg_second:.0f}/month "
+                        f"({len(mc)} months observed)."
+                    ),
+                })
+            else:
+                trends.append({
+                    "title":       f"Stable Monthly Volume: {col}",
+                    "description": "Record volume is consistent month-over-month across the observed period.",
+                    "direction":   "stable",
+                    "strength":    "low",
+                    "category":    "time_series",
+                    "evidence":    (
+                        f"Avg {(avg_first + avg_second) / 2:.0f} records/month "
+                        f"across {len(mc)} months."
+                    ),
+                })
+    except Exception:
+        pass
+
+    # ── 6. Date granularity signal ────────────────────────────────────────────
+    try:
+        for dc in (date_profile.get("date_columns") or [])[:1]:
+            gran       = dc.get("inferred_granularity", "unknown")
+            col        = dc.get("column", "")
+            range_days = dc.get("range_days", 0)
+            if gran == "daily":
+                trends.append({
+                    "title":       f"Daily Granularity: {col}",
+                    "description": f"Column '{col}' records at daily intervals — supports fine-grained time-series analysis.",
+                    "direction":   "stable",
+                    "strength":    "high",
+                    "category":    "time_series",
+                    "evidence":    f"Inferred daily granularity over {range_days:,} days.",
+                })
+            elif gran in ("weekly", "monthly"):
+                trends.append({
+                    "title":       f"{gran.title()} Granularity: {col}",
+                    "description": f"Column '{col}' records at {gran} intervals — suitable for period aggregation and reporting.",
+                    "direction":   "stable",
+                    "strength":    "medium",
+                    "category":    "time_series",
+                    "evidence":    f"Inferred {gran} granularity over {range_days:,} days.",
+                })
+    except Exception:
+        pass
+
     # ── Sort high → medium → low, cap at 6 ───────────────────────────────────
     _STR_ORDER = {"high": 0, "medium": 1, "low": 2}
     trends.sort(key=lambda t: _STR_ORDER.get(t.get("strength", "low"), 2))
@@ -1142,6 +1472,8 @@ def _build_predictive_readiness_section(
     categorical_profile: dict,
     missing_values: dict,
     date_profile: dict,
+    correlation_profile: list | None = None,
+    categorical_meta: dict | None = None,
 ) -> dict:
     """Assess whether the dataset is ready for future predictive analytics.
 
@@ -1249,6 +1581,108 @@ def _build_predictive_readiness_section(
         desc5 = "No date or timestamp column — time-series and forecasting models are not applicable."
         ev5   = "No date columns detected in the dataset."
     signals.append({"name": "Time-Series Potential", "status": s5, "description": desc5, "evidence": ev5})
+
+    # ── Signal 6: Feature Correlation Network ────────────────────────────────
+    if correlation_profile:
+        try:
+            strong = [p for p in correlation_profile if abs(p.get("correlation", 0)) >= 0.50]
+            if len(strong) >= 3:
+                top = strong[0]
+                signals.append({
+                    "name":        "Feature Correlation Network",
+                    "status":      "ready",
+                    "description": f"{len(strong)} correlated feature pairs support quantitative predictive modeling.",
+                    "evidence":    f"Strongest: '{top['column_a']}' ↔ '{top['column_b']}' (r={round(top['correlation'], 2)}).",
+                })
+                score = min(100, score + 5)
+            elif len(strong) >= 1:
+                top = strong[0]
+                signals.append({
+                    "name":        "Feature Correlation Network",
+                    "status":      "partial",
+                    "description": f"{len(strong)} correlated pair{'s' if len(strong) != 1 else ''} detected — limited but present signal structure.",
+                    "evidence":    f"Strongest: '{top['column_a']}' ↔ '{top['column_b']}' (r={round(top['correlation'], 2)}).",
+                })
+        except Exception:
+            pass
+
+    # ── Signal 7: Outlier data quality ───────────────────────────────────────
+    try:
+        _worst_col, _worst_d = None, 0.0
+        for col, stats in numeric_profile.items():
+            try:
+                oc = stats.get("outlier_count_iqr", 0)
+                nn = stats.get("non_null_count")
+                if nn and nn > 0:
+                    d = float(oc) / float(nn)
+                    if d > _worst_d:
+                        _worst_d, _worst_col = d, col
+            except Exception:
+                continue
+        if _worst_col and _worst_d >= 0.20:
+            signals.append({
+                "name":        "Outlier Data Quality",
+                "status":      "missing",
+                "description": f"High outlier density in '{_worst_col}' may require preprocessing before model training.",
+                "evidence":    f"{round(_worst_d * 100, 1)}% outlier rate (IQR method).",
+            })
+            score = max(0, score - 5)
+        elif _worst_col and _worst_d >= 0.10:
+            signals.append({
+                "name":        "Outlier Data Quality",
+                "status":      "partial",
+                "description": f"Moderate outlier density in '{_worst_col}' — review before applying models.",
+                "evidence":    f"{round(_worst_d * 100, 1)}% outlier rate (IQR method).",
+            })
+    except Exception:
+        pass
+
+    # ── Signal 8: Date granularity ────────────────────────────────────────────
+    try:
+        for dc in (date_profile.get("date_columns") or [])[:1]:
+            gran = dc.get("inferred_granularity", "unknown")
+            col  = dc.get("column", "")
+            if gran == "daily":
+                signals.append({
+                    "name":        "Date Granularity",
+                    "status":      "ready",
+                    "description": f"Daily granularity in '{col}' supports fine-grained forecasting and sequence modeling.",
+                    "evidence":    f"Inferred daily granularity over {dc.get('range_days', 0):,} days.",
+                })
+                score = min(100, score + 5)
+            elif gran in ("weekly", "monthly"):
+                signals.append({
+                    "name":        "Date Granularity",
+                    "status":      "partial",
+                    "description": f"{gran.title()} granularity in '{col}' — adequate for period aggregation but not fine-grained forecasting.",
+                    "evidence":    f"Inferred {gran} granularity.",
+                })
+    except Exception:
+        pass
+
+    # ── Signal 9: Categorical entropy (segmentation quality) ─────────────────
+    if categorical_meta:
+        try:
+            low_ent = [
+                col for col, meta in categorical_meta.items()
+                if meta.get("entropy_approx") is not None
+                and meta.get("unique_count", 1) > 1
+                and float(meta.get("entropy_approx", 1)) < 0.30
+            ]
+            cat_count_local = len(categorical_profile)
+            if low_ent:
+                signals.append({
+                    "name":        "Categorical Diversity",
+                    "status":      "partial" if len(low_ent) < cat_count_local else "missing",
+                    "description": (
+                        f"{len(low_ent)} categorical column{'s' if len(low_ent) != 1 else ''} "
+                        "have near-zero entropy — limited segmentation variety may reduce classification quality."
+                    ),
+                    "evidence":    f"Affected: {', '.join(low_ent[:3])}.",
+                })
+                score = max(0, score - 5)
+        except Exception:
+            pass
 
     # ── Readiness level ───────────────────────────────────────────────────────
     readiness_level = "high" if score >= 80 else ("medium" if score >= 50 else "low")
@@ -1661,6 +2095,23 @@ def generate_dataset_report(
     missing_values: dict = json.loads(dataset["missing_values_json"])
     categorical_profile: dict = json.loads(dataset["categorical_profile_json"])
 
+    # New profile columns — safely absent on old datasets (NULL → empty default)
+    correlation_profile: list = []
+    try:
+        raw = dataset.get("correlation_profile_json")
+        if raw:
+            correlation_profile = json.loads(raw) or []
+    except Exception:
+        pass
+
+    categorical_meta: dict = {}
+    try:
+        raw = dataset.get("categorical_meta_json")
+        if raw:
+            categorical_meta = json.loads(raw) or {}
+    except Exception:
+        pass
+
     sections: list[dict] = []
 
     # ── Overview ──────────────────────────────────────────────────────────────
@@ -1778,6 +2229,8 @@ def generate_dataset_report(
     sections.append(_build_anomaly_section(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
+        correlation_profile=correlation_profile,
+        categorical_meta=categorical_meta,
     ))
 
     # ── Trend Intelligence ────────────────────────────────────────────────────
@@ -1790,11 +2243,14 @@ def generate_dataset_report(
     sections.append(_build_predictive_readiness_section(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
+        correlation_profile=correlation_profile,
+        categorical_meta=categorical_meta,
     ))
 
     # ── Chart Sections ────────────────────────────────────────────────────────
     for chart_sec in _build_chart_sections(
-        categorical_profile, missing_values, row_count, date_profile
+        categorical_profile, missing_values, row_count, date_profile,
+        numeric_profile=numeric_profile,
     ):
         sections.append(chart_sec)
 
@@ -1802,6 +2258,7 @@ def generate_dataset_report(
     rec_sec = _build_recommendation_section(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
+        correlation_profile=correlation_profile,
     )
     if rec_sec is not None:
         # KPI section was appended second (after Overview), so it's always at
