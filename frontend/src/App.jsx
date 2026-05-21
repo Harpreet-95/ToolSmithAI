@@ -1669,6 +1669,125 @@ function ReportSection({ section, C }) {
               </div>
             )
           }
+          case 'drift_detection': {
+            const drifts = section.drifts || []
+            const bw     = section.baseline_window || {}
+            if (!drifts.length) return null
+            const DR_SEV = {
+              high:   { color: C.danger,  bg: C.dangerSoft,  label: 'HIGH'   },
+              medium: { color: C.warn,    bg: C.warnSoft,    label: 'MEDIUM' },
+              low:    { color: C.accent,  bg: C.accentSoft,  label: 'LOW'    },
+            }
+            const DIR_ICON = { increase: '↑', decrease: '↓' }
+            return (
+              <div>
+                {(bw.snapshot_count || bw.start) && (
+                  <div style={{ fontSize: '0.65rem', color: C.textMuted, marginBottom: '10px', fontFamily: MONO }}>
+                    Baseline: {bw.snapshot_count || '?'} snapshot{bw.snapshot_count !== 1 ? 's' : ''}
+                    {bw.start ? ` · ${bw.start.replace('T',' ')} → ${(bw.end || bw.start).replace('T',' ')}` : ''}
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                  {drifts.map((d, j) => {
+                    try {
+                      const sv   = DR_SEV[d.severity] || DR_SEV.low
+                      const icon = DIR_ICON[d.direction] || '↕'
+                      const pct  = d.drift_percent != null ? `${d.drift_percent > 0 ? '+' : ''}${d.drift_percent}%` : '—'
+                      return (
+                        <div key={j} style={{ background: C.bg, border: `1px solid ${sv.color}28`, borderLeft: `3px solid ${sv.color}`, borderRadius: '9px', padding: '9px 13px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px', flexWrap: 'wrap' }}>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', background: sv.bg, color: sv.color, borderRadius: '4px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', flexShrink: 0 }}>
+                              {icon} {sv.label}
+                            </span>
+                            <span style={{ fontSize: '1rem', fontWeight: '800', color: sv.color, lineHeight: 1, flexShrink: 0 }}>{pct}</span>
+                            <span style={{ fontSize: '0.78rem', fontWeight: '600', color: C.text }}>{d.metric || '—'}</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '16px', marginBottom: d.description ? '4px' : 0, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '0.68rem', color: C.textMuted }}>
+                              Current: <span style={{ color: C.text, fontWeight: '600' }}>{d.current_value ?? '—'}</span>
+                            </span>
+                            <span style={{ fontSize: '0.68rem', color: C.textMuted }}>
+                              Baseline avg: <span style={{ color: C.textSec }}>{d.baseline_value ?? '—'}</span>
+                            </span>
+                          </div>
+                          {d.description && (
+                            <div style={{ fontSize: '0.69rem', color: C.textMuted, fontFamily: MONO, lineHeight: 1.5 }}>{d.description}</div>
+                          )}
+                        </div>
+                      )
+                    } catch (_) { return null }
+                  })}
+                </div>
+              </div>
+            )
+          }
+          case 'historical_comparison': {
+            const comps = section.comparisons || []
+            const baseTs = section.baseline_timestamp
+            if (!comps.length) {
+              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No previous baseline available yet.</div>
+            }
+            const SEV_COLOR = {
+              positive: C.success,
+              warning:  C.danger,
+              neutral:  C.textSec,
+            }
+            const SEV_BG = {
+              positive: C.successSoft,
+              warning:  C.dangerSoft,
+              neutral:  C.borderAlt,
+            }
+            const CHANGE_ICON = { increase: '↑', decrease: '↓', stable: '→' }
+            return (
+              <div>
+                {baseTs && (
+                  <div style={{ fontSize: '0.65rem', color: C.textMuted, marginBottom: '10px', fontFamily: MONO }}>
+                    Baseline: {baseTs.slice(0, 19).replace('T', ' ')} UTC
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', borderRadius: '8px', overflow: 'hidden', border: `1px solid ${C.border}` }}>
+                  {/* Header row */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px', gap: '0', background: C.bg, padding: '6px 10px' }}>
+                    {['Metric', 'Current', 'Previous', 'Change'].map((h, i) => (
+                      <div key={i} style={{ fontSize: '0.58rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: i === 0 ? 'left' : 'right' }}>{h}</div>
+                    ))}
+                  </div>
+                  {comps.map((c, j) => {
+                    try {
+                      const sevColor = SEV_COLOR[c.severity] || SEV_COLOR.neutral
+                      const sevBg    = SEV_BG[c.severity]    || SEV_BG.neutral
+                      const icon     = CHANGE_ICON[c.change_type] || '→'
+                      const fmtVal = (v) => v == null ? '—' : (typeof v === 'number' ? v.toLocaleString() : String(v))
+                      const fmtChg = (v) => {
+                        if (v == null) return '—'
+                        const n = Number(v)
+                        if (!isFinite(n) || n === 0) return '0'
+                        return (n > 0 ? '+' : '') + n.toLocaleString()
+                      }
+                      return (
+                        <div key={j} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 80px', gap: '0', background: j % 2 === 0 ? C.surface : C.bg, padding: '7px 10px', borderTop: `1px solid ${C.border}` }}>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', background: sevBg, color: sevColor, borderRadius: '4px', padding: '1px 5px', fontSize: '0.58rem', fontWeight: '700', letterSpacing: '0.06em', flexShrink: 0 }}>
+                                {icon} {(c.severity || 'neutral').toUpperCase()}
+                              </span>
+                              <span style={{ fontSize: '0.74rem', fontWeight: '600', color: C.text }}>{c.metric || '—'}</span>
+                            </div>
+                            {c.description && (
+                              <div style={{ fontSize: '0.67rem', color: C.textMuted, marginTop: '3px', lineHeight: 1.4 }}>{c.description}</div>
+                            )}
+                          </div>
+                          <div style={{ textAlign: 'right', fontSize: '0.78rem', fontWeight: '700', color: C.text, alignSelf: 'center' }}>{fmtVal(c.current_value)}</div>
+                          <div style={{ textAlign: 'right', fontSize: '0.74rem', color: C.textSec, alignSelf: 'center' }}>{fmtVal(c.previous_value)}</div>
+                          <div style={{ textAlign: 'right', fontSize: '0.74rem', fontWeight: '600', color: sevColor, alignSelf: 'center' }}>{fmtChg(c.change)}</div>
+                        </div>
+                      )
+                    } catch (_) { return null }
+                  })}
+                </div>
+              </div>
+            )
+          }
           case 'predictive_readiness': {
             const prScore  = section.readiness_score
             const prLevel  = section.readiness_level || 'low'

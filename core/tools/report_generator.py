@@ -1297,7 +1297,358 @@ def _build_predictive_readiness_section(
     }
 
 
-def generate_dataset_report(dataset: dict) -> dict:
+def _build_historical_comparison_section(
+    sections: list[dict],
+    previous_snapshot: dict,
+    row_count: int,
+) -> dict | None:
+    """Compare current report metrics against a previous snapshot row.
+
+    Scans the already-built sections list to extract current metric values,
+    then diffs them against the stored snapshot dict.
+    Returns None when no meaningful comparisons can be generated.
+    No AI. No ML. No forecasting claims.
+    Maximum 8 comparison rows, ordered by declaration priority.
+    """
+    prev = previous_snapshot.get("snapshot", {})
+    if not prev:
+        return None
+
+    baseline_ts = previous_snapshot.get("created_at", "")
+
+    # ── Extract current metrics from already-built sections ───────────────────
+    curr_readiness_score: int | None  = None
+    curr_anomaly_high:    int         = 0
+    curr_rec_high:        int         = 0
+    curr_trend_up:        int         = 0
+    curr_trend_down:      int         = 0
+    curr_kpi_values:      dict        = {}
+
+    for section in sections:
+        sec_type = section.get("type", "text")
+        try:
+            if sec_type == "predictive_readiness":
+                curr_readiness_score = section.get("readiness_score")
+            elif sec_type == "anomaly":
+                counts: dict = {"high": 0, "medium": 0, "low": 0}
+                for a in section.get("anomalies", []):
+                    sev = str(a.get("severity", "")).lower()
+                    if sev in counts:
+                        counts[sev] += 1
+                curr_anomaly_high = counts["high"]
+            elif sec_type == "recommendation":
+                rcounts: dict = {"high": 0, "medium": 0, "low": 0}
+                for r in section.get("recommendations", []):
+                    pri = str(r.get("priority", "")).lower()
+                    if pri in rcounts:
+                        rcounts[pri] += 1
+                curr_rec_high = rcounts["high"]
+            elif sec_type == "trend":
+                tcounts: dict = {"up": 0, "down": 0, "stable": 0, "volatile": 0}
+                for t in section.get("trends", []):
+                    d = str(t.get("direction", "")).lower()
+                    if d in tcounts:
+                        tcounts[d] += 1
+                curr_trend_up   = tcounts["up"]
+                curr_trend_down = tcounts["down"]
+            elif sec_type == "kpi":
+                for kpi in section.get("kpis", []):
+                    label = kpi.get("label", "")
+                    value = kpi.get("value")
+                    if label and value is not None:
+                        curr_kpi_values[label] = value
+        except Exception:
+            continue
+
+    comparisons: list[dict] = []
+
+    # ── 1. Predictive Readiness Score ─────────────────────────────────────────
+    rs_prev = prev.get("readiness_score")
+    if curr_readiness_score is not None and rs_prev is not None:
+        try:
+            delta = float(curr_readiness_score) - float(rs_prev)
+            ctype = "stable" if delta == 0 else ("increase" if delta > 0 else "decrease")
+            sev   = "positive" if delta > 0 else ("warning" if delta < 0 else "neutral")
+            word  = "improved" if delta > 0 else ("declined" if delta < 0 else "unchanged")
+            comparisons.append({
+                "metric":         "Predictive Readiness Score",
+                "current_value":  curr_readiness_score,
+                "previous_value": int(rs_prev),
+                "change":         round(delta, 2),
+                "change_type":    ctype,
+                "severity":       sev,
+                "description":    f"Predictive readiness {word} from {int(rs_prev)} to {curr_readiness_score}.",
+            })
+        except Exception:
+            pass
+
+    # ── 2. Dataset Row Count ──────────────────────────────────────────────────
+    rc_prev = prev.get("row_count")
+    if rc_prev is not None:
+        try:
+            delta = float(row_count) - float(rc_prev)
+            ctype = "stable" if delta == 0 else ("increase" if delta > 0 else "decrease")
+            sev   = "positive" if delta > 0 else ("warning" if delta < 0 else "neutral")
+            word  = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+            if delta != 0 and float(rc_prev) != 0:
+                pct  = round(abs(delta) / float(rc_prev) * 100, 1)
+                desc = f"Dataset row count {word} by {pct}% ({int(rc_prev):,} → {row_count:,})."
+            else:
+                desc = f"Dataset row count {word} at {row_count:,} rows."
+            comparisons.append({
+                "metric":         "Dataset Row Count",
+                "current_value":  row_count,
+                "previous_value": int(rc_prev),
+                "change":         round(delta, 2),
+                "change_type":    ctype,
+                "severity":       sev,
+                "description":    desc,
+            })
+        except Exception:
+            pass
+
+    # ── 3. High-Severity Anomalies ────────────────────────────────────────────
+    ha_prev = prev.get("anomaly_counts_by_severity", {}).get("high", 0)
+    try:
+        ha_prev_i = int(ha_prev)
+        delta     = curr_anomaly_high - ha_prev_i
+        ctype     = "stable" if delta == 0 else ("increase" if delta > 0 else "decrease")
+        sev       = "positive" if delta < 0 else ("warning" if delta > 0 else "neutral")
+        word      = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        comparisons.append({
+            "metric":         "High-Severity Anomalies",
+            "current_value":  curr_anomaly_high,
+            "previous_value": ha_prev_i,
+            "change":         delta,
+            "change_type":    ctype,
+            "severity":       sev,
+            "description":    f"High-severity anomalies {word} from {ha_prev_i} to {curr_anomaly_high}.",
+        })
+    except Exception:
+        pass
+
+    # ── 4. High-Priority Recommendations ─────────────────────────────────────
+    hr_prev = prev.get("recommendation_counts_by_priority", {}).get("high", 0)
+    try:
+        hr_prev_i = int(hr_prev)
+        delta     = curr_rec_high - hr_prev_i
+        ctype     = "stable" if delta == 0 else ("increase" if delta > 0 else "decrease")
+        sev       = "positive" if delta < 0 else ("warning" if delta > 0 else "neutral")
+        word      = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        comparisons.append({
+            "metric":         "High-Priority Recommendations",
+            "current_value":  curr_rec_high,
+            "previous_value": hr_prev_i,
+            "change":         delta,
+            "change_type":    ctype,
+            "severity":       sev,
+            "description":    f"High-priority recommendations {word} from {hr_prev_i} to {curr_rec_high}.",
+        })
+    except Exception:
+        pass
+
+    # ── 5. Upward Trend Signals ───────────────────────────────────────────────
+    tu_prev = prev.get("trend_counts_by_direction", {}).get("up", 0)
+    try:
+        tu_prev_i = int(tu_prev)
+        delta     = curr_trend_up - tu_prev_i
+        ctype     = "stable" if delta == 0 else ("increase" if delta > 0 else "decrease")
+        word      = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        comparisons.append({
+            "metric":         "Upward Trend Signals",
+            "current_value":  curr_trend_up,
+            "previous_value": tu_prev_i,
+            "change":         delta,
+            "change_type":    ctype,
+            "severity":       "positive" if delta > 0 else "neutral",
+            "description":    f"Upward trend signals {word} from {tu_prev_i} to {curr_trend_up}.",
+        })
+    except Exception:
+        pass
+
+    # ── 6. Data Completeness KPI ──────────────────────────────────────────────
+    dc_prev = prev.get("kpi_values", {}).get("Data Completeness")
+    dc_curr = curr_kpi_values.get("Data Completeness")
+    if dc_curr is not None and dc_prev is not None:
+        try:
+            delta = round(float(dc_curr) - float(dc_prev), 2)
+            ctype = "stable" if abs(delta) < 0.01 else ("increase" if delta > 0 else "decrease")
+            sev   = "neutral" if abs(delta) < 0.01 else ("positive" if delta > 0 else "warning")
+            word  = "unchanged" if abs(delta) < 0.01 else ("improved" if delta > 0 else "declined")
+            comparisons.append({
+                "metric":         "Data Completeness",
+                "current_value":  dc_curr,
+                "previous_value": float(dc_prev),
+                "change":         delta,
+                "change_type":    ctype,
+                "severity":       sev,
+                "description":    (
+                    f"Data completeness {word} from {float(dc_prev)}% to {dc_curr}%."
+                    if abs(delta) >= 0.01
+                    else f"Data completeness is unchanged at {dc_curr}%."
+                ),
+            })
+        except Exception:
+            pass
+
+    if not comparisons:
+        return None
+
+    return {
+        "type":               "historical_comparison",
+        "heading":            "Historical Comparison",
+        "comparisons":        comparisons[:8],
+        "baseline_timestamp": baseline_ts,
+    }
+
+
+def _build_drift_detection_section(
+    sections: list[dict],
+    baseline_snapshots: list[dict],
+    row_count: int,
+) -> dict | None:
+    """Detect long-term drift by comparing current metrics to baseline averages.
+
+    Requires at least 3 historical snapshots. Fewer → returns None (section omitted).
+    Drift formula: (current - baseline_avg) / |baseline_avg| * 100
+    Only emits a drift item when |drift_percent| >= 10%.
+    Severity: >= 40% → high, >= 20% → medium, >= 10% → low.
+    No AI. No ML. No forecasting claims.
+    Maximum 8 drift rows, ordered by |drift_percent| descending.
+    """
+    if len(baseline_snapshots) < 3:
+        return None
+
+    # ── Extract current metrics from already-built sections ───────────────────
+    curr: dict = {
+        "readiness_score": None,
+        "row_count":       row_count,
+        "anomaly_high":    0,
+        "rec_high":        0,
+        "trend_down":      0,
+        "completeness":    None,
+    }
+    for section in sections:
+        sec_type = section.get("type", "text")
+        try:
+            if sec_type == "predictive_readiness":
+                curr["readiness_score"] = section.get("readiness_score")
+            elif sec_type == "anomaly":
+                h = 0
+                for a in section.get("anomalies", []):
+                    if str(a.get("severity", "")).lower() == "high":
+                        h += 1
+                curr["anomaly_high"] = h
+            elif sec_type == "recommendation":
+                h = 0
+                for r in section.get("recommendations", []):
+                    if str(r.get("priority", "")).lower() == "high":
+                        h += 1
+                curr["rec_high"] = h
+            elif sec_type == "trend":
+                d = 0
+                for t in section.get("trends", []):
+                    if str(t.get("direction", "")).lower() == "down":
+                        d += 1
+                curr["trend_down"] = d
+            elif sec_type == "kpi":
+                for kpi in section.get("kpis", []):
+                    if kpi.get("label") == "Data Completeness":
+                        curr["completeness"] = kpi.get("value")
+        except Exception:
+            continue
+
+    # ── Compute baseline averages from historical snapshots ───────────────────
+    def _avg(getter) -> float | None:
+        vals = []
+        for rec in baseline_snapshots:
+            try:
+                v = getter(rec.get("snapshot", {}))
+                if v is not None:
+                    vals.append(float(v))
+            except Exception:
+                continue
+        return sum(vals) / len(vals) if vals else None
+
+    baselines: dict = {
+        "readiness_score": _avg(lambda s: s.get("readiness_score")),
+        "row_count":       _avg(lambda s: s.get("row_count")),
+        "anomaly_high":    _avg(lambda s: s.get("anomaly_counts_by_severity", {}).get("high")),
+        "rec_high":        _avg(lambda s: s.get("recommendation_counts_by_priority", {}).get("high")),
+        "trend_down":      _avg(lambda s: s.get("trend_counts_by_direction", {}).get("down")),
+        "completeness":    _avg(lambda s: s.get("kpi_values", {}).get("Data Completeness")),
+    }
+
+    # ── Build drift rows ──────────────────────────────────────────────────────
+    _METRIC_LABELS = {
+        "readiness_score": "Readiness Score",
+        "row_count":       "Dataset Row Count",
+        "anomaly_high":    "High-Severity Anomalies",
+        "rec_high":        "High-Priority Recommendations",
+        "trend_down":      "Downward Trend Signals",
+        "completeness":    "Data Completeness",
+    }
+    drifts: list[dict] = []
+
+    for key, label in _METRIC_LABELS.items():
+        curr_val = curr.get(key)
+        base_val = baselines.get(key)
+        if curr_val is None or base_val is None:
+            continue
+        try:
+            curr_f = float(curr_val)
+            base_f = float(base_val)
+            if base_f == 0:
+                continue
+            pct      = (curr_f - base_f) / abs(base_f) * 100
+            abs_pct  = abs(pct)
+            if abs_pct < 10:
+                continue
+            direction = "increase" if pct > 0 else "decrease"
+            severity  = "high" if abs_pct >= 40 else ("medium" if abs_pct >= 20 else "low")
+            word      = "increased" if pct > 0 else "declined"
+            base_fmt  = _safe_fmt(base_f, 1)
+            drifts.append({
+                "metric":         label,
+                "baseline_value": round(base_f, 2),
+                "current_value":  curr_val,
+                "drift_percent":  round(pct, 1),
+                "severity":       severity,
+                "direction":      direction,
+                "description":    (
+                    f"{label} {word} {round(abs_pct, 1)}% "
+                    f"from historical baseline of {base_fmt}."
+                ),
+            })
+        except Exception:
+            continue
+
+    if not drifts:
+        return None
+
+    # Sort by absolute drift magnitude, largest first; cap at 8
+    drifts.sort(key=lambda d: abs(d.get("drift_percent", 0)), reverse=True)
+    drifts = drifts[:8]
+
+    snap_ts = [s.get("created_at", "")[:19] for s in baseline_snapshots if s.get("created_at")]
+
+    return {
+        "type":    "drift_detection",
+        "heading": "Drift Detection",
+        "drifts":  drifts,
+        "baseline_window": {
+            "snapshot_count": len(baseline_snapshots),
+            "start":          snap_ts[0]  if snap_ts else "",
+            "end":            snap_ts[-1] if snap_ts else "",
+        },
+    }
+
+
+def generate_dataset_report(
+    dataset: dict,
+    previous_snapshot: dict | None = None,
+    baseline_snapshots: list[dict] | None = None,
+) -> dict:
     """
     Build a structured report from a stored dataset summary row.
     All text is derived from real analysis values — no hardcoded content.
@@ -1458,6 +1809,37 @@ def generate_dataset_report(dataset: dict) -> dict:
         kpi_pos = next((i for i, s in enumerate(sections) if s.get("type") == "kpi"), 1)
         sections.insert(kpi_pos + 1, rec_sec)
 
+    # ── Historical Comparison ─────────────────────────────────────────────────
+    # Inserted after all other typed sections so the builder can scan them for
+    # current metrics. previous_snapshot is None on the first run → section omitted.
+    if previous_snapshot is not None:
+        hist_sec = _build_historical_comparison_section(sections, previous_snapshot, row_count)
+        if hist_sec is not None:
+            # Place it right after predictive_readiness for logical read flow
+            pr_pos = next(
+                (i for i, s in enumerate(sections) if s.get("type") == "predictive_readiness"),
+                len(sections),
+            )
+            sections.insert(pr_pos + 1, hist_sec)
+
+    # ── Drift Detection ───────────────────────────────────────────────────────
+    # Inserted after historical comparison so both intelligence sections cluster
+    # together. Omitted automatically when < 3 baseline snapshots exist.
+    if baseline_snapshots:
+        drift_sec = _build_drift_detection_section(sections, baseline_snapshots, row_count)
+        if drift_sec is not None:
+            anchor_type = "historical_comparison"
+            anchor_pos  = next(
+                (i for i, s in enumerate(sections) if s.get("type") == anchor_type),
+                None,
+            )
+            if anchor_pos is None:
+                anchor_pos = next(
+                    (i for i, s in enumerate(sections) if s.get("type") == "predictive_readiness"),
+                    len(sections),
+                )
+            sections.insert(anchor_pos + 1, drift_sec)
+
     # ── Executive Summary (prepended so it leads the report) ─────────────────
     # Built after all other sections so date_profile and completeness are known.
     # Note: if ENABLE_AI_REPORT_NARRATIVE=true, the AI will also insert its own
@@ -1502,7 +1884,7 @@ def format_report_as_email_body(report: dict, filename: str) -> str:
     ]
     for section in report.get("sections", []):
         lines.append(section["heading"].upper())
-        for item in section["items"]:
+        for item in section.get("items", []):
             lines.append(f"  → {item}")
         lines.append("")
     return "\n".join(lines).rstrip()

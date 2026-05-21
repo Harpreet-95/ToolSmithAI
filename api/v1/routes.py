@@ -1211,6 +1211,39 @@ def assistant_explain(
     return {"status": "success", "data": {**fallback, "source": "deterministic"}}
 
 
+@router.get("/report-metric-snapshots")
+def list_recent_metric_snapshots_route(
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return the 50 most recent metric snapshots for the authenticated user."""
+    try:
+        from data.report_metric_snapshot_service import list_recent_snapshots_for_user
+        snapshots = list_recent_snapshots_for_user(str(user.user_id), limit=50)
+        return {"status": "success", "data": snapshots, "count": len(snapshots)}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Internal server error", str(e)),
+        )
+
+
+@router.get("/datasets/{dataset_id}/metric-snapshots")
+def list_dataset_metric_snapshots_route(
+    dataset_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return up to 20 metric snapshots for one dataset owned by the authenticated user."""
+    try:
+        from data.report_metric_snapshot_service import list_snapshots_for_dataset
+        snapshots = list_snapshots_for_dataset(str(user.user_id), dataset_id, limit=20)
+        return {"status": "success", "data": snapshots, "count": len(snapshots)}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Internal server error", str(e)),
+        )
+
+
 @router.get("/reports")
 def list_reports_route(user: AuthenticatedUser = Depends(require_jwt)) -> dict:
     try:
@@ -1421,6 +1454,97 @@ def _build_pdf_bytes(report: dict) -> bytes:
                         pdf.cell(0, 4, f"  {' | '.join(meta_parts)}",
                                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     pdf.ln(2)
+                except Exception:
+                    pass
+        elif sec_type == "drift_detection":
+            bw = section.get("baseline_window") or {}
+            bw_count = bw.get("snapshot_count", 0)
+            bw_start = _s(str(bw.get("start", "") or "")[:19].replace("T", " "))
+            bw_end   = _s(str(bw.get("end",   "") or "")[:19].replace("T", " "))
+            if bw_count or bw_start:
+                pdf.set_font("Helvetica", "I", 7.5)
+                pdf.set_text_color(140, 155, 180)
+                pdf.cell(0, 4,
+                         f"Baseline: {bw_count} snapshot(s)  {bw_start} -> {bw_end}",
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+            _DR_SEV_RGB = {
+                "high":   (248, 113, 113),
+                "medium": (245, 158,  11),
+                "low":    ( 99, 102, 241),
+            }
+            _DR_DIR_SYM = {"increase": "[+]", "decrease": "[-]"}
+            for drift in section.get("drifts", []):
+                try:
+                    metric    = _s(str(drift.get("metric",         "")))
+                    base_val  = drift.get("baseline_value")
+                    curr_val  = drift.get("current_value")
+                    pct       = drift.get("drift_percent")
+                    sev       = str(drift.get("severity",  "low")).lower()
+                    direction = str(drift.get("direction", "")).lower()
+                    desc      = _s(str(drift.get("description", "")))
+                    rgb       = _DR_SEV_RGB.get(sev, (100, 116, 139))
+                    sym       = _DR_DIR_SYM.get(direction, "[~]")
+                    pct_str   = (f"+{pct}%" if isinstance(pct, (int, float)) and pct > 0
+                                 else f"{pct}%" if pct is not None else "?%")
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(10, 5, sym)
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.cell(0, 5,
+                             f"{metric}   {pct_str}  (baseline: {base_val}, current: {curr_val})",
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if desc:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(88, 104, 130)
+                        pdf.multi_cell(0, 4.5, f"  {desc}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                except Exception:
+                    pass
+        elif sec_type == "historical_comparison":
+            baseline_ts = _s(str(section.get("baseline_timestamp", "") or "")[:19].replace("T", " "))
+            if baseline_ts:
+                pdf.set_font("Helvetica", "I", 7.5)
+                pdf.set_text_color(140, 155, 180)
+                pdf.cell(0, 4, f"Baseline: {baseline_ts} UTC",
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+            _SEV_RGB_HC = {
+                "positive": ( 16, 185, 129),
+                "warning":  (248, 113, 113),
+                "neutral":  (100, 116, 139),
+            }
+            _ICON_HC = {"increase": "[+]", "decrease": "[-]", "stable": "[=]"}
+            for comp in section.get("comparisons", []):
+                try:
+                    metric    = _s(str(comp.get("metric",         "")))
+                    curr_val  = comp.get("current_value")
+                    prev_val  = comp.get("previous_value")
+                    change    = comp.get("change")
+                    ctype     = str(comp.get("change_type", "stable")).lower()
+                    sev       = str(comp.get("severity",    "neutral")).lower()
+                    desc      = _s(str(comp.get("description", "")))
+                    rgb       = _SEV_RGB_HC.get(sev, (100, 116, 139))
+                    icon      = _ICON_HC.get(ctype, "[=]")
+                    chg_str   = (f"+{change}" if isinstance(change, (int, float)) and change > 0
+                                 else str(change) if change is not None else "0")
+                    # Metric line: [icon] metric   curr → prev  (delta)
+                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(10, 5, icon)
+                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_text_color(44, 54, 80)
+                    pdf.cell(0, 5,
+                             f"{metric}   {curr_val} (prev: {prev_val}, change: {chg_str})",
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if desc:
+                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_text_color(88, 104, 130)
+                        pdf.multi_cell(0, 4.5, f"  {desc}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
                 except Exception:
                     pass
         elif sec_type == "predictive_readiness":
@@ -1728,6 +1852,36 @@ def export_report_route(
                                 w.writerow([heading, chart_type, s_name, label, val])
                             except Exception:
                                 pass
+                elif sec_type == "drift_detection":
+                    for drift in section.get("drifts", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                drift.get("metric",         ""),
+                                drift.get("baseline_value", ""),
+                                drift.get("current_value",  ""),
+                                drift.get("drift_percent",  ""),
+                                drift.get("severity",       ""),
+                                drift.get("direction",      ""),
+                                drift.get("description",    ""),
+                            ])
+                        except Exception:
+                            pass
+                elif sec_type == "historical_comparison":
+                    for comp in section.get("comparisons", []):
+                        try:
+                            w.writerow([
+                                heading,
+                                comp.get("metric",         ""),
+                                comp.get("current_value",  ""),
+                                comp.get("previous_value", ""),
+                                comp.get("change",         ""),
+                                comp.get("change_type",    ""),
+                                comp.get("severity",       ""),
+                                comp.get("description",    ""),
+                            ])
+                        except Exception:
+                            pass
                 elif sec_type == "predictive_readiness":
                     pr_level = section.get("readiness_level", "")
                     pr_score = section.get("readiness_score", "")

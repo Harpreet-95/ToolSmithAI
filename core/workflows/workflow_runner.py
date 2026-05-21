@@ -37,7 +37,35 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
         return {**base, "dataset_report": None,
                 "dataset_report_error": "No uploaded dataset found. Please upload a CSV file first."}
 
-    report = generate_dataset_report(dataset)
+    # Load previous snapshot and baseline window BEFORE generating the report.
+    # Both reads happen before any write so the current report can never appear
+    # in its own comparison or drift baseline (timing safety).
+    previous_snapshot = None
+    try:
+        from data.report_metric_snapshot_service import get_previous_snapshot_for_dataset
+        previous_snapshot = get_previous_snapshot_for_dataset(
+            user_id=user_id,
+            dataset_id=dataset["id"],
+        )
+    except Exception:
+        pass
+
+    baseline_snapshots: list = []
+    try:
+        from data.report_metric_snapshot_service import get_snapshot_baseline_for_dataset
+        baseline_snapshots = get_snapshot_baseline_for_dataset(
+            user_id=user_id,
+            dataset_id=dataset["id"],
+            limit=10,
+        )
+    except Exception:
+        pass
+
+    report = generate_dataset_report(
+        dataset,
+        previous_snapshot=previous_snapshot,
+        baseline_snapshots=baseline_snapshots,
+    )
 
     report_id = None
     report_save_warning = None
@@ -64,6 +92,17 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
                 type="report",
                 status="success",
                 related_report_id=report_id,
+            )
+        except Exception:
+            pass
+        try:
+            from data.report_metric_snapshot_service import save_report_metric_snapshot
+            save_report_metric_snapshot(
+                user_id=user_id,
+                report_id=report_id,
+                dataset_id=dataset["id"],
+                task_type="generate_dataset_report",
+                report_content=report,
             )
         except Exception:
             pass
@@ -113,7 +152,35 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
     # Reuse report from context if a prior step already generated it;
     # otherwise generate fresh — this keeps the step self-contained when run standalone.
     report_from_ctx = bool((ctx or {}).get("dataset_report"))
-    report = (ctx or {}).get("dataset_report") or generate_dataset_report(dataset)
+    if report_from_ctx:
+        report = ctx["dataset_report"]
+    else:
+        previous_snapshot = None
+        try:
+            from data.report_metric_snapshot_service import get_previous_snapshot_for_dataset
+            previous_snapshot = get_previous_snapshot_for_dataset(
+                user_id=user_id,
+                dataset_id=dataset["id"],
+            )
+        except Exception:
+            pass
+
+        baseline_snapshots: list = []
+        try:
+            from data.report_metric_snapshot_service import get_snapshot_baseline_for_dataset
+            baseline_snapshots = get_snapshot_baseline_for_dataset(
+                user_id=user_id,
+                dataset_id=dataset["id"],
+                limit=10,
+            )
+        except Exception:
+            pass
+
+        report = generate_dataset_report(
+            dataset,
+            previous_snapshot=previous_snapshot,
+            baseline_snapshots=baseline_snapshots,
+        )
     body = format_report_as_email_body(report, dataset["filename"])
     subject = f"Dataset Report — {dataset['filename']}"
 
@@ -145,6 +212,17 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
                 status="completed",
                 dataset_id=dataset["id"],
             )
+            try:
+                from data.report_metric_snapshot_service import save_report_metric_snapshot
+                save_report_metric_snapshot(
+                    user_id=user_id,
+                    report_id=report_id,
+                    dataset_id=dataset["id"],
+                    task_type="email_dataset_report",
+                    report_content=report,
+                )
+            except Exception:
+                pass
         except Exception as exc:
             report_save_warning = f"Report generated but could not be saved: {exc}"
 
