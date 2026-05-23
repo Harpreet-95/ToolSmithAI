@@ -27,10 +27,11 @@ export async function verifyKey(token) {
   return parseResponse(res);
 }
 
-export async function interpretTask(task, token, datasetId = null, recipient = null) {
+export async function interpretTask(task, token, datasetId = null, recipient = null, selectedSections = null) {
   const body = { input: task };
   if (datasetId != null) body.dataset_id = datasetId;
   if (recipient != null && recipient.trim() !== '') body.recipient = recipient.trim();
+  if (selectedSections != null && selectedSections.length > 0) body.selected_sections = selectedSections;
   const res = await fetch('/v1/interpret', {
     method: 'POST',
     headers: AUTH_HEADERS(token),
@@ -273,6 +274,45 @@ export async function runWorkflowById(id, token) {
   return parseResponse(res);
 }
 
+export async function dryRunWorkflow(id, token) {
+  const res = await fetch(`/v1/workflows/${id}/dry-run`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function getDynamicTools(token) {
+  const res = await fetch('/v1/tools', { headers: AUTH_HEADERS(token) });
+  return parseResponse(res);
+}
+
+export async function createDynamicTool(payload, token) {
+  const res = await fetch('/v1/tools', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(payload),
+  });
+  return parseResponse(res);
+}
+
+export async function updateDynamicTool(id, payload, token) {
+  const res = await fetch(`/v1/tools/${id}`, {
+    method: 'PATCH',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(payload),
+  });
+  return parseResponse(res);
+}
+
+export async function approveDynamicTool(id, token) {
+  const res = await fetch(`/v1/tools/${id}/approve`, {
+    method: 'PATCH',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
 export async function getReports(token) {
   const res = await fetch('/v1/reports', {
     headers: AUTH_HEADERS(token),
@@ -368,6 +408,53 @@ export async function runScheduleNow(scheduleId, token) {
   const res = await fetch(`/v1/schedules/${scheduleId}/run-now`, {
     method: 'POST',
     headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function composeIntent(intent, datasetId, token, saveWorkspace = false) {
+  const body = { intent, save_workspace: saveWorkspace };
+  if (datasetId != null) body.dataset_id = datasetId;
+  const res = await fetch('/v1/tools/compose', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(body),
+  });
+  return parseResponse(res);
+}
+
+export async function getWorkspaces(token) {
+  const res = await fetch('/v1/workspaces', { headers: AUTH_HEADERS(token) });
+  return parseResponse(res);
+}
+
+export async function getWorkspaceById(id, token) {
+  const res = await fetch(`/v1/workspaces/${id}`, { headers: AUTH_HEADERS(token) });
+  return parseResponse(res);
+}
+
+export async function attachWorkspaceExecution(id, payload, token) {
+  const res = await fetch(`/v1/workspaces/${id}/execution`, {
+    method: 'PATCH',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(payload),
+  });
+  return parseResponse(res);
+}
+
+export async function saveWorkspaceById(id, token) {
+  const res = await fetch(`/v1/workspaces/${id}/save`, {
+    method: 'PATCH',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function createAdminInvite(email, token) {
+  const res = await fetch('/v1/admin/invites', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({ email }),
   });
   return parseResponse(res);
 }

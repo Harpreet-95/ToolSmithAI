@@ -10,6 +10,29 @@ ALLOWED_MULTI_STEP_TYPES = frozenset({
 })
 
 _MAX_WORKFLOW_STEPS = 10
+_VALID_CATEGORIES  = frozenset({"reporting", "automation", "monitoring", "alerting", "data", "other"})
+_VALID_RISK_LEVELS = frozenset({"low", "medium", "high"})
+
+
+def _validate_metadata(metadata: dict) -> None:
+    """Validate optional template metadata block in a workflow definition."""
+    if not isinstance(metadata, dict):
+        raise ValueError("definition.metadata must be an object")
+    category = metadata.get("category", "")
+    if category and category not in _VALID_CATEGORIES:
+        raise ValueError(
+            f"metadata.category '{category}' is not valid. "
+            f"Allowed: {', '.join(sorted(_VALID_CATEGORIES))}"
+        )
+    risk = metadata.get("risk_level", "")
+    if risk and risk not in _VALID_RISK_LEVELS:
+        raise ValueError(
+            f"metadata.risk_level '{risk}' is not valid. "
+            f"Allowed: {', '.join(sorted(_VALID_RISK_LEVELS))}"
+        )
+    req_inputs = metadata.get("required_inputs", [])
+    if not isinstance(req_inputs, list):
+        raise ValueError("metadata.required_inputs must be a list")
 
 
 def _validate_multi_step_definition(definition: dict) -> None:
@@ -27,6 +50,8 @@ def _validate_multi_step_definition(definition: dict) -> None:
                 f"Step {i + 1} has invalid type '{step_type}'. "
                 f"Allowed: {', '.join(sorted(ALLOWED_MULTI_STEP_TYPES))}"
             )
+    if "metadata" in definition:
+        _validate_metadata(definition["metadata"])
 
 
 def _normalize(row) -> dict:

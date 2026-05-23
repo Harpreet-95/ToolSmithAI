@@ -112,3 +112,24 @@ ENABLE_AI_ASSISTANT:        bool = os.getenv("ENABLE_AI_ASSISTANT",        "fals
 OPENAI_API_KEY:              str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL:                str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TIMEOUT_SECONDS:      int = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
+
+# ---------------------------------------------------------------------------
+# Dynamic Tool Composer
+# ENABLE_DYNAMIC_TOOLS    — registry reads approved+enabled rows from DB
+# ENABLE_DYNAMIC_TOOL_EXECUTION — primitive executor routes dynamic tool steps
+# Both default to false. Set ENABLE_DYNAMIC_TOOLS first, then execution.
+# ---------------------------------------------------------------------------
+ENABLE_DYNAMIC_TOOLS:           bool = os.getenv("ENABLE_DYNAMIC_TOOLS",           "false").lower() == "true"
+ENABLE_DYNAMIC_TOOL_EXECUTION:  bool = os.getenv("ENABLE_DYNAMIC_TOOL_EXECUTION",  "false").lower() == "true"
+
+# HTTP primitive safety settings
+DYNAMIC_TOOL_HTTP_TIMEOUT_SECONDS:     int  = int(os.getenv("DYNAMIC_TOOL_HTTP_TIMEOUT_SECONDS",     "10"))
+DYNAMIC_TOOL_HTTP_MAX_RESPONSE_BYTES:  int  = int(os.getenv("DYNAMIC_TOOL_HTTP_MAX_RESPONSE_BYTES",  str(1024 * 1024)))  # 1 MB
+# Comma-separated domain allowlist for http_request primitive.
+# Empty string = no allowlist (any non-private host is allowed).
+# Example: "api.example.com,data.partner.io"
+DYNAMIC_TOOL_HTTP_ALLOWED_DOMAINS: list[str] = [
+    d.strip()
+    for d in os.getenv("DYNAMIC_TOOL_HTTP_ALLOWED_DOMAINS", "").split(",")
+    if d.strip()
+]

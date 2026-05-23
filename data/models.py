@@ -20,9 +20,17 @@ def init_db() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS tools (
-            id     INTEGER PRIMARY KEY AUTOINCREMENT,
-            name   TEXT NOT NULL,
-            config TEXT NOT NULL DEFAULT '{}'
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL,
+            slug        TEXT,
+            config      TEXT    NOT NULL DEFAULT '{}',
+            config_json TEXT,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            approved    INTEGER NOT NULL DEFAULT 0,
+            approved_by TEXT,
+            approved_at TEXT,
+            created_by  TEXT,
+            created_at  TEXT
         );
 
         CREATE TABLE IF NOT EXISTS workflows (
@@ -156,6 +164,54 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule_id ON scheduled_workflow_runs (schedule_id);
         CREATE INDEX IF NOT EXISTS idx_sched_runs_user_id     ON scheduled_workflow_runs (user_id);
         CREATE INDEX IF NOT EXISTS idx_sched_runs_started_at  ON scheduled_workflow_runs (started_at);
+
+        CREATE TABLE IF NOT EXISTS report_metric_snapshots (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       TEXT    NOT NULL,
+            report_id     INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+            dataset_id    INTEGER REFERENCES datasets(id) ON DELETE SET NULL,
+            task_type     TEXT    NOT NULL,
+            snapshot_json TEXT    NOT NULL,
+            created_at    TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_report_metric_snapshots_user_id    ON report_metric_snapshots (user_id);
+        CREATE INDEX IF NOT EXISTS idx_report_metric_snapshots_dataset_id ON report_metric_snapshots (dataset_id);
+        CREATE INDEX IF NOT EXISTS idx_report_metric_snapshots_created_at ON report_metric_snapshots (created_at);
+
+        CREATE TABLE IF NOT EXISTS ai_workspaces (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         TEXT    NOT NULL,
+            title           TEXT    NOT NULL DEFAULT 'Untitled Workspace',
+            status          TEXT    NOT NULL DEFAULT 'draft',
+            intent_text     TEXT,
+            dataset_id      INTEGER REFERENCES datasets(id) ON DELETE SET NULL,
+            proposal_json   TEXT,
+            proposal_source TEXT,
+            proposed_at     TEXT,
+            workflow_id     INTEGER REFERENCES workflows(id) ON DELETE SET NULL,
+            created_at      TEXT    NOT NULL,
+            updated_at      TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ai_workspaces_user_id    ON ai_workspaces (user_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_workspaces_status     ON ai_workspaces (status);
+        CREATE INDEX IF NOT EXISTS idx_ai_workspaces_created_at ON ai_workspaces (created_at);
+
+        CREATE TABLE IF NOT EXISTS admin_invites (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            email             TEXT    NOT NULL,
+            invite_token_hash TEXT    NOT NULL UNIQUE,
+            role              TEXT    NOT NULL DEFAULT 'admin',
+            used              INTEGER NOT NULL DEFAULT 0,
+            expires_at        TEXT    NOT NULL,
+            created_by        TEXT,
+            created_at        TEXT    NOT NULL,
+            used_at           TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_admin_invites_email      ON admin_invites (email);
+        CREATE INDEX IF NOT EXISTS idx_admin_invites_token_hash ON admin_invites (invite_token_hash);
     """)
     conn.commit()
 
@@ -213,15 +269,20 @@ def init_db() -> None:
         cursor.execute("ALTER TABLE workflows ADD COLUMN user_id TEXT")
     conn.commit()
 
-    # Idempotent migration: add date_profile_json to datasets.
-    # Rows uploaded before this migration will have NULL; the report generator
-    # treats NULL as "no date analysis available" and skips the new sections.
+    # Idempotent migrations for datasets table.
+    # All new columns are nullable TEXT so existing rows remain valid.
     ds_existing = {
         row[1]
         for row in cursor.execute("PRAGMA table_info(datasets)").fetchall()
     }
-    if "date_profile_json" not in ds_existing:
-        cursor.execute("ALTER TABLE datasets ADD COLUMN date_profile_json TEXT")
+    ds_migrations = [
+        ("date_profile_json",       "ALTER TABLE datasets ADD COLUMN date_profile_json TEXT"),
+        ("correlation_profile_json","ALTER TABLE datasets ADD COLUMN correlation_profile_json TEXT"),
+        ("categorical_meta_json",   "ALTER TABLE datasets ADD COLUMN categorical_meta_json TEXT"),
+    ]
+    for col, stmt in ds_migrations:
+        if col not in ds_existing:
+            cursor.execute(stmt)
     conn.commit()
 
     # Idempotent migration: add dataset_id to execution_history so each
@@ -234,6 +295,71 @@ def init_db() -> None:
         cursor.execute(
             "ALTER TABLE execution_history ADD COLUMN dataset_id INTEGER REFERENCES datasets(id)"
         )
+    conn.commit()
+
+    # Idempotent migrations for tools table: extend the minimal original schema
+    # (id, name, config) with the Dynamic Tool Composer foundation columns.
+    tools_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(tools)").fetchall()
+    }
+    tools_migrations = [
+        ("slug",         "ALTER TABLE tools ADD COLUMN slug TEXT"),
+        ("config_json",  "ALTER TABLE tools ADD COLUMN config_json TEXT"),
+        ("enabled",      "ALTER TABLE tools ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"),
+        ("approved",     "ALTER TABLE tools ADD COLUMN approved INTEGER NOT NULL DEFAULT 0"),
+        ("approved_by",  "ALTER TABLE tools ADD COLUMN approved_by TEXT"),
+        ("approved_at",  "ALTER TABLE tools ADD COLUMN approved_at TEXT"),
+        ("created_by",   "ALTER TABLE tools ADD COLUMN created_by TEXT"),
+        ("created_at",   "ALTER TABLE tools ADD COLUMN created_at TEXT"),
+    ]
+    for col, stmt in tools_migrations:
+        if col not in tools_existing:
+            cursor.execute(stmt)
+    conn.commit()
+
+    # Idempotent migrations for ai_workspaces: execution persistence columns.
+    aw_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(ai_workspaces)").fetchall()
+    }
+    aw_migrations = [
+        ("report_id",              "ALTER TABLE ai_workspaces ADD COLUMN report_id INTEGER REFERENCES reports(id) ON DELETE SET NULL"),
+        ("execution_summary_json", "ALTER TABLE ai_workspaces ADD COLUMN execution_summary_json TEXT"),
+        ("selected_sections_json", "ALTER TABLE ai_workspaces ADD COLUMN selected_sections_json TEXT"),
+        ("executed_at",            "ALTER TABLE ai_workspaces ADD COLUMN executed_at TEXT"),
+        ("saved_at",               "ALTER TABLE ai_workspaces ADD COLUMN saved_at TEXT"),
+        ("workflow_id",            "ALTER TABLE ai_workspaces ADD COLUMN workflow_id INTEGER REFERENCES workflows(id) ON DELETE SET NULL"),
+    ]
+    for col, stmt in aw_migrations:
+        if col not in aw_existing:
+            cursor.execute(stmt)
+    conn.commit()
+
+    # Seed the three static built-in tools so the DB reflects the registry.
+    # Uses name as the stable identity key. Existing rows get their slug and
+    # approved flag backfilled; new rows are inserted with full metadata.
+    _BUILTIN_SEEDS = [
+        ("email_sender", "email_sender"),
+        ("data_fetcher", "data_fetcher"),
+        ("notifier",     "notifier"),
+    ]
+    for name, slug in _BUILTIN_SEEDS:
+        existing = cursor.execute(
+            "SELECT id, slug FROM tools WHERE name = ?", (name,)
+        ).fetchone()
+        if existing is None:
+            cursor.execute(
+                "INSERT INTO tools (name, slug, config, enabled, approved) "
+                "VALUES (?, ?, '{}', 1, 1)",
+                (name, slug),
+            )
+        elif existing[1] is None or existing[1] == "":
+            # Backfill slug and mark approved for pre-migration rows
+            cursor.execute(
+                "UPDATE tools SET slug = ?, enabled = 1, approved = 1 WHERE name = ?",
+                (slug, name),
+            )
     conn.commit()
 
     conn.close()

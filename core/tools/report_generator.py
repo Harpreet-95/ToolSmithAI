@@ -261,6 +261,7 @@ def _build_chart_sections(
     row_count: int,
     date_profile: dict,
     numeric_profile: dict | None = None,
+    correlation_profile: list | None = None,
 ) -> list[dict]:
     """Build chart sections from stored profile data. Returns [] on any failure.
 
@@ -367,6 +368,45 @@ def _build_chart_sections(
                 })
     except Exception:
         pass
+
+    # 5. Correlation matrix — from stored pairwise Pearson pairs, capped at 8 columns
+    if correlation_profile and len(correlation_profile) >= 2:
+        try:
+            # Collect unique columns in descending order of |correlation| coverage
+            seen: set = set()
+            ordered_cols: list[str] = []
+            for pair in correlation_profile:
+                for col in (pair["column_a"], pair["column_b"]):
+                    if col not in seen:
+                        ordered_cols.append(col)
+                        seen.add(col)
+            ordered_cols = ordered_cols[:8]  # cap at 8 for readability
+            n = len(ordered_cols)
+            if n >= 2:
+                lookup: dict[tuple, float] = {}
+                for pair in correlation_profile:
+                    a, b, c = pair["column_a"], pair["column_b"], pair["correlation"]
+                    if a in seen and b in seen:
+                        lookup[(a, b)] = c
+                        lookup[(b, a)] = c
+                matrix = [
+                    [
+                        1.0 if row_col == col else round(lookup.get((row_col, col), 0.0), 4)
+                        for col in ordered_cols
+                    ]
+                    for row_col in ordered_cols
+                ]
+                charts.append({
+                    "type": "chart",
+                    "heading": "Numeric Column Correlations",
+                    "chart": {
+                        "chart_type": "correlation_matrix",
+                        "columns": ordered_cols,
+                        "matrix": matrix,
+                    },
+                })
+        except Exception:
+            pass
 
     return charts
 
@@ -2078,10 +2118,148 @@ def _build_drift_detection_section(
     }
 
 
+def _build_forecast_section(
+    numeric_profile: dict,
+    date_profile: dict,
+) -> dict | None:
+    """Build a deterministic forecast from stored date profile monthly_counts.
+
+    Requirements: ≥6 monthly data points in at least one date column, plus at
+    least one numeric column. Uses pure arithmetic — no ML libraries, no eval.
+    Returns None when requirements are not met (section silently omitted).
+    """
+    # ── Prereq: date column with ≥6 monthly data points ──────────────────────
+    date_cols  = date_profile.get("date_columns") or []
+    primary_dc = next(
+        (dc for dc in date_cols if len(dc.get("monthly_counts") or []) >= 6),
+        None,
+    )
+    if primary_dc is None:
+        return None
+
+    # ── Prereq: at least one numeric column ──────────────────────────────────
+    if not numeric_profile:
+        return None
+
+    monthly  = primary_dc["monthly_counts"]
+    date_col = primary_dc["column"]
+    n        = len(monthly)
+
+    counts: list[float] = [float(m.get("count", 0)) for m in monthly]
+    labels: list[str]   = [str(m.get("month", ""))  for m in monthly]
+
+    # ── Linear trend via index-based least squares ────────────────────────────
+    mean_i    = (n - 1) / 2.0
+    mean_y    = sum(counts) / n
+    denom     = sum((i - mean_i) ** 2 for i in range(n))
+    slope     = (
+        sum((i - mean_i) * (counts[i] - mean_y) for i in range(n)) / denom
+        if denom else 0.0
+    )
+    intercept  = mean_y - slope * mean_i
+    trend_line = [intercept + slope * i for i in range(n)]
+
+    # ── Confidence band width from residual std ───────────────────────────────
+    residuals = [counts[i] - trend_line[i] for i in range(n)]
+    res_mean  = sum(residuals) / n
+    res_var   = sum((r - res_mean) ** 2 for r in residuals) / n
+    res_std   = math.sqrt(res_var) if res_var > 0 else 0.0
+
+    # ── Horizon: 1–3 periods, scaled to dataset length ───────────────────────
+    horizon = min(3, max(1, n // 4))
+
+    # ── Advance YYYY-MM labels by one month each ──────────────────────────────
+    def _advance_month(ym: str) -> str:
+        try:
+            year, month = int(ym[:4]), int(ym[5:7])
+            month += 1
+            if month > 12:
+                month, year = 1, year + 1
+            return f"{year:04d}-{month:02d}"
+        except Exception:
+            return ym
+
+    forecast_labels: list[str] = []
+    cur = labels[-1]
+    for _ in range(horizon):
+        cur = _advance_month(cur)
+        forecast_labels.append(f"{cur} (F)")
+
+    # ── Forecast values: trend continuation, floor at 0 ──────────────────────
+    forecast_vals: list[float] = [
+        max(0.0, round(intercept + slope * (n + i), 1))
+        for i in range(horizon)
+    ]
+
+    # ── Build combined chart arrays (None = gap in that segment) ─────────────
+    all_labels = labels + forecast_labels
+    historical = [int(c) for c in counts] + [None] * horizon
+    forecast   = [None] * n + forecast_vals
+    upper_band = [None] * n + [max(0.0, round(v + res_std, 1)) for v in forecast_vals]
+    lower_band = [None] * n + [max(0.0, round(v - res_std, 1)) for v in forecast_vals]
+
+    # ── Best numeric column (recommended for value forecasting) ──────────────
+    try:
+        best_num_col = max(
+            (
+                (col, float(stats.get("std") or 0))
+                for col, stats in numeric_profile.items()
+                if math.isfinite(float(stats.get("std") or 0))
+            ),
+            key=lambda x: x[1],
+        )[0]
+    except Exception:
+        best_num_col = None
+
+    # ── Summary text ──────────────────────────────────────────────────────────
+    ma_window   = min(3, n // 3)
+    trend_dir   = (
+        "upward"   if slope >  0.05 * max(mean_y, 1) else
+        "downward" if slope < -0.05 * max(mean_y, 1) else
+        "stable"
+    )
+    avg_forecast = sum(forecast_vals) / len(forecast_vals) if forecast_vals else 0.0
+
+    items: list[str] = [
+        f"Forecast generated for '{date_col}' using {n} months of historical record volume.",
+        f"Method: linear trend with {ma_window}-period moving average (deterministic, no ML).",
+        f"Volume trend: {trend_dir} ({slope:+.2f} records/month).",
+        f"Forecast horizon: {horizon} month{'s' if horizon != 1 else ''} ahead.",
+        f"Projected average: {_safe_fmt(avg_forecast)} records/month "
+        f"(±{_safe_fmt(res_std)} confidence band).",
+    ]
+    if best_num_col:
+        items.append(
+            f"Recommended target for value forecasting: '{best_num_col}' "
+            f"(highest numeric variance in dataset)."
+        )
+
+    return {
+        "type":            "forecast",
+        "heading":         f"Forecast — {date_col} Volume",
+        "forecast_ready":  True,
+        "target_column":   date_col,
+        "method":          "linear_trend_with_moving_average",
+        "horizon_periods": horizon,
+        "items":           items,
+        "chart": {
+            "chart_type":           "forecast",
+            "labels":               all_labels,
+            "historical":           historical,
+            "forecast":             forecast,
+            "upper_band":           upper_band,
+            "lower_band":           lower_band,
+            "forecast_start_index": n,
+            "date_column":          date_col,
+        },
+    }
+
+
 def generate_dataset_report(
     dataset: dict,
     previous_snapshot: dict | None = None,
     baseline_snapshots: list[dict] | None = None,
+    selected_sections: list[str] | None = None,
 ) -> dict:
     """
     Build a structured report from a stored dataset summary row.
@@ -2251,6 +2429,7 @@ def generate_dataset_report(
     for chart_sec in _build_chart_sections(
         categorical_profile, missing_values, row_count, date_profile,
         numeric_profile=numeric_profile,
+        correlation_profile=correlation_profile,
     ):
         sections.append(chart_sec)
 
@@ -2297,6 +2476,29 @@ def generate_dataset_report(
                 )
             sections.insert(anchor_pos + 1, drift_sec)
 
+    # ── Forecast ──────────────────────────────────────────────────────────────
+    # Inserted after the drift/historical/predictive_readiness cluster so all
+    # intelligence sections stay grouped together. Silently omitted when the
+    # dataset lacks ≥6 monthly data points or numeric columns.
+    forecast_sec = _build_forecast_section(numeric_profile, date_profile)
+    if forecast_sec is not None:
+        # Anchor: drift_detection → historical_comparison → predictive_readiness
+        _fc_anchor = next(
+            (i for i, s in enumerate(sections) if s.get("type") == "drift_detection"),
+            None,
+        )
+        if _fc_anchor is None:
+            _fc_anchor = next(
+                (i for i, s in enumerate(sections) if s.get("type") == "historical_comparison"),
+                None,
+            )
+        if _fc_anchor is None:
+            _fc_anchor = next(
+                (i for i, s in enumerate(sections) if s.get("type") == "predictive_readiness"),
+                len(sections) - 1,
+            )
+        sections.insert(_fc_anchor + 1, forecast_sec)
+
     # ── Executive Summary (prepended so it leads the report) ─────────────────
     # Built after all other sections so date_profile and completeness are known.
     # Note: if ENABLE_AI_REPORT_NARRATIVE=true, the AI will also insert its own
@@ -2327,8 +2529,17 @@ def generate_dataset_report(
             exec_items.append(f"Note: {r}")
         # Prepend so Executive Summary is first in the report and in email bodies.
         sections.insert(0, {"type": "text", "heading": "Executive Summary", "items": exec_items})
-        return {"version": 2, "sections": sections, "ai_narrative": ai_narrative}
 
+    # ── Intent-based section filter (optional) ────────────────────────────────
+    # selected_sections=None  → full report, all sections returned (unchanged behavior).
+    # selected_sections=[...] → keep only sections whose stamped type is in the list.
+    # All builders still run so inter-section references (historical, drift) remain
+    # correct; the filter only affects what is returned to the caller.
+    if selected_sections is not None:
+        sections = [s for s in sections if s.get("type", "text") in selected_sections]
+
+    if ai_narrative:
+        return {"version": 2, "sections": sections, "ai_narrative": ai_narrative}
     return {"version": 2, "sections": sections}
 
 

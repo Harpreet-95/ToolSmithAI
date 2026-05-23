@@ -17,7 +17,7 @@ _REPORT_HINT_WORDS = frozenset({
 _EMAIL_HINT_WORDS = frozenset({"email", "send", "mail", "share"})
 
 
-def handle_input(user_input: str, user_id: str | None = None, dataset_id: int | None = None, recipient: str | None = None) -> dict:
+def handle_input(user_input: str, user_id: str | None = None, dataset_id: int | None = None, recipient: str | None = None, selected_sections: list[str] | None = None) -> dict:
     lowered = user_input.lower()
 
     # When a dataset is selected and the input is report-related, bypass generic
@@ -32,9 +32,9 @@ def handle_input(user_input: str, user_id: str | None = None, dataset_id: int | 
         plan = interpret_task(user_input)
 
     if plan.get("task_type") == "generate_dataset_report":
-        result = run_dataset_report_plan(plan, user_id, dataset_id=dataset_id)
+        result = run_dataset_report_plan(plan, user_id, dataset_id=dataset_id, selected_sections=selected_sections)
     elif plan.get("task_type") == "email_dataset_report":
-        result = run_email_dataset_report_plan(plan, user_id, dataset_id=dataset_id, recipient=recipient)
+        result = run_email_dataset_report_plan(plan, user_id, dataset_id=dataset_id, recipient=recipient, selected_sections=selected_sections)
     else:
         # Inject recipient and plan context into any send_email step params so the
         # handler can address and compose the email without needing the full plan.

@@ -9,15 +9,30 @@ def _now() -> str:
 
 
 def _extract_summary(content: dict) -> str:
-    """Pull the first two items from the Overview section as a plain-text summary.
+    """Return a short plain-text summary for the Reports list view.
 
-    Used in list views so the full content_json does not need to be deserialised.
-    Falls back to the first available section if Overview is absent.
+    Priority:
+      1. executive_summary.summary  — rich, business-readable single paragraph
+      2. Overview text items        — factual dataset description
+      3. first text section items   — any text section as last resort
+
+    Type-safe: sections without 'type' (v1 reports) default to 'text'.
+    Non-text sections (kpi, chart, etc.) are skipped when falling back.
     Capped at 200 characters to stay lightweight as a display hint.
     """
     sections = content.get("sections", [])
-    overview = next((s for s in sections if s.get("heading") == "Overview"), None)
-    source = overview or (sections[0] if sections else None)
+
+    # 1. Prefer the executive_summary paragraph — most business-readable
+    for s in sections:
+        if s.get("type") == "executive_summary":
+            summary = s.get("summary", "")
+            if summary:
+                return str(summary)[:200]
+
+    # 2. Fall back to Overview text items, then first text section
+    text_sections = [s for s in sections if s.get("type", "text") == "text"]
+    overview = next((s for s in text_sections if s.get("heading") == "Overview"), None)
+    source = overview or (text_sections[0] if text_sections else None)
     if source is None:
         return ""
     items = source.get("items", [])[:2]

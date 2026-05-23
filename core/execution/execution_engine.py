@@ -90,12 +90,23 @@ DISPATCH_TABLE = {
 def _dispatch(step: dict) -> dict:
     key = f"{step['tool']}.{step['operation']}"
     handler = DISPATCH_TABLE.get(key)
-    if handler is None:
-        raise ValueError(
-            f"No handler registered for '{key}'. "
-            f"Registered handlers: {list(DISPATCH_TABLE.keys())}"
-        )
-    return handler(step.get("params") or {})
+    if handler is not None:
+        # Built-in static tool — original path, entirely unchanged
+        return handler(step.get("params") or {})
+
+    # Dynamic tool path — only active when ENABLE_DYNAMIC_TOOL_EXECUTION=true
+    from core.config import ENABLE_DYNAMIC_TOOL_EXECUTION
+    if ENABLE_DYNAMIC_TOOL_EXECUTION:
+        from core.registry.tool_registry import TOOL_REGISTRY
+        tool_def = TOOL_REGISTRY.get(step.get("tool") or "")
+        if tool_def and tool_def.get("source") == "dynamic":
+            from core.primitives.executor import run_primitive
+            return run_primitive(tool_def, step)
+
+    raise ValueError(
+        f"No handler registered for '{key}'. "
+        f"Registered handlers: {list(DISPATCH_TABLE.keys())}"
+    )
 
 
 def _is_transient(exc: Exception) -> bool:

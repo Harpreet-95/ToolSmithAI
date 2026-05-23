@@ -1,5 +1,25 @@
-﻿import { useState, useEffect, useRef } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow } from './api/client'
+﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById } from './api/client'
+import ErrorBoundary from './components/ErrorBoundary'
+import ChartSection from './components/ChartSection'
+
+const ReportWorkspace    = lazy(() => import('./components/ReportWorkspace'))
+const WorkflowResult     = lazy(() => import('./components/WorkflowResult'))
+const DynamicToolComposer = lazy(() => import('./components/DynamicToolComposer'))
+const ProposalPreview    = lazy(() => import('./components/ProposalPreview'))
+const DatasetIntelligence = lazy(() => import('./components/DatasetIntelligence'))
+const WorkspaceHistory    = lazy(() => import('./components/WorkspaceHistory'))
+const OperationsCenter   = lazy(() => import('./components/OperationsCenter'))
+const AdminDashboard     = lazy(() => import('./components/AdminDashboard'))
+
+// ─── Lazy-load fallback ────────────────────────────────────────────────────────
+function LazyFallback() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px 0', color: '#40475e', fontSize: '0.8rem' }}>
+      Loading…
+    </div>
+  )
+}
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C_DARK = {
@@ -274,6 +294,8 @@ const NAV_ITEMS = [
   { id: 'scheduled',      label: 'Scheduled',       icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
   { id: 'sched-activity', label: 'Sched. Activity', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
   { id: 'history',        label: 'History',         icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
+  { id: 'operations',     label: 'Ops Center',      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg> },
+  { id: 'workspaces', label: 'Workspaces',   icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> },
   { id: 'reports',   label: 'Reports',      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> },
   { id: 'usage',     label: 'Usage',        icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> },
   { id: 'settings',  label: 'Settings',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> },
@@ -457,6 +479,7 @@ function LoginView({ onSignIn, sessionExpired }) {
         .ts-signin-btn:hover { opacity: 0.9 !important; transform: translateY(-1px) !important; box-shadow: 0 8px 40px rgba(99,102,241,0.55) !important; }
         .ts-signin-btn:active { transform: translateY(0) !important; }
         .ts-input:focus { border-color: rgba(99,102,241,0.65) !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.14) !important; }
+        @media (min-width: 1100px) { .rw-nav-rail { display: block !important; } }
         .ts-social-btn { transition: background 0.18s ease, border-color 0.18s ease; }
         .ts-social-btn:hover { background: rgba(255,255,255,0.07) !important; border-color: rgba(255,255,255,0.18) !important; }
         .ts-feat-card { transition: background 0.2s ease, border-color 0.2s ease; }
@@ -1399,60 +1422,6 @@ function WorkflowStepBuilder({ steps, onStepsChange, C, S }) {
 }
 
 // ─── Multi-step execution result renderer ──────────────────────────────────────
-function MultiStepResult({ result, C, S }) {
-  const statusColor = (s) => s === 'completed' ? C.success : s === 'failed' ? C.danger : s === 'running' ? C.warn : C.textMuted
-  const statusBg    = (s) => s === 'completed' ? C.successSoft : s === 'failed' ? C.dangerSoft : s === 'running' ? C.warnSoft : 'transparent'
-  const statusIcon  = (s) => s === 'completed' ? '✓' : s === 'failed' ? '✕' : s === 'running' ? '…' : s === 'skipped' ? '—' : '·'
-  const overallOk   = result.status === 'completed'
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-        <div style={S.badge(overallOk ? C.success : C.danger, overallOk ? C.successSoft : C.dangerSoft)}>
-          <div style={S.dot(overallOk ? C.success : C.danger)} />
-          {overallOk ? 'Completed' : 'Failed'}
-        </div>
-        <span style={{ fontSize: '0.75rem', color: C.textMuted }}>
-          {(result.workflow_steps || []).length} steps
-        </span>
-      </div>
-
-      {(result.workflow_steps || []).map((step, i) => (
-        <div key={step.step_id} style={{
-          background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px',
-          padding: '10px 14px',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{
-              fontSize: '0.72rem', fontWeight: '700', color: statusColor(step.status),
-              background: statusBg(step.status), borderRadius: '4px',
-              padding: '2px 6px', minWidth: '20px', textAlign: 'center',
-            }}>{statusIcon(step.status)}</span>
-            <span style={{ fontSize: '0.83rem', fontWeight: '600', color: C.text }}>{step.label}</span>
-            <div style={{ marginLeft: 'auto', ...S.badge(statusColor(step.status), statusBg(step.status)) }}>
-              {step.status}
-            </div>
-          </div>
-          {step.status === 'failed' && result.error && (
-            <div style={{ marginTop: '6px', fontSize: '0.76rem', color: C.danger, lineHeight: 1.5 }}>
-              {result.error}
-            </div>
-          )}
-        </div>
-      ))}
-
-      {result.error && (
-        <div style={{
-          background: C.dangerSoft, border: `1px solid ${C.danger}40`,
-          borderRadius: '8px', padding: '10px 14px', fontSize: '0.8rem', color: C.danger,
-        }}>
-          {result.error}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ─── Report section renderer — type-dispatched ────────────────────────────────
 // Handles both v1 reports (no 'type' field) and v2 reports ('type' present).
 // Add new cases here as enterprise section types are introduced.
@@ -1584,90 +1553,7 @@ function ReportSection({ section, C }) {
             )
           }
           case 'chart': {
-            const chart      = section.chart || {}
-            const chartType  = chart.chart_type || 'bar'
-            const labels     = chart.labels || []
-            const series     = chart.series || []
-            const firstSer   = series[0] || {}
-            const serData    = firstSer.data || []
-            const seriesName = firstSer.name || ''
-
-            if (!labels.length) {
-              return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No chart data available.</div>
-            }
-
-            if (chartType === 'bar') {
-              const nums   = serData.map(v => (typeof v === 'number' && isFinite(v) ? v : 0))
-              const maxVal = Math.max(...nums, 1)
-              const n      = labels.length
-              const BAR_W  = Math.max(18, Math.min(52, Math.floor(420 / n)))
-              const GAP    = 7
-              const V_SPC  = 16   // space above bars for value labels
-              const CH     = 120  // chart bar area height
-              const LBL_H  = 34   // label area below baseline
-              const SVG_W  = n * (BAR_W + GAP) + GAP
-              const SVG_H  = V_SPC + CH + LBL_H
-              const BASE_Y = V_SPC + CH
-
-              return (
-                <div style={{ overflowX: 'auto' }}>
-                  <svg
-                    viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-                    width="100%"
-                    style={{ display: 'block', minWidth: `${Math.min(SVG_W, 200)}px`, maxWidth: `${SVG_W}px` }}
-                    aria-label={section.heading}
-                  >
-                    <line x1={0} y1={BASE_Y} x2={SVG_W} y2={BASE_Y} stroke={C.border} strokeWidth={1} />
-                    {labels.map((label, i) => {
-                      const val    = nums[i] || 0
-                      const barH   = Math.max(2, Math.round((val / maxVal) * CH * 0.92))
-                      const x      = GAP + i * (BAR_W + GAP)
-                      const y      = BASE_Y - barH
-                      const valStr = val >= 10000 ? `${(val / 1000).toFixed(1)}k` : val.toLocaleString()
-                      const lbl    = String(label)
-                      const short  = lbl.length > 9 ? lbl.slice(0, 8) + '…' : lbl
-                      return (
-                        <g key={i}>
-                          <rect x={x} y={y} width={BAR_W} height={barH} fill={C.accent} rx={2} opacity={0.82} />
-                          {barH > 10 && (
-                            <text x={x + BAR_W / 2} y={y - 3} textAnchor="middle" fontSize={8} fill={C.textSec} fontFamily="sans-serif">
-                              {valStr}
-                            </text>
-                          )}
-                          <text x={x + BAR_W / 2} y={BASE_Y + 13} textAnchor="middle" fontSize={7.5} fill={C.textMuted} fontFamily="sans-serif">
-                            {short}
-                          </text>
-                        </g>
-                      )
-                    })}
-                  </svg>
-                  {seriesName && (
-                    <div style={{ fontSize: '0.65rem', color: C.textMuted, textAlign: 'center', marginTop: '5px' }}>{seriesName}</div>
-                  )}
-                </div>
-              )
-            }
-
-            // Fallback for line, pie, and any unsupported chart_type: readable value list
-            return (
-              <div>
-                <div style={{ fontSize: '0.65rem', color: C.textMuted, marginBottom: '8px', textTransform: 'capitalize' }}>
-                  {chartType} · {labels.length} data points
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                  {labels.map((label, i) => {
-                    const val = serData[i]
-                    return (
-                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.73rem', padding: '3px 0', borderBottom: `1px solid ${C.border}` }}>
-                        <span style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{label}</span>
-                        <span style={{ color: C.textSec, fontWeight: '500' }}>{val != null ? Number(val).toLocaleString() : '—'}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-                {seriesName && <div style={{ fontSize: '0.65rem', color: C.textMuted, marginTop: '8px' }}>{seriesName}</div>}
-              </div>
-            )
+            return <ChartSection chart={section.chart || {}} C={C} />
           }
           case 'drift_detection': {
             const drifts = section.drifts || []
@@ -1996,275 +1882,6 @@ function ReportSection({ section, C }) {
   )
 }
 
-// ─── Workflow result renderer ──────────────────────────────────────────────────
-function WorkflowResult({ result, C, S }) {
-  if (result.task_type === 'multi_step' || result.workflow_steps) {
-    return <MultiStepResult result={result} C={C} S={S} />
-  }
-  const isSuccess = result.status === 'success' || result.status === 'completed' || result.status === 'ok'
-  const statusColor = isSuccess ? C.success : C.danger
-  const statusBg    = isSuccess ? C.successSoft : C.dangerSoft
-
-  const duration = result.started_at && result.finished_at
-    ? `${((new Date(result.finished_at) - new Date(result.started_at)) / 1000).toFixed(2)}s`
-    : null
-
-  const sectionLabel = (text) => (
-    <div style={{ fontSize: '0.66rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
-      {text}
-    </div>
-  )
-
-  const infoCard = (children, extra = {}) => (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px', ...extra }}>
-      {children}
-    </div>
-  )
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-
-      {/* Summary row — status + duration + step count + timestamps */}
-      {infoCard(<>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-          <div>
-            {sectionLabel('Workflow Summary')}
-            {duration && <span style={{ fontSize: '0.77rem', color: C.textSec }}>Duration: {duration}</span>}
-          </div>
-          <div style={S.badge(statusColor, statusBg)}>
-            <div style={S.dot(statusColor)} />
-            {result.status || 'unknown'}
-          </div>
-        </div>
-        {(result.step_results?.length > 0 || result.started_at || result.finished_at) && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px' }}>
-            {result.step_results?.length > 0 && <span style={{ fontSize: '0.77rem', color: C.textSec }}>Steps: <span style={{ color: C.text, fontWeight: '500' }}>{result.step_results.length}</span></span>}
-            {result.started_at && <span style={{ fontSize: '0.77rem', color: C.textSec }}>Started: <span style={{ color: C.text }}>{new Date(result.started_at).toLocaleString()}</span></span>}
-            {result.finished_at && <span style={{ fontSize: '0.77rem', color: C.textSec }}>Finished: <span style={{ color: C.text }}>{new Date(result.finished_at).toLocaleString()}</span></span>}
-          </div>
-        )}
-      </>)}
-
-      {/* Detected intent */}
-      {result.original_input && infoCard(<>
-        {sectionLabel('Detected Intent')}
-        <p style={{ margin: 0, fontSize: '0.84rem', color: C.text, lineHeight: 1.65 }}>{result.original_input}</p>
-      </>)}
-
-      {/* Plan Preview */}
-      {(result.task_type || result.schedule || result.metadata || result.step_results?.length > 0) && infoCard(<>
-        {sectionLabel('Plan Preview')}
-        {result.task_type && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.77rem', color: C.textSec }}>Task:</span>
-            <div style={S.badge(C.accent, C.accentSoft)}>{result.task_type.replace(/_/g, ' ')}</div>
-          </div>
-        )}
-        {result.schedule && (
-          <div style={{ fontSize: '0.77rem', color: C.textSec, marginBottom: '8px' }}>
-            Schedule: <span style={{ color: C.text, fontWeight: '500' }}>{result.schedule.frequency}{result.metadata?.entities?.day_of_week ? ` · ${result.metadata.entities.day_of_week}` : ''}</span>
-          </div>
-        )}
-        {(result.metadata?.entities?.recipient_hint || result.metadata?.entities?.report_hint || result.metadata?.entities?.action_hint) && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-            {result.metadata.entities.recipient_hint && <span style={S.badge(C.textSec, C.bg)}>To: {result.metadata.entities.recipient_hint}</span>}
-            {result.metadata.entities.report_hint    && <span style={S.badge(C.textSec, C.bg)}>Topic: {result.metadata.entities.report_hint}</span>}
-            {result.metadata.entities.action_hint    && <span style={S.badge(C.textSec, C.bg)}>Action: {result.metadata.entities.action_hint}</span>}
-          </div>
-        )}
-        {result.metadata?.warnings?.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
-            {result.metadata.warnings.map((w, i) => (
-              <div key={i} style={{ fontSize: '0.77rem', color: C.warn, lineHeight: 1.5 }}>⚠ {w}</div>
-            ))}
-          </div>
-        )}
-        {result.step_results?.length > 0 && <>
-          <div style={{ fontSize: '0.66rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '7px' }}>Planned Steps</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-            {result.step_results.map((step, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.77rem' }}>
-                <span style={{ color: C.textMuted, fontWeight: '600', minWidth: '16px' }}>{i + 1}.</span>
-                <span style={{ color: C.text, fontWeight: '500' }}>{step.tool || `step_${i + 1}`}</span>
-                {step.operation && <span style={{ color: C.textMuted }}>· {step.operation}</span>}
-              </div>
-            ))}
-          </div>
-        </>}
-      </>)}
-
-      {/* Unsupported intent notice */}
-      {result.metadata?.unsupported_reason && infoCard(<>
-        {sectionLabel('Notice')}
-        <p style={{ margin: 0, fontSize: '0.82rem', color: C.warn, lineHeight: 1.6 }}>
-          {result.metadata.unsupported_reason}
-        </p>
-      </>, { background: C.warnSoft, border: `1px solid ${C.warn}40` })}
-
-      {/* Execution steps */}
-      {Array.isArray(result.step_results) && result.step_results.length > 0 && (
-        <div>
-          {sectionLabel('Execution Steps')}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-            {result.step_results.map((step, i) => {
-              const ok      = step.success !== false && step.status !== 'failed' && step.status !== 'error'
-              const sc      = ok ? C.success : C.danger
-              const stepDur = step.duration_ms ? `${step.duration_ms}ms` : step.duration ? `${step.duration}s` : null
-              const rawOut  = step.output ?? step.result ?? null
-              const outText = rawOut ? (typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut)) : null
-              return (
-                <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '11px 14px 11px 18px', position: 'relative', overflow: 'hidden' }}>
-                  <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '3px', background: sc, borderRadius: '10px 0 0 10px' }} />
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: outText ? '6px' : 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '0.82rem', fontWeight: '600', color: C.text }}>{step.tool || `Step ${i + 1}`}</span>
-                      {step.operation && <span style={{ fontSize: '0.72rem', color: C.textSec }}>· {step.operation}</span>}
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      {stepDur && <span style={{ fontSize: '0.67rem', color: C.textMuted }}>{stepDur}</span>}
-                      <div style={S.badge(sc, sc + '1a')}><div style={S.dot(sc)} />{ok ? 'Success' : 'Failed'}</div>
-                    </div>
-                  </div>
-                  {outText && (
-                    <p style={{ margin: 0, fontSize: '0.76rem', color: C.textSec, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {outText}
-                    </p>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Output */}
-      {(result.output || result.tool || result.operation) && infoCard(<>
-        {sectionLabel('Output')}
-        {result.tool      && <div style={{ fontSize: '0.77rem', color: C.textSec, marginBottom: '4px' }}>Tool: <span style={{ color: C.text, fontWeight: '500' }}>{result.tool}</span></div>}
-        {result.operation && <div style={{ fontSize: '0.77rem', color: C.textSec, marginBottom: '4px' }}>Operation: <span style={{ color: C.text, fontWeight: '500' }}>{result.operation}</span></div>}
-        {result.output    && <p style={{ margin: '6px 0 0', fontSize: '0.82rem', color: C.text, lineHeight: 1.6 }}>{typeof result.output === 'string' ? result.output : JSON.stringify(result.output)}</p>}
-      </>)}
-
-      {/* Dataset Report — rendered from backend-generated analysis */}
-      {result.dataset_report?.sections?.length > 0 && <>
-        {sectionLabel('Dataset Report')}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          {result.dataset_report.sections.map((section, i) => (
-            <ReportSection key={i} section={section} C={C} />
-          ))}
-        </div>
-      </>}
-      {result.dataset_report_error && infoCard(<>
-        {sectionLabel('Dataset Report')}
-        <p style={{ margin: 0, fontSize: '0.82rem', color: C.warn, lineHeight: 1.6 }}>
-          {result.dataset_report_error}
-        </p>
-      </>, { background: C.warnSoft, border: `1px solid ${C.warn}40` })}
-
-      {/* Email Delivery */}
-      {result.email_delivery && infoCard(<>
-        {sectionLabel('Email Delivery')}
-        {result.email_delivery.sent ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={S.dot(C.success)} />
-            <span style={{ fontSize: '0.82rem', color: C.success }}>
-              Report sent to {result.email_delivery.to}
-            </span>
-          </div>
-        ) : (
-          <p style={{ margin: 0, fontSize: '0.82rem', color: C.warn, lineHeight: 1.6 }}>
-            {result.email_delivery.reason}
-          </p>
-        )}
-      </>, result.email_delivery.sent
-        ? { background: C.successSoft, border: `1px solid ${C.success}40` }
-        : { background: C.warnSoft,   border: `1px solid ${C.warn}40`    }
-      )}
-
-      {/* Execution Timeline — only real fields, no fabricated timestamps */}
-      {(() => {
-        const evs = []
-
-        if (result.started_at) {
-          evs.push({ ts: result.started_at, label: 'Workflow Started', color: C.accent, badge: 'start', detail: null })
-        }
-
-        if (Array.isArray(result.step_results)) {
-          result.step_results.forEach((step, i) => {
-            const ok  = step.success !== false && step.status !== 'failed' && step.status !== 'error'
-            const dur = step.duration_ms ? `${step.duration_ms}ms` : step.duration ? `${step.duration}s` : null
-            evs.push({
-              ts: null,
-              label: step.tool || `Step ${i + 1}`,
-              color: ok ? C.success : C.danger,
-              badge: ok ? 'ok' : 'failed',
-              detail: [step.operation, dur].filter(Boolean).join(' · ') || null,
-            })
-          })
-        }
-
-        if (result.dataset_report?.sections?.length > 0) {
-          const n = result.dataset_report.sections.length
-          evs.push({ ts: null, label: 'Report Generated', color: C.success, badge: 'done', detail: `${n} section${n !== 1 ? 's' : ''}` })
-        }
-
-        if (result.dataset_report_error) {
-          evs.push({ ts: null, label: 'Report Error', color: C.warn, badge: 'error', detail: result.dataset_report_error })
-        }
-
-        if (result.email_delivery) {
-          if (result.email_delivery.sent) {
-            evs.push({ ts: null, label: 'Email Sent', color: C.success, badge: 'sent', detail: result.email_delivery.to ? `→ ${result.email_delivery.to}` : null })
-          } else {
-            evs.push({ ts: null, label: 'Email Warning', color: C.warn, badge: 'warning', detail: result.email_delivery.reason || null })
-          }
-        }
-
-        if (result.finished_at) {
-          evs.push({
-            ts: result.finished_at,
-            label: isSuccess ? 'Workflow Completed' : 'Workflow Failed',
-            color: isSuccess ? C.success : C.danger,
-            badge: isSuccess ? 'done' : 'failed',
-            detail: !isSuccess && result.error ? result.error : null,
-          })
-        }
-
-        if (evs.length === 0) return null
-
-        return infoCard(<>
-          {sectionLabel('Execution Timeline')}
-          <div style={{ fontSize: '0.66rem', color: C.textMuted, marginBottom: '12px', fontStyle: 'italic' }}>
-            Step order is sequential. Per-step timestamps are not yet available from the backend.
-          </div>
-          <div style={{ position: 'relative', paddingLeft: '22px' }}>
-            <div style={{ position: 'absolute', left: '7px', top: '10px', bottom: '10px', width: '1px', background: C.border }} />
-            {evs.map((ev, i) => (
-              <div key={i} style={{ position: 'relative', paddingBottom: i < evs.length - 1 ? '16px' : '0' }}>
-                <div style={{ position: 'absolute', left: '-17px', top: '5px', width: '8px', height: '8px', borderRadius: '50%', background: ev.color, border: `2px solid ${C.surface}`, boxShadow: `0 0 0 1px ${ev.color}40` }} />
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
-                    <span style={{ fontSize: '0.8rem', fontWeight: '600', color: C.text, lineHeight: 1.3 }}>{ev.label}</span>
-                    {ev.detail && <span style={{ fontSize: '0.72rem', color: C.textSec, lineHeight: 1.5, wordBreak: 'break-word' }}>{ev.detail}</span>}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-                    {ev.ts
-                      ? <span style={{ fontSize: '0.66rem', color: C.textMuted, fontFamily: MONO }}>{new Date(ev.ts).toLocaleTimeString()}</span>
-                      : <span style={{ fontSize: '0.66rem', color: C.textMuted }}>·</span>
-                    }
-                    <div style={S.badge(ev.color, ev.color + '1a')}><div style={S.dot(ev.color)} />{ev.badge}</div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>)
-      })()}
-
-    </div>
-  )
-}
-
 // ─── Report generator ──────────────────────────────────────────────────────────
 function buildReport(summary) {
   const fmt = (n, dec = 2) =>
@@ -2407,6 +2024,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [builderSaving,       setBuilderSaving]       = useState(false)
   const [builderError,        setBuilderError]        = useState(null)
   const [builderSuccess,      setBuilderSuccess]      = useState(null)
+  const [composerMode,        setComposerMode]        = useState('workflow')
+  const [composerProposal,        setComposerProposal]        = useState(null)
+  const [composerProposalLoading, setComposerProposalLoading] = useState(false)
+  const [composerProposalError,   setComposerProposalError]   = useState(null)
+  const [activeWorkspaceId,    setActiveWorkspaceId]    = useState(null)
+  const [workspaceList,        setWorkspaceList]        = useState([])
+  const [workspaceListLoading, setWorkspaceListLoading] = useState(false)
   const [dsModal,             setDsModal]             = useState(null)
   const [dsRenaming,          setDsRenaming]          = useState(null)
   const [dsRenameVal,         setDsRenameVal]         = useState('')
@@ -2420,6 +2044,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [dsDragOver,   setDsDragOver]   = useState(false)
   const [reportList,            setReportList]            = useState([])
   const [reportListLoading,     setReportListLoading]     = useState(false)
+  const [reportListError,       setReportListError]       = useState(null)
   const [selectedReportId,      setSelectedReportId]      = useState(null)
   const [selectedReportData,    setSelectedReportData]    = useState(null)
   const [selectedReportLoading, setSelectedReportLoading] = useState(false)
@@ -2473,6 +2098,14 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       .then(data => setHistory(data?.data?.execution_history ?? []))
       .catch(err => { if (is401(err)) onSessionExpired() })
       .finally(() => setHistoryLoading(false))
+  }
+
+  function refreshWorkspaces() {
+    setWorkspaceListLoading(true)
+    getWorkspaces(token)
+      .then(data => setWorkspaceList(data?.data ?? []))
+      .catch(err => { if (is401(err)) onSessionExpired() })
+      .finally(() => setWorkspaceListLoading(false))
   }
 
   useEffect(() => { refreshHistory() }, [token])
@@ -2812,13 +2445,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
   function refreshReports() {
     setReportListLoading(true)
+    setReportListError(null)
     getReports(token)
-      .then(d => setReportList(d?.data ?? []))
-      .catch(err => { if (is401(err)) onSessionExpired() })
+      .then(d => { setReportList(d?.data ?? []); setReportListError(null) })
+      .catch(err => {
+        if (is401(err)) {
+          onSessionExpired()
+        } else {
+          console.warn('[refreshReports] failed:', err)
+          setReportListError('Could not load saved reports. Please refresh or try again.')
+        }
+      })
       .finally(() => setReportListLoading(false))
   }
 
-  useEffect(() => { if (activeNav === 'reports') refreshReports() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (activeNav === 'reports' || activeNav === 'operations') refreshReports() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (activeNav === 'workspaces') refreshWorkspaces() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function refreshNotifications() {
     setNotifLoading(true)
@@ -2885,6 +2527,21 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     }
   }
 
+  function handleOpenSavedReport(reportId) {
+    setActiveNav('reports')
+    // Set selected state immediately so the detail panel opens without waiting
+    // for the list refresh — avoids the race where handleSelectReport bails
+    // early if selectedReportId already equals reportId.
+    setSelectedReportId(reportId)
+    setSelectedReportData(null)
+    setSelectedReportLoading(true)
+    getReportById(reportId, token)
+      .then(d => setSelectedReportData(d?.data ?? null))
+      .catch(err => { if (is401(err)) onSessionExpired() })
+      .finally(() => setSelectedReportLoading(false))
+    refreshReports()
+  }
+
   async function handleDeleteReport(id) {
     try {
       await deleteReport(id, token)
@@ -2895,7 +2552,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     }
   }
 
-  async function handleRunTask() {
+  async function handleRunTask(selectedSections = null) {
     setError(null)
     setValidationError(null)
     setResult(null)
@@ -2930,17 +2587,65 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       } catch (wfErr) {
         if (is401(wfErr)) { onSessionExpired(); return }
         if (!wfErr.message.startsWith('404:')) throw wfErr
-        data = await interpretTask(trimmed, token, selectedDatasetId, recipientEmail.trim() || null)
+        data = await interpretTask(trimmed, token, selectedDatasetId, recipientEmail.trim() || null, selectedSections)
       }
       setResult(data.data)
+      if (data.data?.report_id != null) refreshReports()
       getUsage(token).then(d => setUsage(d)).catch(() => {})
       getMyData(token).then(d => setHistory(d?.data?.execution_history ?? [])).catch(() => {})
+      if (activeWorkspaceId != null) {
+        const execSummary = { task_type: data.data?.task_type, status: data.data?.status }
+        attachWorkspaceExecution(activeWorkspaceId, {
+          execution_summary: execSummary,
+          report_id: data.data?.report_id ?? null,
+          selected_sections: selectedSections ?? null,
+        }, token)
+          .then(() => refreshWorkspaces())
+          .catch(() => {})
+      }
     } catch (err) {
       if (is401(err)) { onSessionExpired(); return }
       setError(err.message)
     } finally {
       setLoading(false)
     }
+  }
+
+  async function handleComposePlan() {
+    setComposerProposalError(null)
+    setComposerProposal(null)
+    setValidationError(null)
+    const trimmed = taskInput.trim()
+    if (!trimmed) { setValidationError('Please enter a task description.'); return }
+    if (trimmed.length < 5) { setValidationError('Task description must be at least 5 characters.'); return }
+    setComposerProposalLoading(true)
+    try {
+      const data = await composeIntent(trimmed, selectedDatasetId || null, token, true)
+      const proposal = data?.data ?? null
+      setComposerProposal(proposal)
+      if (proposal?.workspace_id != null) setActiveWorkspaceId(proposal.workspace_id)
+    } catch (err) {
+      if (is401(err)) { onSessionExpired(); return }
+      setComposerProposalError(err.message)
+    } finally {
+      setComposerProposalLoading(false)
+    }
+  }
+
+  async function handleReopenWorkspace(ws) {
+    setActiveWorkspaceId(ws.id)
+    setTaskInput(ws.intent_text || '')
+    setResult(null)
+    setResultPanelOpen(false)
+    setError(null)
+    setValidationError(null)
+    if (ws.dataset_id != null) setSelectedDatasetId(ws.dataset_id)
+    if (ws.proposal) {
+      setComposerProposal({ ...ws.proposal, workspace_id: ws.id })
+    } else {
+      setComposerProposal(null)
+    }
+    setActiveNav('overview')
   }
 
   async function handleDatasetUpload() {
@@ -3066,40 +2771,57 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
         </div>
       )}
 
-      {/* ═══ EXECUTION RESULT SLIDE PANEL ═══ */}
-      {/* Backdrop — only visible when panel is open */}
+      {/* ═══ EXECUTION WORKSPACE MODAL ═══ */}
+      {/* Backdrop */}
       {resultPanelOpen && (
         <div
           onClick={() => setResultPanelOpen(false)}
           style={{
             position: 'fixed', inset: 0, zIndex: 210,
-            background: 'rgba(0,0,0,0.45)',
-            backdropFilter: 'blur(3px)',
-            WebkitBackdropFilter: 'blur(3px)',
-            animation: 'panelFadeIn 0.2s ease',
+            background: 'rgba(0,0,0,0.55)',
+            backdropFilter: 'blur(4px)',
+            WebkitBackdropFilter: 'blur(4px)',
+            animation: 'panelFadeIn 0.18s ease',
           }}
         />
       )}
-      {/* Panel — stays in DOM when there is data; slides in/out via transform */}
+      {/* Modal — stays in DOM when there is data; fades+scales in/out */}
       {(result || error || loading) && (
         <div style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0, zIndex: 211,
-          width: '480px',
+          position: 'fixed',
+          top: '50%', left: '50%',
+          zIndex: 211,
+          width: 'min(880px, 94vw)',
+          maxHeight: '92vh',
           background: C.surface,
-          borderLeft: `1px solid ${C.border}`,
-          boxShadow: '-24px 0 80px rgba(0,0,0,0.5)',
+          border: `1px solid ${C.borderAlt}`,
+          borderRadius: '16px',
+          boxShadow: '0 40px 120px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.03)',
           display: 'flex', flexDirection: 'column',
-          transform: resultPanelOpen ? 'translateX(0)' : 'translateX(100%)',
-          transition: 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+          overflow: 'hidden',
+          opacity: resultPanelOpen ? 1 : 0,
+          transform: resultPanelOpen
+            ? 'translate(-50%, -50%) scale(1)'
+            : 'translate(-50%, -50%) scale(0.96)',
+          transition: 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+          pointerEvents: resultPanelOpen ? 'auto' : 'none',
         }}>
-          {/* Panel header */}
+          {/* Workspace header */}
           <div style={{
-            padding: '20px 24px', borderBottom: `1px solid ${C.border}`,
+            padding: '16px 22px', borderBottom: `1px solid ${C.border}`,
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             flexShrink: 0, background: C.surface,
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: '600', color: C.text }}>Execution Result</h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '34px', height: '34px', borderRadius: '9px', background: C.accentSoft, border: `1px solid ${C.accent}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.88rem', fontWeight: '700', color: C.text, letterSpacing: '-0.1px', lineHeight: 1.2 }}>Execution Workspace</div>
+                <div style={{ fontSize: '0.68rem', color: C.textMuted, marginTop: '2px' }}>
+                  {loading ? 'Workflow executing…' : error ? 'Execution failed — see details below' : 'Execution complete'}
+                </div>
+              </div>
               {loading ? (
                 <span style={{ background: C.warnSoft, color: C.warn, border: `1px solid ${C.warn}40`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.67rem', fontWeight: '700' }}>Running…</span>
               ) : error ? (
@@ -3117,20 +2839,23 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             </button>
           </div>
 
-          {/* Panel body */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+          {/* Workspace body — scrollable */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '22px 24px' }}>
             {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '220px', gap: '16px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '50%', border: `3px solid ${C.accent}30`, borderTopColor: C.accent, animation: 'spin 0.75s linear infinite' }} />
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '280px', gap: '18px' }}>
+                <div style={{ width: '42px', height: '42px', borderRadius: '50%', border: `3px solid ${C.accent}25`, borderTopColor: C.accent, animation: 'spin 0.75s linear infinite' }} />
                 <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.88rem', color: C.textSec, marginBottom: '4px' }}>Executing workflow…</div>
+                  <div style={{ fontSize: '0.9rem', color: C.textSec, marginBottom: '5px', fontWeight: '500' }}>Executing workflow…</div>
                   <div style={{ fontSize: '0.75rem', color: C.textMuted }}>This may take a few seconds</div>
                 </div>
               </div>
             ) : error ? (
               <div>
-                <div style={{ background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '10px', padding: '16px 18px', marginBottom: '16px' }}>
-                  <div style={{ fontSize: '0.65rem', color: C.danger, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>Error</div>
+                <div style={{ background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '12px', padding: '18px 20px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.danger} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <div style={{ fontSize: '0.65rem', color: C.danger, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Execution Error</div>
+                  </div>
                   <p style={{ color: C.danger, fontSize: '0.85rem', margin: 0, lineHeight: 1.65 }}>{error}</p>
                 </div>
                 <div style={{ fontSize: '0.78rem', color: C.textMuted, lineHeight: 1.6 }}>
@@ -3138,22 +2863,27 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                 </div>
               </div>
             ) : result ? (
-              <WorkflowResult result={result} C={C} S={S} />
+              <ErrorBoundary C={C}>
+                <Suspense fallback={<LazyFallback />}>
+                  <WorkflowResult result={result} C={C} S={S} onOpenReport={handleOpenSavedReport} onExportReport={(id, fmt) => exportReport(id, token, fmt).catch(() => {})} SectionRenderer={ReportSection} />
+                </Suspense>
+              </ErrorBoundary>
             ) : null}
           </div>
 
-          {/* Panel footer */}
+          {/* Workspace footer */}
           {!loading && (
-            <div style={{ padding: '16px 24px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: '10px', flexShrink: 0, background: C.surface }}>
+            <div style={{ padding: '14px 22px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: '10px', flexShrink: 0, background: C.surface }}>
               <button
                 onClick={() => { setActiveNav('history'); setResultPanelOpen(false) }}
-                style={{ flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '9px 0', fontSize: '0.82rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '500' }}>
+                style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '8px 18px', fontSize: '0.8rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 View History
               </button>
               <button
                 onClick={() => setResultPanelOpen(false)}
-                style={{ flex: 1, ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', padding: '9px 0', fontSize: '0.82rem', textAlign: 'center' }}>
-                Done
+                style={{ marginLeft: 'auto', ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', padding: '8px 22px', fontSize: '0.8rem' }}>
+                Close
               </button>
             </div>
           )}
@@ -3582,11 +3312,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                       Connect API
                     </button>
-                    <button onClick={handleRunTask} disabled={loading}
-                      style={{ marginLeft: 'auto', ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: loading ? 'none' : '0 4px 14px #6366f124', padding: '7px 16px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px', opacity: loading ? 0.7 : 1, borderRadius: '7px' }}>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-                      {loading ? 'Generating…' : 'Generate Workflow'}
-                    </button>
+                    <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <button onClick={handleRunTask} disabled={loading || composerProposalLoading}
+                        style={{ ...S.btnPrimary, background: 'transparent', border: `1px solid ${C.border}`, color: C.textSec, boxShadow: 'none', padding: '7px 14px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px', opacity: (loading || composerProposalLoading) ? 0.5 : 1, borderRadius: '7px' }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                        {loading ? 'Running…' : 'Run Directly'}
+                      </button>
+                      <button onClick={handleComposePlan} disabled={loading || composerProposalLoading}
+                        style={{ ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', boxShadow: composerProposalLoading ? 'none' : '0 4px 14px #6366f124', padding: '7px 16px', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px', opacity: (loading || composerProposalLoading) ? 0.7 : 1, borderRadius: '7px' }}>
+                        {composerProposalLoading ? (
+                          <div style={{ width: '12px', height: '12px', borderRadius: '50%', border: '2px solid #ffffff40', borderTopColor: '#fff', animation: 'spin 0.75s linear infinite' }} />
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+                        )}
+                        {composerProposalLoading ? 'Composing…' : 'Compose Plan'}
+                      </button>
+                    </div>
                   </div>
 
                   {/* Dataset context bar */}
@@ -3636,7 +3377,35 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                       </button>
                     </div>
                   )}
+
+                  {/* Composer proposal error */}
+                  {composerProposalError && (
+                    <div style={{ marginTop: '14px', display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px 14px', background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '9px', fontSize: '0.78rem', color: C.danger }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      <span style={{ flex: 1 }}>{composerProposalError}</span>
+                      <button onClick={() => setComposerProposalError(null)} style={{ background: 'none', border: 'none', color: C.danger, cursor: 'pointer', padding: 0 }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </div>
+                  )}
                 </div>
+
+                {/* ═══ PROPOSAL PREVIEW ═══ */}
+                {composerProposal && (
+                  <Suspense fallback={<LazyFallback />}>
+                    <ProposalPreview
+                      proposal={composerProposal}
+                      C={C}
+                      onApprove={() => {
+                        const sections = composerProposal?.selected_sections ?? null
+                        setComposerProposal(null)
+                        handleRunTask(sections)
+                      }}
+                      onEdit={() => setComposerProposal(null)}
+                      onClear={() => { setComposerProposal(null); setTaskInput(''); setComposerProposalError(null) }}
+                    />
+                  </Suspense>
+                )}
 
                 {/* ═══ TWO-COLUMN ROW ═══ */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px' }}>
@@ -3823,6 +3592,23 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                 <p style={{ margin: 0, color: C.textMuted, fontSize: '0.78rem' }}>Save named workflows and re-run them from the dashboard at any time.</p>
               </div>
 
+              {/* ── Composer mode tabs — admin only ──────────────────── */}
+              {user?.role === 'admin' && (
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '18px' }}>
+                  {[{ key: 'workflow', label: 'Workflow Composer' }, { key: 'tool', label: 'Dynamic Tool Composer' }].map(({ key, label }) => {
+                    const active = composerMode === key
+                    return (
+                      <button key={key} onClick={() => setComposerMode(key)} style={{ padding: '6px 16px', borderRadius: '20px', fontSize: '0.75rem', cursor: 'pointer', fontFamily: FONT, fontWeight: active ? '600' : '400', border: `1px solid ${active ? C.accent : C.border}`, background: active ? C.accentSoft : 'transparent', color: active ? C.accent : C.textSec, transition: 'border-color 0.12s, background 0.12s, color 0.12s' }}>
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* ── Workflow Composer ─────────────────────────────────── */}
+              {composerMode === 'workflow' && <>
+
               {/* Workflow Templates */}
               <div style={{ ...S.card, marginBottom: '18px' }}>
                 <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Workflow Templates</h3>
@@ -3933,13 +3719,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                 )}
               </div>
 
+              </>}
+
+              {/* ── Dynamic Tool Composer ─────────────────────────────── */}
+              {composerMode === 'tool' && user?.role === 'admin' && (
+                <Suspense fallback={<LazyFallback />}>
+                  <DynamicToolComposer C={C} S={S} token={token} onSessionExpired={onSessionExpired} />
+                </Suspense>
+              )}
+
               {/* Run result */}
               {(wfRunResult || wfRunError) && (
                 <div style={{ ...S.card, marginBottom: '18px' }}>
                   <h3 style={{ margin: '0 0 12px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Run Result</h3>
                   {wfRunError
                     ? <p style={{ margin: 0, fontSize: '0.82rem', color: C.danger }}>{wfRunError}</p>
-                    : <WorkflowResult result={wfRunResult} C={C} S={S} />}
+                    : <ErrorBoundary C={C}><Suspense fallback={<LazyFallback />}><WorkflowResult result={wfRunResult} C={C} S={S} onOpenReport={handleOpenSavedReport} onExportReport={(id, fmt) => exportReport(id, token, fmt).catch(() => {})} SectionRenderer={ReportSection} /></Suspense></ErrorBoundary>}
                 </div>
               )}
 
@@ -4322,8 +4117,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                       )}
                     </div>
 
-                    {/* Summary + Analysis + Report */}
-                    {datasetSummary && <>
+                    {/* Dataset Intelligence Center */}
+                    {datasetSummary && (
+                      <Suspense fallback={<LazyFallback />}>
+                        <DatasetIntelligence
+                          ds={datasetSummary}
+                          C={C}
+                          S={S}
+                          onGenerateReport={() => setReport(buildReport(datasetSummary))}
+                          hasReport={Boolean(report)}
+                          report={report}
+                        />
+                      </Suspense>
+                    )}
+
+                    {/* LEGACY BLOCK — kept for reference, unreachable when datasetSummary is set */}
+                    {false && datasetSummary && <>
                       <div style={{ ...S.card, border: `1px solid ${C.accent}22` }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
                           <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: '600' }}>Dataset Summary</h3>
@@ -5074,6 +4883,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                 <div style={S.card}>
                   {reportListLoading ? (
                     <div style={{ padding: '40px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading…</div>
+                  ) : reportListError ? (
+                    <div style={{ padding: '32px 20px', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.82rem', color: C.danger, fontWeight: '500', marginBottom: '8px' }}>{reportListError}</div>
+                      <button onClick={refreshReports} style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: '7px', padding: '5px 14px', fontSize: '0.72rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>Retry</button>
+                    </div>
                   ) : reportList.length === 0 ? (
                     <div style={{ padding: '48px 20px', textAlign: 'center' }}>
                       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px', opacity: 0.5 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -5127,71 +4941,24 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                               </button>
                             </div>
 
-                            {/* Inline detail */}
+                            {/* Inline detail — enterprise workspace */}
                             {isSelected && (
                               <div style={{ padding: '16px 20px 20px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
                                 {selectedReportLoading ? (
                                   <div style={{ padding: '24px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading report…</div>
                                 ) : selectedReportData?.content?.sections?.length > 0 ? (
-                                  <>
-                                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginBottom: '10px' }}>
-                                    {[
-                                      { fmt: 'json', label: 'Download JSON' },
-                                      { fmt: 'pdf',  label: 'Download PDF'  },
-                                      { fmt: 'csv',  label: 'Download CSV'  },
-                                    ].map(({ fmt, label }) => (
-                                      <button key={fmt}
-                                        onClick={() => exportReport(r.id, token, fmt)}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '5px 11px', fontSize: '0.72rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '500' }}
-                                        onMouseEnter={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent }}
-                                        onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textSec }}
-                                      >
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                                        {label}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                    {selectedReportData.content.sections.map((section, i) => (
-                                      <ReportSection key={i} section={section} C={C} />
-                                    ))}
-                                  </div>
-
-                                  {/* Email report section */}
-                                  <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: `1px solid ${C.border}` }}>
-                                    <div style={{ fontSize: '0.7rem', fontWeight: '500', color: C.textSec, marginBottom: '8px' }}>Email this report</div>
-                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                      <input
-                                        type="email"
-                                        placeholder="Recipient email address"
-                                        value={reportEmailInput}
-                                        onChange={e => { setReportEmailInput(e.target.value); setReportEmailStatus(null) }}
-                                        style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 11px', fontSize: '0.75rem', color: C.text, fontFamily: FONT, outline: 'none' }}
-                                        className="ts-input"
+                                  <ErrorBoundary C={C}>
+                                    <Suspense fallback={<LazyFallback />}>
+                                      <ReportWorkspace
+                                        sections={selectedReportData.content.sections}
+                                        reportMeta={r}
+                                        C={C}
+                                        onExport={fmt => exportReport(r.id, token, fmt)}
+                                        onEmail={to => emailReport(r.id, to, token)}
+                                        SectionRenderer={ReportSection}
                                       />
-                                      <button
-                                        onClick={() => handleEmailReport(r.id)}
-                                        disabled={reportEmailSending}
-                                        style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px 12px', fontSize: '0.72rem', color: C.textSec, cursor: reportEmailSending ? 'not-allowed' : 'pointer', fontFamily: FONT, fontWeight: '500', opacity: reportEmailSending ? 0.6 : 1, flexShrink: 0 }}
-                                        onMouseEnter={e => { if (!reportEmailSending) { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.color = C.accent } }}
-                                        onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textSec }}
-                                      >
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                                        {reportEmailSending ? 'Sending…' : 'Email Report'}
-                                      </button>
-                                    </div>
-                                    {reportEmailStatus && (
-                                      <div style={{ marginTop: '8px', fontSize: '0.72rem', color: reportEmailStatus.ok ? C.success : C.danger, display: 'flex', alignItems: 'center', gap: '5px' }}>
-                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                          {reportEmailStatus.ok
-                                            ? <><polyline points="20 6 9 17 4 12"/></>
-                                            : <><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></>}
-                                        </svg>
-                                        {reportEmailStatus.msg}
-                                      </div>
-                                    )}
-                                  </div>
-                                  </>
+                                    </Suspense>
+                                  </ErrorBoundary>
                                 ) : (
                                   <div style={{ fontSize: '0.78rem', color: C.textMuted }}>No report content available.</div>
                                 )}
@@ -5388,6 +5155,40 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               </div>
             </>}
 
+            {/* ── Workspaces ───────────────────────────────────────── */}
+            {activeNav === 'workspaces' && (
+              <Suspense fallback={<LazyFallback />}>
+                <WorkspaceHistory
+                  workspaces={workspaceList}
+                  loading={workspaceListLoading}
+                  onReopen={handleReopenWorkspace}
+                  C={C}
+                />
+              </Suspense>
+            )}
+
+            {/* ── Operations Center ─────────────────────────────── */}
+            {activeNav === 'operations' && (
+              <Suspense fallback={<LazyFallback />}>
+                <OperationsCenter
+                  history={history}
+                  historyLoading={historyLoading}
+                  scheduledList={scheduledList}
+                  scheduledLoading={scheduledLoading}
+                  notifications={notifications}
+                  reportList={reportList}
+                  workflowList={workflowList}
+                  execActionLoading={execActionLoading}
+                  schedRunNowLoading={schedRunNowLoading}
+                  onRetry={handleRetry}
+                  onRerun={handleRerun}
+                  onRunNow={handleRunNow}
+                  onNavigate={setActiveNav}
+                  C={C}
+                />
+              </Suspense>
+            )}
+
           </div>
         </main>
       </div>
@@ -5431,6 +5232,14 @@ function App() {
 
   if (!token) {
     return <LoginView onSignIn={handleSignIn} sessionExpired={sessionExpired} />
+  }
+
+  if (user?.role === 'admin') {
+    return (
+      <Suspense fallback={<div style={{ minHeight: '100vh', background: '#09090f', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#40475e', fontSize: '0.8rem', fontFamily: "system-ui, sans-serif" }}>Loading…</div>}>
+        <AdminDashboard token={token} user={user} onLogout={handleLogout} onSessionExpired={handleSessionExpired} theme={theme} setTheme={handleThemeChange} />
+      </Suspense>
+    )
   }
 
   return <DashboardView token={token} user={user} onLogout={handleLogout} onSessionExpired={handleSessionExpired} theme={theme} setTheme={handleThemeChange} />

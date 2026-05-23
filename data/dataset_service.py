@@ -14,6 +14,8 @@ def create_dataset_summary(
     missing_values: dict,
     categorical_profile: dict,
     date_profile: dict | None = None,
+    correlation_profile: list | None = None,
+    categorical_meta: dict | None = None,
 ) -> int:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -23,8 +25,9 @@ def create_dataset_summary(
             INSERT INTO datasets
               (user_id, filename, uploaded_at, row_count, column_count,
                columns_json, numeric_profile_json, missing_values_json,
-               categorical_profile_json, date_profile_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               categorical_profile_json, date_profile_json,
+               correlation_profile_json, categorical_meta_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -37,6 +40,8 @@ def create_dataset_summary(
                 json.dumps(missing_values),
                 json.dumps(categorical_profile),
                 json.dumps(date_profile) if date_profile is not None else None,
+                json.dumps(correlation_profile) if correlation_profile is not None else None,
+                json.dumps(categorical_meta) if categorical_meta is not None else None,
             ),
         )
         conn.commit()

@@ -1,4 +1,5 @@
 import datetime
+import re
 import uuid
 
 from data.workflow_service import get_workflow_by_id, get_workflow_by_name, ALLOWED_MULTI_STEP_TYPES
@@ -7,7 +8,7 @@ from data.execution_history import log_execution_history
 from data.usage_service import log_usage_event
 
 
-def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None) -> dict:
+def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, selected_sections: list[str] | None = None) -> dict:
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id
     from core.tools.report_generator import generate_dataset_report
 
@@ -65,6 +66,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
         dataset,
         previous_snapshot=previous_snapshot,
         baseline_snapshots=baseline_snapshots,
+        selected_sections=selected_sections,
     )
 
     report_id = None
@@ -118,7 +120,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
     }
 
 
-def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None) -> dict:
+def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None, selected_sections: list[str] | None = None) -> dict:
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id, get_user_email
     from core.tools.report_generator import generate_dataset_report, format_report_as_email_body
     from core.email import send_real_email
@@ -180,6 +182,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             dataset,
             previous_snapshot=previous_snapshot,
             baseline_snapshots=baseline_snapshots,
+            selected_sections=selected_sections,
         )
     body = format_report_as_email_body(report, dataset["filename"])
     subject = f"Dataset Report — {dataset['filename']}"
@@ -316,6 +319,73 @@ def run_send_notification_plan(plan: dict, user_id: str | None, dataset_id: int 
     }
 
 
+# ── Compiled patterns (module-level, created once) ───────────────────────────
+# Matches {{step_id.field}} or {{step_id.field.subfield}}
+_TEMPLATE_RE = re.compile(r'\{\{([A-Za-z0-9_]+)\.([A-Za-z0-9_.]+)\}\}')
+# Matches <lhs> == <rhs>  or  <lhs> != <rhs>
+_COND_RE = re.compile(r'^(.+?)\s*(==|!=)\s*(.+)$')
+
+
+def _resolve_template(value: str, step_outputs: dict) -> str:
+    """Replace {{step_id.field}} refs with values from step_outputs.
+
+    step_outputs maps step_id -> result dict from that step.
+    Unresolved refs (unknown step or missing field) are left as-is.
+    No eval or exec — purely string substitution via regex + dict traversal.
+    """
+    def _sub(m: re.Match) -> str:
+        node = step_outputs.get(m.group(1))
+        if node is None:
+            return m.group(0)
+        for part in m.group(2).split("."):
+            if not isinstance(node, dict):
+                return m.group(0)
+            node = node.get(part)
+            if node is None:
+                return m.group(0)
+        return str(node)
+    return _TEMPLATE_RE.sub(_sub, value)
+
+
+def _resolve_params(params: dict, step_outputs: dict) -> dict:
+    """Recursively resolve template refs in string param values.
+
+    Non-string values pass through unchanged. Nested dicts are resolved
+    recursively. Lists are not traversed (not needed for current step types).
+    """
+    out: dict = {}
+    for k, v in params.items():
+        if isinstance(v, str):
+            out[k] = _resolve_template(v, step_outputs)
+        elif isinstance(v, dict):
+            out[k] = _resolve_params(v, step_outputs)
+        else:
+            out[k] = v
+    return out
+
+
+def _evaluate_condition(condition: str, step_outputs: dict) -> bool:
+    """Evaluate a step condition against resolved template values.
+
+    Supported forms (after template substitution):
+        <value> == <value>
+        <value> != <value>
+
+    Returns True (run the step) when:
+    - condition is blank.
+    - form is not recognised (fail-open — unknown syntax never silently skips).
+    - the comparison holds.
+    """
+    if not condition or not condition.strip():
+        return True
+    resolved = _resolve_template(condition.strip(), step_outputs)
+    m = _COND_RE.match(resolved)
+    if not m:
+        return True  # unrecognised form → run the step
+    lhs, op, rhs = m.group(1).strip(), m.group(2), m.group(3).strip()
+    return lhs == rhs if op == "==" else lhs != rhs
+
+
 _STEP_RUNNERS = {
     "generate_dataset_report": run_dataset_report_plan,
     "analyze_dataset":         run_analyze_dataset_plan,
@@ -337,7 +407,11 @@ def _mark_remaining_skipped(step_statuses: list, from_index: int) -> None:
         step_statuses[j]["status"] = "skipped"
 
 
-def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
+def run_multi_step_workflow(
+    workflow: dict,
+    user_id: str | None = None,
+    dry_run: bool = False,
+) -> dict:
     workflow_steps = workflow["definition"]["workflow_steps"]
     plan_id = str(uuid.uuid4())
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -352,6 +426,8 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
         for i, s in enumerate(workflow_steps)
     ]
 
+    # Maps step_id -> full result dict; used both for ctx chaining and
+    # as the template resolution source for {{step_id.field}} references.
     completed_results: dict = {}
     ctx: dict = {}
     final_status = "completed"
@@ -361,14 +437,51 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
         step_id   = step_def.get("id", str(i + 1))
         step_type = step_def["type"]
 
+        # Validate step type (applies in both live and dry-run modes).
         if step_type not in ALLOWED_MULTI_STEP_TYPES:
             step_statuses[i]["status"] = "failed"
+            step_statuses[i]["error"]  = f"Unknown step type: '{step_type}'"
             final_status = "failed"
             error_msg = f"Unknown step type: '{step_type}'"
             _mark_remaining_skipped(step_statuses, i + 1)
             break
 
+        condition       = step_def.get("condition", "")
+        raw_params      = step_def.get("params") or {}
+        resolved_params = _resolve_params(raw_params, completed_results)
+
+        # ── Dry-run mode ──────────────────────────────────────────────────────
+        if dry_run:
+            has_template = bool(_TEMPLATE_RE.search(condition)) if condition else False
+            step_statuses[i].update({
+                "status":         "would_run",
+                "condition":       condition,
+                "condition_note":  (
+                    "evaluated at runtime — depends on prior step output"
+                    if has_template
+                    else ("no condition — always runs" if not condition else condition)
+                ),
+                "resolved_params": resolved_params,
+            })
+            # Placeholder result lets later steps reference this one in conditions.
+            completed_results[step_id] = {"status": "would_run"}
+            continue
+
+        # ── Conditional skip ──────────────────────────────────────────────────
+        if condition and not _evaluate_condition(condition, completed_results):
+            step_statuses[i].update({
+                "status":      "skipped",
+                "skip_reason": f"condition not met: {condition}",
+            })
+            # Record a skipped sentinel so downstream conditions can reference it.
+            completed_results[step_id] = {"status": "skipped"}
+            continue
+
+        # ── Live execution ────────────────────────────────────────────────────
         step_statuses[i]["status"] = "running"
+        if resolved_params:
+            step_statuses[i]["resolved_params"] = resolved_params
+
         step_plan = {
             "plan_id":   plan_id,
             "intent":    step_def.get("label", step_type),
@@ -378,7 +491,12 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
 
         try:
             if step_type == "email_dataset_report":
-                result = run_email_dataset_report_plan(step_plan, user_id=user_id, ctx=ctx)
+                # Allow a chained recipient from params, falling back to
+                # the step-level recipient field, then to the user's own email.
+                recipient = resolved_params.get("recipient") or step_def.get("recipient")
+                result = run_email_dataset_report_plan(
+                    step_plan, user_id=user_id, ctx=ctx, recipient=recipient
+                )
             else:
                 result = _STEP_RUNNERS[step_type](step_plan, user_id=user_id)
 
@@ -403,6 +521,21 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
 
     finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+    # ── Dry-run return (no logging, no notifications) ─────────────────────────
+    if dry_run:
+        return {
+            "plan_id":         plan_id,
+            "status":          "dry_run",
+            "task_type":       "multi_step",
+            "dry_run":         True,
+            "dry_run_preview": step_statuses,
+            "workflow_steps":  step_statuses,
+            "step_results":    [],
+            "error":           error_msg,
+            "started_at":      started_at,
+            "finished_at":     finished_at,
+        }
+
     # step_results as list — compatible with log_execution_history._find_failed_step
     step_results_list = [
         {
@@ -413,6 +546,8 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
         }
         for s in step_statuses
     ]
+
+    skipped_count = sum(1 for s in step_statuses if s["status"] == "skipped")
 
     if final_status == "failed" and user_id is not None:
         try:
@@ -436,6 +571,7 @@ def run_multi_step_workflow(workflow: dict, user_id: str | None = None) -> dict:
         "workflow_steps": step_statuses,
         "step_results":   step_results_list,
         "error":          error_msg,
+        "skipped_steps":  skipped_count,
     }
 
 

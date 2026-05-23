@@ -39,7 +39,7 @@ from data.scheduler_run_service import (
     list_recent_runs_for_user,
 )
 from core.interpreter.task_interpreter import interpret_task
-from data.workflow_service import create_workflow, list_workflows, delete_workflow
+from data.workflow_service import create_workflow, list_workflows, delete_workflow, ALLOWED_MULTI_STEP_TYPES
 from core.config import ENABLE_REAL_EMAIL, RETENTION_DAYS
 from data.audit import delete_audit_log_entries, purge_old_audit_db, purge_old_audit_log_file
 from data.db import get_connection
@@ -47,6 +47,58 @@ from data.execution_history import enrich_execution_record, get_execution_by_id,
 from data.usage_service import count_usage_events, list_usage_events
 from data.report_service import list_reports_for_user, get_report_by_id, delete_report
 from data.notification_service import list_notifications_for_user, mark_notification_read, delete_notification
+from data.tool_service import (
+    list_tools_db,
+    get_tool_by_id_db,
+    create_tool_db,
+    update_tool_db,
+    approve_tool_db,
+)
+from data.workspace_service import (
+    create_workspace_draft,
+    attach_workspace_proposal,
+    attach_workspace_execution,
+    save_workspace_db,
+    list_workspaces_for_user,
+    get_workspace_by_id,
+    link_workspace_workflow,
+)
+from data.invite_service import create_invite, consume_invite
+
+
+def _compute_histogram(series, n_bins: int = 10) -> list:
+    """Compute up to n_bins equal-width histogram bins from a non-empty numeric series.
+
+    Returns an empty list on any failure. Never raises.
+    Bins span [min, max]; the last bin is closed on both ends.
+    Zero-count bins are included so consumers always get a full n_bins picture.
+    """
+    try:
+        if len(series) < 2:
+            return []
+        min_v = float(series.min())
+        max_v = float(series.max())
+        if not (math.isfinite(min_v) and math.isfinite(max_v)):
+            return []
+        if min_v == max_v:
+            return [{"min": min_v, "max": max_v, "count": int(len(series))}]
+        step = (max_v - min_v) / n_bins
+        bins = []
+        for i in range(n_bins):
+            low  = min_v + i * step
+            high = min_v + (i + 1) * step
+            if i < n_bins - 1:
+                mask = (series >= low) & (series < high)
+            else:
+                mask = (series >= low) & (series <= high)
+            bins.append({
+                "min":   round(low, 4),
+                "max":   round(high, 4),
+                "count": int(mask.sum()),
+            })
+        return bins
+    except Exception:
+        return []
 
 
 def _compute_date_profile(
@@ -64,20 +116,55 @@ def _compute_date_profile(
 
     for col in categorical_cols:
         try:
-            series = df[col].dropna()
+            raw_series = df[col]
+            series     = raw_series.dropna()
             if len(series) == 0:
                 continue
             parsed = pd.to_datetime(series, errors="coerce")
-            valid = int(parsed.notna().sum())
+            valid  = int(parsed.notna().sum())
             if valid == 0 or valid / len(series) < DATE_THRESHOLD:
                 continue
             valid_dates = parsed.dropna().sort_values()
+            earliest    = valid_dates.iloc[0]
+            latest      = valid_dates.iloc[-1]
+            null_count  = int(raw_series.isnull().sum())
+
+            # Inferred granularity from median inter-record gap
+            granularity = "unknown"
+            try:
+                deltas = valid_dates.diff().dropna().dt.days
+                median_delta = float(deltas.median())
+                if median_delta <= 1.5:
+                    granularity = "daily"
+                elif median_delta <= 8:
+                    granularity = "weekly"
+                elif median_delta <= 32:
+                    granularity = "monthly"
+            except Exception:
+                pass
+
+            # Monthly counts capped at 24
+            monthly_counts: list = []
+            try:
+                mc = valid_dates.dt.to_period("M").value_counts().sort_index()
+                monthly_counts = [
+                    {"month": str(m), "count": int(c)}
+                    for m, c in mc.items()
+                ][:24]
+            except Exception:
+                pass
+
             date_columns.append({
-                "column":      col,
-                "earliest":    valid_dates.iloc[0].isoformat(),
-                "latest":      valid_dates.iloc[-1].isoformat(),
-                "valid_count": valid,
-                "range_days":  int((valid_dates.iloc[-1] - valid_dates.iloc[0]).days),
+                "column":              col,
+                "earliest":            earliest.isoformat(),
+                "latest":              latest.isoformat(),
+                "min_date":            earliest.isoformat()[:10],
+                "max_date":            latest.isoformat()[:10],
+                "valid_count":         valid,
+                "null_count":          null_count,
+                "range_days":          int((latest - earliest).days),
+                "inferred_granularity": granularity,
+                "monthly_counts":      monthly_counts,
             })
         except Exception:
             continue
@@ -184,12 +271,22 @@ class RegisterRequest(BaseModel):
     name: str
     email: EmailStr
     password: str
-    role: str = "user"
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class RegisterAdminRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+    invite_token: str
+
+
+class CreateInviteRequest(BaseModel):
+    email: EmailStr
 
 
 # ---------------------------------------------------------------------------
@@ -218,12 +315,11 @@ def register(request: RegisterRequest) -> dict:
             "INSERT INTO users"
             " (name, email, password_hash, role, is_active, is_verified,"
             "  verification_token_hash, verification_token_expires_at, created_at)"
-            " VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?)",
+            " VALUES (?, ?, ?, 'user', 1, 0, ?, ?, ?)",
             (
                 request.name,
                 request.email,
                 hash_password(request.password),
-                request.role,
                 token_hash,
                 token_expires_at,
                 now,
@@ -236,7 +332,7 @@ def register(request: RegisterRequest) -> dict:
 
     send_verification_email(request.email, raw_token)
 
-    token = create_access_token({"sub": str(user_id), "email": request.email, "role": request.role})
+    token = create_access_token({"sub": str(user_id), "email": request.email, "role": "user"})
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -244,7 +340,7 @@ def register(request: RegisterRequest) -> dict:
             "id": user_id,
             "name": request.name,
             "email": request.email,
-            "role": request.role,
+            "role": "user",
         },
     }
 
@@ -297,6 +393,70 @@ def login(request: LoginRequest) -> dict:
     }
 
 
+@router.post("/auth/register-admin")
+def register_admin(request: RegisterAdminRequest) -> dict:
+    """Register a new admin user using a valid invite token."""
+    try:
+        consume_invite(request.email, request.invite_token)
+    except ValueError as exc:
+        status = 422
+        msg = str(exc)
+        if "expired" in msg:
+            status = 410
+        elif "already been used" in msg:
+            status = 409
+        elif "does not match" in msg:
+            status = 403
+        return JSONResponse(status_code=status, content=build_error_response(msg))
+
+    conn = get_connection()
+    try:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE email = ?", (request.email,)
+        ).fetchone()
+        if existing:
+            return JSONResponse(
+                status_code=409,
+                content=build_error_response("Email already registered"),
+            )
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+        token_expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+
+        cursor = conn.execute(
+            "INSERT INTO users"
+            " (name, email, password_hash, role, is_active, is_verified,"
+            "  verification_token_hash, verification_token_expires_at, created_at)"
+            " VALUES (?, ?, ?, 'admin', 1, 1, ?, ?, ?)",
+            (
+                request.name,
+                request.email,
+                hash_password(request.password),
+                token_hash,
+                token_expires_at,
+                now,
+            ),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+    finally:
+        conn.close()
+
+    token = create_access_token({"sub": str(user_id), "email": request.email, "role": "admin"})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user_id,
+            "name": request.name,
+            "email": request.email,
+            "role": "admin",
+        },
+    }
+
+
 @router.get("/auth/verify-email")
 def verify_email(token: str) -> dict:
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -339,6 +499,7 @@ class InterpretRequest(BaseModel):
     input: str
     dataset_id: int | None = None
     recipient: str | None = None
+    selected_sections: list[str] | None = None
 
 
 class WorkflowRunRequest(BaseModel):
@@ -359,12 +520,31 @@ class CreateScheduledWorkflowRequest(BaseModel):
     dataset_id: int | None = None
 
 
+class CreateToolRequest(BaseModel):
+    name: str
+    slug: str | None = None
+    config_json: dict
+
+
+class UpdateToolRequest(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    config_json: dict | None = None
+    enabled: bool | None = None
+
+
+class ComposeIntentRequest(BaseModel):
+    intent: str
+    dataset_id: int | None = None
+    save_workspace: bool = False
+
+
 @router.post("/interpret")
 def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
     if not request.input.strip():
         return JSONResponse(status_code=400, content=build_error_response("Input cannot be empty"))
     try:
-        return handle_input(request.input, user_id=user.user_id, dataset_id=request.dataset_id, recipient=request.recipient)
+        return handle_input(request.input, user_id=user.user_id, dataset_id=request.dataset_id, recipient=request.recipient, selected_sections=request.selected_sections)
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
@@ -424,6 +604,32 @@ def run_workflow_by_id_route(workflow_id: int, user: AuthenticatedUser = Depends
         return format_output(result)
     except ValueError as e:
         return JSONResponse(status_code=404, content=build_error_response("Not found", str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/workflows/{workflow_id}/dry-run")
+def dry_run_workflow_route(workflow_id: int, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    """Validate a multi-step workflow plan and return a step-by-step preview.
+
+    Does not execute any tools, write to the DB, or send notifications.
+    Only supported for workflows with a workflow_steps definition.
+    """
+    from core.workflows.workflow_runner import run_multi_step_workflow
+    from data.workflow_service import get_workflow_by_id
+    workflow = get_workflow_by_id(workflow_id)
+    if workflow is None:
+        return JSONResponse(status_code=404, content=build_error_response("Workflow not found"))
+    if not workflow["definition"].get("workflow_steps"):
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response(
+                "Dry run is only supported for multi-step workflows"
+            ),
+        )
+    try:
+        result = run_multi_step_workflow(workflow, user_id=str(user.user_id), dry_run=True)
+        return {"status": "success", "data": result}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
@@ -552,6 +758,27 @@ def delete_my_data(
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
+@router.post("/admin/invites")
+def create_admin_invite_route(
+    request: CreateInviteRequest,
+    user: AuthenticatedUser = Depends(require_auth),
+) -> dict:
+    """Create an admin invite token. Requires an authenticated admin."""
+    if user.role != "admin":
+        return JSONResponse(
+            status_code=403,
+            content=build_error_response("Admin access required"),
+        )
+    try:
+        result = create_invite(email=request.email, created_by=user.user_id)
+        return {"status": "success", "data": result}
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Failed to create invite", str(exc)),
+        )
+
+
 @router.post("/admin/purge")
 def admin_purge(user: AuthenticatedUser = Depends(require_role("admin"))) -> dict:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).isoformat()
@@ -568,6 +795,296 @@ def admin_purge(user: AuthenticatedUser = Depends(require_role("admin"))) -> dic
                 "execution_history": exec_deleted,
                 "audit_log_file": log_deleted,
             },
+        },
+    }
+
+
+@router.post("/tools/compose")
+def compose_tool_route(
+    request: ComposeIntentRequest,
+    user: AuthenticatedUser = Depends(require_auth),
+) -> dict:
+    """Analyse a natural-language intent and return a proposal for admin review.
+
+    Never saves anything. Never executes anything.
+    Uses deterministic rules; enriches with AI when ENABLE_AI_PLANNER=true.
+    """
+    if not request.intent or not request.intent.strip():
+        return JSONResponse(status_code=400, content=build_error_response("intent must not be empty"))
+    try:
+        from core.composer.intent_composer import compose_from_intent
+        proposal = compose_from_intent(
+            intent=request.intent.strip(),
+            dataset_id=request.dataset_id,
+        )
+        workspace_id = None
+        if request.save_workspace:
+            workspace_id = create_workspace_draft(
+                user_id=str(user.user_id),
+                intent_text=request.intent.strip(),
+                dataset_id=request.dataset_id,
+            )
+            attach_workspace_proposal(
+                workspace_id=workspace_id,
+                user_id=str(user.user_id),
+                proposal=proposal,
+                proposal_source=proposal.get("source", "rule_based"),
+            )
+        response_data = dict(proposal)
+        if workspace_id is not None:
+            response_data["workspace_id"] = workspace_id
+        return {"status": "success", "data": response_data}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/tools")
+def create_tool_route(
+    request: CreateToolRequest,
+    user: AuthenticatedUser = Depends(require_role("admin")),
+) -> dict:
+    """Create a dynamic tool draft. Sets approved=0, enabled=0. Admin-only."""
+    try:
+        tool_id = create_tool_db(
+            name=request.name,
+            slug=request.slug,
+            config_json=request.config_json,
+            created_by=str(user.user_id),
+        )
+        tool = get_tool_by_id_db(tool_id)
+        return {"status": "success", "data": tool}
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=build_error_response(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.patch("/tools/{tool_id}/approve")
+def approve_tool_route(
+    tool_id: int,
+    user: AuthenticatedUser = Depends(require_role("admin")),
+) -> dict:
+    """Validate config and set approved=1, enabled=1. Admin-only explicit approval step."""
+    try:
+        tool = approve_tool_db(tool_id=tool_id, approved_by=str(user.user_id))
+        if tool is None:
+            return JSONResponse(status_code=404, content=build_error_response("Tool not found"))
+        return {"status": "success", "data": tool}
+    except ValueError as e:
+        return JSONResponse(status_code=400, content=build_error_response(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.patch("/tools/{tool_id}")
+def update_tool_route(
+    tool_id: int,
+    request: UpdateToolRequest,
+    user: AuthenticatedUser = Depends(require_role("admin")),
+) -> dict:
+    """Update a tool's editable fields. Blocked once approved=1. Admin-only."""
+    updates = {k: v for k, v in request.model_dump(exclude_none=True).items()}
+    try:
+        tool = update_tool_db(tool_id=tool_id, updates=updates)
+        if tool is None:
+            return JSONResponse(status_code=404, content=build_error_response("Tool not found"))
+        return {"status": "success", "data": tool}
+    except ValueError as e:
+        msg = str(e)
+        status_code = 409 if "already been approved" in msg else 400
+        return JSONResponse(status_code=status_code, content=build_error_response(msg))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/tools")
+def list_tools_route(user: AuthenticatedUser = Depends(require_role("admin"))) -> dict:
+    """Return all tool rows from the DB. Admin-only — reveals system internals."""
+    try:
+        tools = list_tools_db()
+        return {"status": "success", "data": tools}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/tools/{tool_id}")
+def get_tool_route(tool_id: int, user: AuthenticatedUser = Depends(require_role("admin"))) -> dict:
+    """Return a single tool row by ID. Admin-only."""
+    try:
+        tool = get_tool_by_id_db(tool_id)
+        if tool is None:
+            return JSONResponse(status_code=404, content=build_error_response("Tool not found"))
+        return {"status": "success", "data": tool}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/workspaces")
+def list_workspaces_route(user: AuthenticatedUser = Depends(require_auth)) -> dict:
+    try:
+        workspaces = list_workspaces_for_user(str(user.user_id))
+        return {"status": "success", "data": workspaces}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/workspaces/{workspace_id}")
+def get_workspace_route(workspace_id: int, user: AuthenticatedUser = Depends(require_auth)) -> dict:
+    try:
+        workspace = get_workspace_by_id(workspace_id, str(user.user_id))
+        if workspace is None:
+            return JSONResponse(status_code=404, content=build_error_response("Workspace not found"))
+        return {"status": "success", "data": workspace}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+class WorkspaceExecutionRequest(BaseModel):
+    execution_summary: dict
+    report_id: int | None = None
+    selected_sections: list[str] | None = None
+
+
+@router.patch("/workspaces/{workspace_id}/execution")
+def attach_workspace_execution_route(
+    workspace_id: int,
+    request: WorkspaceExecutionRequest,
+    user: AuthenticatedUser = Depends(require_auth),
+) -> dict:
+    """Attach execution result to a workspace and advance status to 'executed'."""
+    try:
+        workspace = attach_workspace_execution(
+            workspace_id=workspace_id,
+            user_id=str(user.user_id),
+            execution_summary=request.execution_summary,
+            report_id=request.report_id,
+            selected_sections=request.selected_sections,
+        )
+        if workspace is None:
+            return JSONResponse(status_code=404, content=build_error_response("Workspace not found"))
+        return {"status": "success", "data": workspace}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.patch("/workspaces/{workspace_id}/save")
+def save_workspace_route(workspace_id: int, user: AuthenticatedUser = Depends(require_auth)) -> dict:
+    """Mark a workspace as saved."""
+    try:
+        workspace = save_workspace_db(workspace_id, str(user.user_id))
+        if workspace is None:
+            return JSONResponse(status_code=404, content=build_error_response("Workspace not found"))
+        return {"status": "success", "data": workspace}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/workspaces/{workspace_id}/create-workflow-draft")
+def create_workflow_draft_route(
+    workspace_id: int,
+    user: AuthenticatedUser = Depends(require_auth),
+) -> dict:
+    """Convert a workspace's workflow proposal into a saved workflow draft.
+
+    The draft is NOT executed. The user must explicitly run it from the Workflows panel.
+
+    Validation:
+      - User must own the workspace (404 otherwise).
+      - Workspace must have an attached proposal (422).
+      - Proposal type must be 'workflow'; dynamic_tool proposals are preview-only (422).
+      - Every step type must be in ALLOWED_MULTI_STEP_TYPES (422).
+      - If 'dataset_id' is a required input, the workspace must have a dataset attached (422).
+    """
+    # 1. Ownership
+    workspace = get_workspace_by_id(workspace_id, str(user.user_id))
+    if workspace is None:
+        return JSONResponse(status_code=404, content=build_error_response("Workspace not found"))
+
+    # 2. Proposal must exist
+    proposal = workspace.get("proposal")
+    if not proposal:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response("No proposal attached to this workspace"),
+        )
+
+    # 3. Proposal type must be 'workflow'
+    if proposal.get("proposal_type") != "workflow":
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                "Proposal type is not 'workflow'. "
+                "Dynamic tool proposals are preview-only and cannot be converted to workflow drafts."
+            ),
+        )
+
+    # 4. Validate step types
+    steps = proposal.get("primitives_or_steps") or []
+    if not steps:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response("Proposal contains no steps"),
+        )
+    invalid = [s.get("step_type") for s in steps if s.get("step_type") not in ALLOWED_MULTI_STEP_TYPES]
+    if invalid:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Proposal contains disallowed step type(s): {invalid}. "
+                f"Allowed: {sorted(ALLOWED_MULTI_STEP_TYPES)}"
+            ),
+        )
+
+    # 5. Required inputs satisfied
+    required = proposal.get("required_inputs") or []
+    if "dataset_id" in required and not workspace.get("dataset_id"):
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                "Required input 'dataset_id' is not satisfied. "
+                "Attach a dataset to the workspace before creating a workflow draft."
+            ),
+        )
+
+    # 6. Build workflow definition from proposal steps
+    workflow_steps = [
+        {
+            "type":    step["step_type"],
+            "order":   step["order"],
+            "purpose": step.get("purpose", ""),
+        }
+        for step in steps
+    ]
+    name = (proposal.get("suggested_name") or workspace.get("title") or "Untitled Workflow").strip()
+    definition = {
+        "workflow_steps": workflow_steps,
+        "intent":         workspace.get("intent_text") or "",
+        "dataset_id":     workspace.get("dataset_id"),
+        "source":         "workspace_proposal",
+        "risk_level":     proposal.get("risk_level", "low"),
+    }
+
+    try:
+        workflow_id = create_workflow(name, definition, str(user.user_id))
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception as exc:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(exc)))
+
+    # 7. Link workflow back to workspace (best-effort — workflow already saved if this fails)
+    try:
+        link_workspace_workflow(workspace_id, str(user.user_id), workflow_id)
+    except Exception:
+        pass
+
+    return {
+        "status": "success",
+        "data": {
+            "workflow_id":   workflow_id,
+            "workflow_name": name,
+            "workspace_id":  workspace_id,
+            "definition":    definition,
+            "message":       "Workflow draft created. Review and run it from the Workflows panel.",
         },
     }
 
@@ -642,21 +1159,57 @@ async def upload_dataset(
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
 
+    # ── Enhanced numeric profile ──────────────────────────────────────────────
     numeric_profile: dict = {}
     for col in numeric_cols:
-        series = df[col].dropna()
-        if len(series) == 0:
-            numeric_profile[col] = {"min": None, "max": None, "mean": None, "sum": None}
-        else:
+        raw    = df[col]
+        series = raw.dropna()
+        n_tot  = len(raw)
+        n_val  = len(series)
+        if n_val == 0:
             numeric_profile[col] = {
-                "min":  _safe_float(series.min()),
-                "max":  _safe_float(series.max()),
-                "mean": _safe_float(series.mean()),
-                "sum":  _safe_float(series.sum()),
+                "min": None, "max": None, "mean": None, "sum": None,
+                "std": None, "median": None,
+                "p25": None, "p75": None, "p90": None,
+                "non_null_count": 0, "null_count": n_tot,
+                "zero_count": 0, "negative_count": 0,
+                "outlier_count_iqr": 0, "histogram_bins": [],
+            }
+        else:
+            try:
+                q25 = _safe_float(series.quantile(0.25))
+                q75 = _safe_float(series.quantile(0.75))
+                outlier_count = 0
+                if q25 is not None and q75 is not None:
+                    iqr_v  = q75 - q25
+                    lower  = q25 - 1.5 * iqr_v
+                    upper  = q75 + 1.5 * iqr_v
+                    outlier_count = int(((series < lower) | (series > upper)).sum())
+            except Exception:
+                q25 = q75 = None
+                outlier_count = 0
+
+            numeric_profile[col] = {
+                "min":              _safe_float(series.min()),
+                "max":              _safe_float(series.max()),
+                "mean":             _safe_float(series.mean()),
+                "sum":              _safe_float(series.sum()),
+                "std":              _safe_float(series.std()),
+                "median":           _safe_float(series.median()),
+                "p25":              q25,
+                "p75":              q75,
+                "p90":              _safe_float(series.quantile(0.90)),
+                "non_null_count":   n_val,
+                "null_count":       n_tot - n_val,
+                "zero_count":       int((series == 0).sum()),
+                "negative_count":   int((series < 0).sum()),
+                "outlier_count_iqr": outlier_count,
+                "histogram_bins":   _compute_histogram(series, 10),
             }
 
     missing_values = {col: int(count) for col, count in df.isnull().sum().items()}
 
+    # ── Categorical profile (top values — structure preserved for report compat) ─
     categorical_profile: dict = {}
     for col in categorical_cols:
         top = df[col].value_counts().head(5)
@@ -664,6 +1217,67 @@ async def upload_dataset(
             {"value": str(v), "count": int(c)}
             for v, c in zip(top.index, top.values)
         ]
+
+    # ── Categorical meta (enhanced stats in separate structure) ───────────────
+    categorical_meta: dict = {}
+    for col in categorical_cols:
+        try:
+            raw    = df[col]
+            n_tot  = len(raw)
+            n_null = int(raw.isnull().sum())
+            n_val  = n_tot - n_null
+            unique_count = int(raw.nunique())
+            top_vals     = raw.value_counts()
+            top_share    = round(float(top_vals.iloc[0]) / n_tot, 4) if len(top_vals) > 0 and n_tot > 0 else 0.0
+
+            entropy_approx = None
+            try:
+                total = top_vals.sum()
+                if total > 0:
+                    props = top_vals / total
+                    entropy_approx = round(
+                        float(-sum(p * math.log(float(p)) for p in props if p > 0)),
+                        4,
+                    )
+            except Exception:
+                pass
+
+            categorical_meta[col] = {
+                "unique_count":    unique_count,
+                "top_value_share": top_share,
+                "null_count":      n_null,
+                "non_null_count":  n_val,
+                "entropy_approx":  entropy_approx,
+            }
+        except Exception:
+            continue
+
+    # ── Correlation profile (pairwise Pearson, capped at 20 strongest) ────────
+    correlation_profile: list = []
+    if len(numeric_cols) >= 2:
+        try:
+            corr_mx = df[numeric_cols].corr()
+            pairs: list = []
+            for i in range(len(numeric_cols)):
+                for j in range(i + 1, len(numeric_cols)):
+                    try:
+                        c = float(corr_mx.iloc[i, j])
+                        if not math.isfinite(c):
+                            continue
+                        abs_c    = abs(c)
+                        strength = "strong" if abs_c >= 0.7 else ("moderate" if abs_c >= 0.4 else "weak")
+                        pairs.append({
+                            "column_a":    numeric_cols[i],
+                            "column_b":    numeric_cols[j],
+                            "correlation": round(c, 4),
+                            "strength":    strength,
+                        })
+                    except Exception:
+                        continue
+            pairs.sort(key=lambda x: abs(x["correlation"]), reverse=True)
+            correlation_profile = pairs[:20]
+        except Exception:
+            pass
 
     date_profile = _compute_date_profile(df, numeric_cols, categorical_cols)
 
@@ -677,6 +1291,8 @@ async def upload_dataset(
         missing_values=missing_values,
         categorical_profile=categorical_profile,
         date_profile=date_profile,
+        correlation_profile=correlation_profile or None,
+        categorical_meta=categorical_meta or None,
     )
 
     sample_rows = df.head(5).fillna("").to_dict(orient="records")
@@ -706,6 +1322,16 @@ def get_dataset_detail_route(dataset_id: int, user: AuthenticatedUser = Depends(
     numeric_profile     = _json.loads(row["numeric_profile_json"])
     missing_values      = _json.loads(row["missing_values_json"])
     categorical_profile = _json.loads(row["categorical_profile_json"])
+
+    def _safe_json(key: str):
+        raw = row.get(key)
+        if not raw:
+            return None
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return None
+
     return {
         "status": "success",
         "data": {
@@ -713,11 +1339,15 @@ def get_dataset_detail_route(dataset_id: int, user: AuthenticatedUser = Depends(
             "filename":            row["filename"],
             "row_count":           row["row_count"],
             "column_count":        row["column_count"],
+            "uploaded_at":         row.get("uploaded_at"),
             "columns":             _json.loads(row["columns_json"]),
             "numeric_columns":     list(numeric_profile.keys()),
             "numeric_profile":     numeric_profile,
             "missing_values":      missing_values,
             "categorical_profile": categorical_profile,
+            "correlation_profile": _safe_json("correlation_profile_json"),
+            "date_profile":        _safe_json("date_profile_json"),
+            "categorical_meta":    _safe_json("categorical_meta_json"),
             "sample_rows":         [],
         },
     }
