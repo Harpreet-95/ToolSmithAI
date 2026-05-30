@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { askReport } from '../api/client'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 
@@ -12,6 +13,13 @@ const SEC_LABEL = {
   chart:                'Charts',
   historical_comparison:'History',
   drift_detection:      'Drift',
+  ai_findings:          'AI Findings',
+  ai_insights:          'AI Intelligence',
+  ai_recommendations:   'AI Recommendations',
+  ai_dashboard:         'Executive Intelligence',
+  insight_priority:     'Prioritized Insights',
+  drilldown_table:      'Drilldown Table',
+  forecast:             'Forecast',
   text:                 'Overview',
 }
 
@@ -20,23 +28,32 @@ const PRIORITY = {
   kpi:                  'high',
   anomaly:              'high',
   drift_detection:      'high',
+  ai_findings:          'high',
+  ai_insights:          'high',
+  ai_recommendations:   'high',
+  ai_dashboard:         'high',
+  insight_priority:     'high',
   recommendation:       'medium',
   predictive_readiness: 'medium',
   trend:                'medium',
   historical_comparison:'medium',
+  forecast:             'medium',
+  drilldown_table:      'medium',
   chart:                'low',
   text:                 'low',
 }
 
 const ROLE_ALLOW = {
-  executive:  new Set(['executive_summary','kpi','recommendation','anomaly']),
+  ceo:        new Set(['executive_summary','kpi','ai_dashboard','ai_recommendations','recommendation','anomaly','forecast','ai_findings']),
+  executive:  new Set(['executive_summary','kpi','recommendation','anomaly','ai_findings','ai_recommendations','ai_dashboard','insight_priority']),
   analyst:    null,
-  ml:         new Set(['kpi','anomaly','predictive_readiness','trend','chart','drift_detection']),
-  operations: new Set(['kpi','recommendation','anomaly','drift_detection','historical_comparison']),
+  ml:         new Set(['kpi','anomaly','predictive_readiness','trend','chart','drift_detection','ai_findings','ai_insights','insight_priority']),
+  operations: new Set(['kpi','recommendation','anomaly','drift_detection','historical_comparison','ai_findings','ai_recommendations','ai_dashboard','drilldown_table']),
 }
 
 const MODES = [
   { key: 'analyst',    label: 'Analyst'    },
+  { key: 'ceo',        label: 'CEO'        },
   { key: 'executive',  label: 'Executive'  },
   { key: 'ml',         label: 'ML'         },
   { key: 'operations', label: 'Operations' },
@@ -44,7 +61,7 @@ const MODES = [
 
 // SectionRenderer is passed as a prop so ReportSection stays in App.jsx and
 // ReportWorkspace has no import dependency on it — keeping this extraction small.
-export default function ReportWorkspace({ sections, reportMeta, C, onExport, onEmail, SectionRenderer }) {
+export default function ReportWorkspace({ sections, reportMeta, C, onExport, onEmail, SectionRenderer, token }) {
   const [expanded, setExpanded] = useState(() => {
     const s = new Set()
     sections.forEach((sec, i) => {
@@ -57,6 +74,9 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
   const [emailInput, setEmailInput]   = useState('')
   const [emailSending, setEmailSending] = useState(false)
   const [emailStatus, setEmailStatus] = useState(null)
+  const [askQ, setAskQ]               = useState('')
+  const [askLoading, setAskLoading]   = useState(false)
+  const [askResult, setAskResult]     = useState(null)
   const sectionRefs = useRef({})
 
   const toggle = i => setExpanded(prev => {
@@ -106,6 +126,9 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
     if (t === 'kpi')                  return (s.kpis           || []).length
     if (t === 'historical_comparison')return (s.comparisons    || []).length
     if (t === 'drift_detection')      return (s.drifts         || []).length
+    if (t === 'insight_priority')     return (s.insights       || []).length
+    if (t === 'drilldown_table')      return (s.rows           || []).length
+    if (t === 'ai_dashboard')         return (s.watchlist      || []).length
     if (t === 'text')                 return (s.items          || []).length
     return null
   }
@@ -125,6 +148,19 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
     try { await onEmail(emailInput.trim()); setEmailStatus({ ok: true, msg: 'Report sent.' }) }
     catch  { setEmailStatus({ ok: false, msg: 'Send failed.' }) }
     finally { setEmailSending(false) }
+  }
+
+  const handleAsk = async () => {
+    if (!askQ.trim() || askLoading || !reportMeta?.id || !token) return
+    setAskLoading(true); setAskResult(null)
+    try {
+      const res = await askReport(reportMeta.id, askQ.trim(), token)
+      setAskResult(res?.data || null)
+    } catch (err) {
+      setAskResult({ answer: `Error: ${err.message}`, cited_sections_used: [], confidence: 'low', fallback_used: true })
+    } finally {
+      setAskLoading(false)
+    }
   }
 
   return (
@@ -257,6 +293,49 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
             </div>
           )
         })}
+
+        {/* ── Ask This Report panel ── */}
+        <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec, marginBottom: '7px', textTransform: 'uppercase', letterSpacing: '0.06em', display: 'flex', alignItems: 'center', gap: '7px' }}>
+            Ask This Report
+            <span style={{ background: `${C.accent}18`, color: C.accent, border: `1px solid ${C.accent}30`, borderRadius: '4px', padding: '1px 6px', fontSize: '0.58rem', fontWeight: '700', letterSpacing: '0.05em' }}>AI</span>
+          </div>
+          <div style={{ display: 'flex', gap: '7px', alignItems: 'center' }}>
+            <input
+              placeholder="Ask a question about this report…"
+              value={askQ}
+              onChange={e => { setAskQ(e.target.value); setAskResult(null) }}
+              onKeyDown={e => { if (e.key === 'Enter') handleAsk() }}
+              style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 10px', fontSize: '0.74rem', color: C.text, fontFamily: FONT, outline: 'none' }}
+            />
+            <button onClick={handleAsk} disabled={askLoading || !askQ.trim()}
+              style={{ display: 'flex', alignItems: 'center', gap: '5px', background: askLoading ? C.bg : C.accent, border: `1px solid ${askLoading ? C.border : C.accent}`, borderRadius: '7px', padding: '6px 12px', fontSize: '0.72rem', color: askLoading ? C.textSec : '#fff', cursor: askLoading || !askQ.trim() ? 'not-allowed' : 'pointer', fontFamily: FONT, fontWeight: '600', opacity: !askQ.trim() ? 0.5 : 1, flexShrink: 0, transition: 'background 0.12s, color 0.12s' }}>
+              {askLoading ? 'Thinking…' : 'Ask'}
+            </button>
+          </div>
+          {askResult && (
+            <div style={{ marginTop: '10px', background: `${C.accent}08`, border: `1px solid ${C.accent}28`, borderRadius: '9px', padding: '11px 14px' }}>
+              <div style={{ fontSize: '0.75rem', color: C.text, lineHeight: 1.65, marginBottom: '8px' }}>{askResult.answer}</div>
+              {(askResult.cited_sections_used || []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginBottom: '6px' }}>
+                  {askResult.cited_sections_used.map((s, i) => (
+                    <span key={i} style={{ background: C.borderAlt, color: C.textMuted, borderRadius: '4px', padding: '1px 7px', fontSize: '0.62rem', fontWeight: '500' }}>{s}</span>
+                  ))}
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {askResult.confidence && (
+                  <span style={{ fontSize: '0.6rem', color: askResult.confidence === 'high' ? C.success : askResult.confidence === 'medium' ? C.warn : C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    {askResult.confidence} confidence
+                  </span>
+                )}
+                {askResult.fallback_used && (
+                  <span style={{ fontSize: '0.6rem', color: C.textMuted }}>· deterministic fallback</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* ── Email panel ── */}
         <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: `1px solid ${C.border}` }}>

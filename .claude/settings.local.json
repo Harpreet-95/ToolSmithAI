@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(set TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIyIiwiZW1haWwiOiJkZW1vQHRvb2xzbWl0aC5haSIsInJvbGUiOiJhZG1pbiIsImV4cCI6MTc3OTIzNzM4MX0.UWZ6UevOMxBNYEhF78u_COW9b89AI2PwATn5d2K-jjw)",
+      "Bash(curl -s -X POST http://localhost:8000/v1/interpret -H \"Content-Type: application/json\" -H \"Authorization: Bearer %TOKEN%\" -d \"{\\\\\"input\\\\\":\\\\\"\\\\\"}\")",
+      "Bash(echo.)",
+      "Bash(curl -s -X POST http://localhost:8000/v1/interpret -H \"Content-Type: application/json\" -H \"Authorization: Bearer %TOKEN%\" -d \"{\\\\\"input\\\\\":\\\\\"hi\\\\\"}\")",
+      "Bash(curl -s -X POST http://localhost:8000/v1/interpret -H \"Content-Type: application/json\" -H \"Authorization: Bearer %TOKEN%\" -d \"{\\\\\"input\\\\\":\\\\\"email me daily report\\\\\"}\")"
+    ]
+  }
+}

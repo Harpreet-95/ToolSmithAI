@@ -1,3 +1,4 @@
+import os
 import time
 
 from fastapi.responses import JSONResponse
@@ -9,7 +10,14 @@ _WINDOW_SECONDS = 60
 _MAX_FAILURES = 5
 
 _REQUEST_WINDOW_SECONDS = 60
-_MAX_REQUESTS = 60
+# Default 200/min — sufficient for dev (React Strict Mode doubles 10 useEffect
+# calls on mount = 20 GETs before the user does anything). Override with
+# MAX_REQUESTS_PER_MINUTE in .env for tighter production limits.
+_MAX_REQUESTS: int = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "200"))
+
+# GET/HEAD/OPTIONS are read-only and the main driver of dev bursts.
+# They are not counted against the per-minute limit.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # {ip: {"count": int, "window_start": float}}
 _failure_tracker: dict[str, dict] = {}
@@ -56,20 +64,25 @@ class AuthFailureRateLimiter:
             await response(scope, receive, send)
             return
 
-        req_record = _get_request_record(ip)
-        if now - req_record["window_start"] > _REQUEST_WINDOW_SECONDS:
-            req_record["count"] = 0
-            req_record["window_start"] = now
+        method = scope.get("method", "GET")
 
-        if req_record["count"] >= _MAX_REQUESTS:
-            response = JSONResponse(
-                status_code=429,
-                content=build_error_response("Too many requests. Try again later."),
-            )
-            await response(scope, receive, send)
-            return
+        # Only count mutating requests — GET/HEAD/OPTIONS are read-only and
+        # should never trigger the general rate limit.
+        if method not in _SAFE_METHODS:
+            req_record = _get_request_record(ip)
+            if now - req_record["window_start"] > _REQUEST_WINDOW_SECONDS:
+                req_record["count"] = 0
+                req_record["window_start"] = now
 
-        req_record["count"] += 1
+            if req_record["count"] >= _MAX_REQUESTS:
+                response = JSONResponse(
+                    status_code=429,
+                    content=build_error_response("Too many requests. Try again later."),
+                )
+                await response(scope, receive, send)
+                return
+
+            req_record["count"] += 1
 
         status_holder: list[int] = []
 

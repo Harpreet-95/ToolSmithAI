@@ -40,7 +40,43 @@ _DYNAMIC_SIGNALS: frozenset = frozenset([
 _WORKFLOW_SIGNALS: frozenset = frozenset([
     "report", "dataset", "analysis", "analyze", "analyse",
     "summarize", "summarise", "dataset report",
+    # Expanded vocabulary (Fix 2)
+    "summary", "overview", "digest", "insights", "intelligence",
+    "breakdown", "kpi", "kpis",
 ])
+
+# Anomaly/monitor detection signals — combined with alert signals to identify
+# multi-step "detect then notify" workflows.
+_ANOMALY_SIGNALS: frozenset = frozenset([
+    "anomaly", "anomalies", "monitor", "drift", "outlier", "outliers",
+    "irregular", "abnormal", "detect", "detection", "spike", "unusual",
+])
+
+_ALERT_SIGNALS: frozenset = frozenset([
+    "alert", "notify", "notif", "notification", "ping",
+])
+
+# Step-level signals for multi-intent accumulation (Fixes 1, 2)
+_REPORT_STEP_SIGNALS: frozenset = frozenset([
+    "report", "summary", "overview", "digest", "insights", "intelligence",
+    "breakdown", "kpi", "kpis", "summarize", "summarise",
+])
+_ANALYZE_STEP_SIGNALS: frozenset = frozenset([
+    "analyze", "analyse", "analysis",
+])
+_EMAIL_STEP_SIGNALS: frozenset = frozenset(["email", "mail"])
+_NOTIFY_STEP_SIGNALS: frozenset = frozenset([
+    "notify", "notification", "notif", "alert", "ping",
+])
+_REMINDER_SIGNALS: frozenset = frozenset(["remind", "reminder"])
+
+# Validated step types — kept in sync with ALLOWED_MULTI_STEP_TYPES in workflow_service (Fix 5)
+_ALLOWED_WORKFLOW_STEP_TYPES: frozenset = frozenset({
+    "generate_dataset_report",
+    "email_dataset_report",
+    "send_notification",
+    "analyze_dataset",
+})
 
 _PRIMITIVE_PURPOSE: dict[str, str] = {
     "http_request":      "Fetch data from an external HTTP endpoint",
@@ -188,12 +224,40 @@ Given a user intent, return a compact JSON object with ONLY these keys:
 Do not include any other keys. Be concise. Never invent primitive types outside the list.
 """
 
+# GPT reasoning layer prompt — Stage 3, read-only explanation only
+_AI_REASONING_SYSTEM_PROMPT = """\
+You are a planning assistant explaining a pre-built data analytics proposal to the user.
+The proposal was built by a deterministic rule-based system. You CANNOT change the plan.
+Return ONLY a JSON object with these keys (all optional except reasoning_summary):
+{
+  "reasoning_summary":    "<1-2 sentences explaining what this plan does and why it makes sense>",
+  "confidence":           <float 0.0-1.0, how well the plan matches the intent>,
+  "clarification_question": "<one question to ask if the intent is ambiguous, or null>",
+  "suggested_name":       "<snake_case name improvement if obvious, or null>"
+}
+Rules:
+- reasoning_summary must always be present and non-empty.
+- confidence must be a float strictly between 0.0 and 1.0.
+- Do NOT invent, modify, add, or remove any plan steps.
+- Do NOT lower the risk level or bypass approval requirements.
+- Do NOT include any other keys.
+"""
+
 # ---------------------------------------------------------------------------
 # Deterministic helpers — primitives / workflow routing (unchanged)
 # ---------------------------------------------------------------------------
 
+def _is_anomaly_alert_intent(lowered: str) -> bool:
+    """True when intent combines anomaly/monitor signals with alert/notify signals."""
+    has_anomaly = any(sig in lowered for sig in _ANOMALY_SIGNALS)
+    has_alert   = any(sig in lowered for sig in _ALERT_SIGNALS)
+    return has_anomaly and has_alert
+
+
 def _classify_intent(lowered: str) -> str:
     if any(sig in lowered for sig in _WORKFLOW_SIGNALS):
+        return "workflow"
+    if _is_anomaly_alert_intent(lowered):
         return "workflow"
     dynamic_hits = sum(1 for sig in _DYNAMIC_SIGNALS if sig in lowered)
     if dynamic_hits >= 1:
@@ -212,13 +276,43 @@ def _match_primitives(lowered: str) -> list[str]:
 
 
 def _match_workflow_steps(lowered: str) -> list[str]:
-    if any(kw in lowered for kw in ["email", "mail"]) and any(kw in lowered for kw in ["report", "dataset"]):
-        return ["generate_dataset_report", "email_dataset_report"]
-    if any(kw in lowered for kw in ["report", "analyze", "analyse", "analysis", "summarize", "summarise"]):
-        return ["generate_dataset_report"]
-    if any(kw in lowered for kw in ["notify", "notification", "alert"]):
-        return ["send_notification"]
-    return ["generate_dataset_report"]
+    """Accumulate workflow steps from all detected intent signals.
+
+    Replaces early-return cascade so compound intents produce all relevant steps.
+    """
+    steps: list[str] = []
+
+    is_reminder = any(sig in lowered for sig in _REMINDER_SIGNALS)
+
+    has_anomaly = any(sig in lowered for sig in _ANOMALY_SIGNALS)
+    has_analyze = (not is_reminder) and any(sig in lowered for sig in _ANALYZE_STEP_SIGNALS)
+    has_report  = (not is_reminder) and any(sig in lowered for sig in _REPORT_STEP_SIGNALS)
+    has_email   = any(sig in lowered for sig in _EMAIL_STEP_SIGNALS)
+    has_notify  = any(sig in lowered for sig in _NOTIFY_STEP_SIGNALS)
+
+    # 1. Analysis step
+    if has_anomaly or has_analyze:
+        steps.append("analyze_dataset")
+    # 2. Report generation step
+    if has_report:
+        steps.append("generate_dataset_report")
+    # 3. Email delivery (only when paired with analysis/report context)
+    if has_email and (has_report or has_anomaly or has_analyze):
+        steps.append("email_dataset_report")
+    # 4. Notification delivery
+    if has_notify:
+        steps.append("send_notification")
+
+    # 5. Fallback
+    if not steps:
+        if is_reminder:
+            return []   # reminder intent with no data signals — bridge falls through to legacy
+        if has_email:
+            steps.append("email_dataset_report")
+        else:
+            steps.append("generate_dataset_report")
+
+    return [s for s in list(dict.fromkeys(steps)) if s in _ALLOWED_WORKFLOW_STEP_TYPES]
 
 
 def _extract_required_inputs(lowered: str, primitives: list[str]) -> list[str]:
@@ -232,6 +326,24 @@ def _extract_required_inputs(lowered: str, primitives: list[str]) -> list[str]:
     if "send_notification" in primitives and "message" not in inputs:
         inputs.append("message")
     return list(dict.fromkeys(inputs))
+
+
+def _extract_workflow_required_inputs(
+    step_types: list[str],
+    dataset_id: int | None,
+) -> list[str]:
+    """Return required_inputs for a workflow proposal based on step types (Fix 4)."""
+    _DATASET_STEPS = {"generate_dataset_report", "email_dataset_report", "analyze_dataset"}
+    required: list[str] = []
+    if any(st in _DATASET_STEPS for st in step_types) and dataset_id is None:
+        required.append("dataset_id")
+    if "email_dataset_report" in step_types:
+        required.append("recipient_email")
+    if "send_notification" in step_types:
+        has_data_step = any(st in _DATASET_STEPS for st in step_types)
+        if not has_data_step:
+            required.append("notification_message")
+    return required
 
 
 def _compute_risk(proposal_type: str, keys: list[str]) -> str:
@@ -418,6 +530,78 @@ def _ai_enrich(intent: str, base: dict) -> dict | None:
     return enriched
 
 
+def _validate_reasoning(raw: dict) -> dict:
+    """Strip any keys outside the allowed set; enforce types."""
+    out: dict = {}
+    rs = raw.get("reasoning_summary")
+    if isinstance(rs, str) and rs.strip():
+        out["reasoning_summary"] = rs.strip()
+    conf = raw.get("confidence")
+    if isinstance(conf, (int, float)) and 0.0 < float(conf) <= 1.0:
+        out["confidence"] = round(float(conf), 3)
+    cq = raw.get("clarification_question")
+    if isinstance(cq, str) and cq.strip():
+        out["clarification_question"] = cq.strip()
+    sn = raw.get("suggested_name")
+    if isinstance(sn, str) and sn.strip():
+        clean = re.sub(r'[^a-z0-9_]', '_', sn.lower().strip()).strip('_')
+        if clean:
+            out["suggested_name"] = clean
+    return out
+
+
+def _ai_add_reasoning(intent: str, proposal: dict) -> dict:
+    """Stage 3: overlay GPT explanation/confidence onto the proposal (read-only)."""
+    from core.config import OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TIMEOUT_SECONDS
+    if not OPENAI_API_KEY:
+        return proposal
+    try:
+        import openai as _openai
+    except ImportError:
+        return proposal
+
+    context_summary = (
+        f"Intent: {intent}\n"
+        f"Plan type: {proposal.get('proposal_type')}\n"
+        f"Steps: {[s.get('step_type') or s.get('primitive_type') for s in proposal.get('primitives_or_steps', [])]}\n"
+        f"Risk: {proposal.get('risk_level')}\n"
+        f"Goal: {proposal.get('interpreted_goal')}"
+    )
+    try:
+        client = _openai.OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_SECONDS)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _AI_REASONING_SYSTEM_PROMPT},
+                {"role": "user",   "content": context_summary},
+            ],
+            max_tokens=180,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = json.loads(response.choices[0].message.content or "{}")
+    except Exception as exc:
+        logger.warning("[composer] AI reasoning failed (%s: %s); skipping", type(exc).__name__, exc)
+        return {**proposal, "ai_enrichment_used": False, "ai_error": str(exc)}
+
+    validated = _validate_reasoning(raw)
+    if not validated.get("reasoning_summary"):
+        logger.warning("[composer] AI reasoning returned no summary; skipping")
+        return {**proposal, "ai_enrichment_used": False}
+
+    enriched = dict(proposal)
+    enriched["reasoning_summary"] = validated["reasoning_summary"]
+    if "confidence" in validated:
+        enriched["confidence"] = validated["confidence"]
+    if "clarification_question" in validated:
+        enriched["clarification_question"] = validated["clarification_question"]
+    if "suggested_name" in validated:
+        enriched["suggested_name"] = validated["suggested_name"]
+    enriched["ai_enrichment_used"] = True
+    logger.info("[composer] AI reasoning applied: confidence=%s", validated.get("confidence"))
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -441,7 +625,7 @@ def compose_from_intent(intent: str, dataset_id: int | None = None) -> dict:
           visualization_focus     bool   — True when viz signals detected
           selected_sections       list|None — section type allowlist (None = all)
     """
-    from core.config import ENABLE_AI_PLANNER
+    from core.config import ENABLE_AI_PLANNER, OPENAI_API_KEY, OPENAI_MODEL
 
     lowered = intent.lower()
 
@@ -450,16 +634,24 @@ def compose_from_intent(intent: str, dataset_id: int | None = None) -> dict:
 
     if proposal_type == "workflow":
         step_types = _match_workflow_steps(lowered)
+        _has_anomaly = any(sig in lowered for sig in _ANOMALY_SIGNALS)
+        _has_notify  = any(sig in lowered for sig in _NOTIFY_STEP_SIGNALS)
+        purpose_override: dict[str, str] = {}
+        if _has_anomaly:
+            purpose_override["analyze_dataset"]   = "Analyze dataset for anomalies and drift"
+            purpose_override["send_notification"] = "Send anomaly alert notification"
+        elif len(step_types) > 1 and _has_notify:
+            purpose_override["send_notification"] = "Send notification with workflow results"
         primitives_or_steps = [
             {
-                "order":    i,
+                "order":     i,
                 "step_type": st,
-                "purpose":  _WORKFLOW_PURPOSE.get(st, st.replace("_", " ")),
+                "purpose":   purpose_override.get(st) or _WORKFLOW_PURPOSE.get(st, st.replace("_", " ")),
                 "validated": True,
             }
             for i, st in enumerate(step_types, 1)
         ]
-        required_inputs = [] if dataset_id is not None else ["dataset_id"]
+        required_inputs = _extract_workflow_required_inputs(step_types, dataset_id)
         risk = _compute_risk("workflow", step_types)
         warnings = _build_warnings("workflow", step_types, risk)
     else:
@@ -499,6 +691,16 @@ def compose_from_intent(intent: str, dataset_id: int | None = None) -> dict:
             clarification_warning = _build_clarification_warning(missing_inputs)
             if clarification_warning not in warnings:
                 warnings = [clarification_warning] + warnings
+
+        # Propagate selected_sections into report steps so execution can scope output (Fix 3)
+        if selected_sections is not None:
+            _REPORT_AWARE_STEPS = {"generate_dataset_report", "email_dataset_report"}
+            primitives_or_steps = [
+                {**step, "selected_sections": selected_sections}
+                if step.get("step_type") in _REPORT_AWARE_STEPS
+                else step
+                for step in primitives_or_steps
+            ]
     else:
         is_vague             = False
         report_intent_type   = None
@@ -527,13 +729,27 @@ def compose_from_intent(intent: str, dataset_id: int | None = None) -> dict:
         "audience":               audience,
         "visualization_focus":    visualization_focus,
         "selected_sections":      selected_sections,
+        # ── AI reasoning fields (Stage 3) ────────────────────────────────────
+        "reasoning_summary":      None,
+        "confidence":             None,
+        "clarification_question": None,
+        "ai_enrichment_used":     False,
+        # ── AI metadata (visibility layer) ────────────────────────────────────
+        "ai_enabled":    ENABLE_AI_PLANNER,
+        "ai_model_used": OPENAI_MODEL if (ENABLE_AI_PLANNER and OPENAI_API_KEY) else None,
+        "planner_source": "composer",
+        "fallback_used":  False,
     }
 
     # ── Stage 2: AI enrichment (opt-in, safe fallback) ──────────────────────
     if ENABLE_AI_PLANNER:
         enriched = _ai_enrich(intent, base_proposal)
         if enriched is not None:
-            return enriched
+            base_proposal = enriched
+
+    # ── Stage 3: AI reasoning overlay (opt-in, read-only, safe fallback) ────
+    if ENABLE_AI_PLANNER:
+        base_proposal = _ai_add_reasoning(intent, base_proposal)
 
     return base_proposal
 

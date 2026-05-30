@@ -47,15 +47,24 @@ Based only on the provided information, return a JSON object with exactly these 
 {
   "executive_summary": "<1-3 sentence business summary of the most important findings>",
   "key_takeaways": ["<insight 1>", "<insight 2>", "<up to 5 insights>"],
-  "risk_notes": ["<concern 1>", "<up to 3 data quality concerns or anomalies>"]
+  "risk_notes": ["<concern 1>", "<up to 3 data quality concerns or anomalies>"],
+  "key_findings": ["<specific quantified finding 1>", "<up to 5 findings>"],
+  "anomaly_insights": "<1-2 sentences about anomaly patterns, or null if none detected>",
+  "trend_insights": "<1-2 sentences about trend patterns, or null if none detected>",
+  "recommendation_summary": "<1-2 sentences on the top actionable recommendation, or null>",
+  "risk_summary": "<1-2 sentences on the most critical data risk, or null>"
 }
 
 Rules:
-- Use only facts from the provided analysis. Do not invent data.
+- Use only facts from the provided analysis. Do not invent data or statistics.
 - executive_summary: 1-3 business-focused sentences, max 800 characters.
 - key_takeaways: 2-5 concise bullet points, each max 200 characters.
 - risk_notes: 0-3 concerns (missing values, quality issues, anomalies), each max 200 characters.
   Return an empty list if no risks are evident.
+- key_findings: 0-5 specific quantified findings from the analysis, each max 250 characters.
+  Reference actual numbers from the report. Return empty list if no specific findings.
+- anomaly_insights, trend_insights, recommendation_summary, risk_summary: string or null.
+  Max 400 characters each. Return null if the report has no relevant content.
 - Return ONLY the JSON object. No markdown. No explanation.
 """
 
@@ -92,10 +101,26 @@ def _validate_ai_narrative(raw: dict) -> dict:
         raise ValueError("risk_notes must be a list")
     risks = [str(r).strip()[:200] for r in risks[:3] if str(r).strip()]
 
+    findings = raw.get("key_findings", [])
+    if not isinstance(findings, list):
+        findings = []
+    findings = [str(f).strip()[:250] for f in findings[:5] if str(f).strip()]
+
+    def _opt_str(key: str, max_len: int = 400) -> str | None:
+        v = raw.get(key)
+        if not isinstance(v, str) or not v.strip():
+            return None
+        return v.strip()[:max_len]
+
     return {
-        "executive_summary": summary,
-        "key_takeaways":     takeaways,
-        "risk_notes":        risks,
+        "executive_summary":      summary,
+        "key_takeaways":          takeaways,
+        "risk_notes":             risks,
+        "key_findings":           findings,
+        "anomaly_insights":       _opt_str("anomaly_insights"),
+        "trend_insights":         _opt_str("trend_insights"),
+        "recommendation_summary": _opt_str("recommendation_summary"),
+        "risk_summary":           _opt_str("risk_summary"),
     }
 
 
@@ -173,21 +198,36 @@ def _build_kpi_section(
     kpis: list[dict] = []
 
     # 1. Total Records
+    rec_status = "good" if row_count >= 1_000 else ("warning" if row_count >= 100 else "risk")
+    rec_explanation = (
+        "Large sample supports reliable analysis."
+        if row_count >= 1_000
+        else ("Moderate sample — results may vary." if row_count >= 100
+              else "Small sample — statistical reliability limited.")
+    )
     kpis.append({
-        "label": "Total Records",
-        "value": row_count,
-        "format": "number",
-        "trend": "neutral",
-        "description": "Rows in the uploaded dataset",
+        "label":            "Total Records",
+        "value":            row_count,
+        "format":           "number",
+        "trend":            "neutral",
+        "description":      "Rows in the uploaded dataset",
+        "delta":            None,
+        "delta_direction":  "neutral",
+        "status":           rec_status,
+        "explanation":      rec_explanation,
     })
 
     # 2. Total Features
     kpis.append({
-        "label": "Total Features",
-        "value": column_count,
-        "format": "number",
-        "trend": "neutral",
-        "description": "Columns analysed",
+        "label":            "Total Features",
+        "value":            column_count,
+        "format":           "number",
+        "trend":            "neutral",
+        "description":      "Columns analysed",
+        "delta":            None,
+        "delta_direction":  "neutral",
+        "status":           "good",
+        "explanation":      "Feature count across all columns.",
     })
 
     # 3. Data Completeness — (1 - missing_cells / total_cells) * 100
@@ -200,12 +240,24 @@ def _build_kpi_section(
             )
             completeness = round((1 - total_missing / total_cells) * 100, 1)
             trend = "up" if completeness >= 95 else ("down" if completeness < 80 else "neutral")
+            comp_delta = round(completeness - 100, 1)
+            comp_status = "good" if completeness >= 95 else ("warning" if completeness >= 80 else "risk")
+            comp_explanation = (
+                "High completeness — reliable for analysis."
+                if completeness >= 95
+                else ("Moderate gaps — review missing columns." if completeness >= 80
+                      else "High missing rate — data quality action required.")
+            )
             kpis.append({
-                "label": "Data Completeness",
-                "value": completeness,
-                "format": "percent",
-                "trend": trend,
-                "description": "Non-null cells across all columns",
+                "label":            "Data Completeness",
+                "value":            completeness,
+                "format":           "percent",
+                "trend":            trend,
+                "description":      "Non-null cells across all columns",
+                "delta":            comp_delta,
+                "delta_direction":  "neutral" if completeness >= 99.9 else "down",
+                "status":           comp_status,
+                "explanation":      comp_explanation,
             })
         except Exception:
             pass
@@ -216,12 +268,24 @@ def _build_kpi_section(
             1 for v in missing_values.values()
             if isinstance(v, (int, float)) and v > 0
         )
+        gap_status = "good" if cols_with_gaps == 0 else ("warning" if cols_with_gaps <= 3 else "risk")
+        gap_explanation = (
+            "No columns have missing values."
+            if cols_with_gaps == 0
+            else (f"{cols_with_gaps} column(s) have gaps — review before analysis."
+                  if cols_with_gaps <= 3
+                  else f"{cols_with_gaps} columns have gaps — significant data quality issue.")
+        )
         kpis.append({
-            "label": "Columns with Gaps",
-            "value": cols_with_gaps,
-            "format": "number",
-            "trend": "down" if cols_with_gaps > 0 else "neutral",
-            "description": f"Of {column_count} total columns",
+            "label":            "Columns with Gaps",
+            "value":            cols_with_gaps,
+            "format":           "number",
+            "trend":            "down" if cols_with_gaps > 0 else "neutral",
+            "description":      f"Of {column_count} total columns",
+            "delta":            -cols_with_gaps if cols_with_gaps > 0 else None,
+            "delta_direction":  "down" if cols_with_gaps > 0 else "neutral",
+            "status":           gap_status,
+            "explanation":      gap_explanation,
         })
     except Exception:
         pass
@@ -230,22 +294,30 @@ def _build_kpi_section(
     numeric_count = len(numeric_profile)
     if numeric_count > 0 and len(kpis) < 6:
         kpis.append({
-            "label": "Numeric Columns",
-            "value": numeric_count,
-            "format": "number",
-            "trend": "neutral",
-            "description": "Columns with quantitative values",
+            "label":            "Numeric Columns",
+            "value":            numeric_count,
+            "format":           "number",
+            "trend":            "neutral",
+            "description":      "Columns with quantitative values",
+            "delta":            None,
+            "delta_direction":  "neutral",
+            "status":           "good",
+            "explanation":      "Support quantitative analysis and correlation.",
         })
 
     # 6. Categorical Columns
     cat_count = len(categorical_profile)
     if cat_count > 0 and len(kpis) < 6:
         kpis.append({
-            "label": "Categorical Columns",
-            "value": cat_count,
-            "format": "number",
-            "trend": "neutral",
-            "description": "Columns with category values",
+            "label":            "Categorical Columns",
+            "value":            cat_count,
+            "format":           "number",
+            "trend":            "neutral",
+            "description":      "Columns with category values",
+            "delta":            None,
+            "delta_direction":  "neutral",
+            "status":           "good",
+            "explanation":      "Enable segmentation and group analysis.",
         })
 
     return {
@@ -349,7 +421,7 @@ def _build_chart_sections(
         except Exception:
             pass
 
-    # 4. Monthly trend chart — primary date column
+    # 4. Monthly trend chart — primary date column (line for time-series clarity)
     try:
         for dc in (date_profile.get("date_columns") or [])[:1]:
             mc = dc.get("monthly_counts", [])
@@ -361,7 +433,7 @@ def _build_chart_sections(
                     "type":    "chart",
                     "heading": f"{col} — Monthly Volume",
                     "chart":   {
-                        "chart_type": "bar",
+                        "chart_type": "line",
                         "labels":     labels,
                         "series":     [{"name": "Records", "data": data}],
                     },
@@ -407,6 +479,35 @@ def _build_chart_sections(
                 })
         except Exception:
             pass
+
+    # 6. Categorical pie chart — column with fewest distinct values (2–7) not already charted
+    try:
+        bar_col_name = best[0] if best else None
+        pie_candidate = min(
+            (
+                (col, entries)
+                for col, entries in categorical_profile.items()
+                if 2 <= len(entries) <= 7 and entries and col != bar_col_name
+            ),
+            key=lambda x: len(x[1]),
+            default=None,
+        )
+        if pie_candidate:
+            pie_col, pie_entries = pie_candidate
+            pie_labels = [str(e.get("value", "")) for e in pie_entries]
+            pie_data   = [int(e.get("count",  0)) for e in pie_entries]
+            if pie_labels and any(d > 0 for d in pie_data):
+                charts.append({
+                    "type":    "chart",
+                    "heading": f"{pie_col} — Category Share",
+                    "chart":   {
+                        "chart_type": "pie",
+                        "labels":     pie_labels,
+                        "series":     [{"name": "Count", "data": pie_data}],
+                    },
+                })
+    except Exception:
+        pass
 
     return charts
 
@@ -2255,6 +2356,133 @@ def _build_forecast_section(
     }
 
 
+def _build_ai_dashboard_section(sections: list[dict]) -> dict:
+    """Scan already-built sections to produce a deterministic AI Dashboard summary.
+
+    Extracts the most critical anomaly, highest-priority recommendation, and a
+    watchlist from the report. Never calls GPT — this is pure scan logic.
+    Returns a section dict with type='ai_dashboard'.
+    """
+    most_important_insight: str | None = None
+    highest_risk: str | None = None
+    recommended_action: str | None = None
+    watchlist: list[str] = []
+
+    for sec in sections:
+        t = sec.get("type", "text")
+
+        if t == "anomaly" and most_important_insight is None:
+            for a in sec.get("anomalies", []):
+                if a.get("title") != "No Major Anomalies Detected":
+                    most_important_insight = f"{a['title']}: {a.get('evidence', '')}"
+                    if a.get("severity") == "high" and highest_risk is None:
+                        highest_risk = a.get("description") or a.get("title", "")
+                    break
+
+        if t == "recommendation" and recommended_action is None:
+            recs = sec.get("recommendations", [])
+            high = [r for r in recs if r.get("priority") == "high"]
+            src = high[0] if high else (recs[0] if recs else None)
+            if src:
+                recommended_action = src.get("title", "")
+                if highest_risk is None and src.get("priority") == "high":
+                    highest_risk = src.get("reason", "")[:200]
+
+        if t == "drift_detection":
+            for d in sec.get("drifts", [])[:2]:
+                watchlist.append(f"{d.get('metric', '')} — {d.get('drift_percent', 0):+.1f}% drift")
+
+        if t == "trend":
+            for tr in sec.get("trends", [])[:2]:
+                if tr.get("direction") in ("down", "volatile") and tr.get("title") not in watchlist:
+                    watchlist.append(tr.get("title", ""))
+
+    if not most_important_insight:
+        most_important_insight = "No critical anomalies detected in this report."
+    if not highest_risk:
+        highest_risk = "No high-severity risks identified."
+    if not recommended_action:
+        recommended_action = "Review report sections for detailed insights and next steps."
+    if not watchlist:
+        watchlist = ["Monitor data completeness on the next upload."]
+
+    return {
+        "type":                  "ai_dashboard",
+        "heading":               "Executive Intelligence",
+        "most_important_insight": most_important_insight,
+        "highest_risk":           highest_risk,
+        "recommended_action":     recommended_action,
+        "watchlist":              watchlist[:4],
+    }
+
+
+def _build_insight_priority_section(sections: list[dict]) -> dict | None:
+    """Rank insights by severity across anomaly, recommendation, and drift sections.
+
+    Returns a section with type='insight_priority' containing a ranked list of
+    {title, severity, evidence, recommended_action, confidence} items.
+    Returns None when no actionable insights are found.
+    """
+    insights: list[dict] = []
+
+    _SEV_RANK = {"high": 0, "medium": 1, "low": 2}
+
+    for sec in sections:
+        t = sec.get("type", "text")
+
+        if t == "anomaly":
+            for a in sec.get("anomalies", []):
+                if a.get("title") == "No Major Anomalies Detected":
+                    continue
+                sev = a.get("severity", "low")
+                insights.append({
+                    "title":              a.get("title", ""),
+                    "severity":           sev,
+                    "evidence":           a.get("evidence", ""),
+                    "recommended_action": "Investigate and resolve this data quality issue.",
+                    "confidence":         "high",
+                    "_rank":              _SEV_RANK.get(sev, 2),
+                })
+
+        elif t == "recommendation":
+            pri_map = {"high": "high", "medium": "medium", "low": "low"}
+            for r in sec.get("recommendations", []):
+                pri = r.get("priority", "low")
+                insights.append({
+                    "title":              r.get("title", ""),
+                    "severity":           pri_map.get(pri, "low"),
+                    "evidence":           r.get("reason", "")[:200],
+                    "recommended_action": r.get("title", ""),
+                    "confidence":         r.get("confidence", "medium"),
+                    "_rank":              _SEV_RANK.get(pri, 2) + 0.5,
+                })
+
+        elif t == "drift_detection":
+            for d in sec.get("drifts", []):
+                sev = d.get("severity", "low")
+                insights.append({
+                    "title":              f"Drift: {d.get('metric', '')}",
+                    "severity":           sev,
+                    "evidence":           d.get("description", ""),
+                    "recommended_action": f"Review {d.get('metric', '')} trend over recent reports.",
+                    "confidence":         "high",
+                    "_rank":              _SEV_RANK.get(sev, 2),
+                })
+
+    if not insights:
+        return None
+
+    insights.sort(key=lambda x: x.get("_rank", 2))
+    for ins in insights:
+        ins.pop("_rank", None)
+
+    return {
+        "type":     "insight_priority",
+        "heading":  "Prioritized Insights",
+        "insights": insights[:8],
+    }
+
+
 def generate_dataset_report(
     dataset: dict,
     previous_snapshot: dict | None = None,
@@ -2499,6 +2727,16 @@ def generate_dataset_report(
             )
         sections.insert(_fc_anchor + 1, forecast_sec)
 
+    # ── AI Dashboard & Insight Priority (scan completed sections) ────────────
+    # Built after all other sections so all data is available for scanning.
+    ai_dash = _build_ai_dashboard_section(sections)
+    sections.insert(0, ai_dash)
+
+    insight_pri = _build_insight_priority_section(sections)
+    if insight_pri is not None:
+        dash_pos = next((i for i, s in enumerate(sections) if s.get("type") == "ai_dashboard"), 0)
+        sections.insert(dash_pos + 1, insight_pri)
+
     # ── Executive Summary (prepended so it leads the report) ─────────────────
     # Built after all other sections so date_profile and completeness are known.
     # Note: if ENABLE_AI_REPORT_NARRATIVE=true, the AI will also insert its own
@@ -2521,14 +2759,64 @@ def generate_dataset_report(
     ai_narrative = _ai_generate_narrative(sections)
 
     if ai_narrative:
-        # Assemble an "Executive Summary" section from the validated AI fields.
+        # Build backward-compat items list for email formatting
         exec_items: list[str] = [ai_narrative["executive_summary"]]
         for t in ai_narrative["key_takeaways"]:
             exec_items.append(f"Key takeaway: {t}")
         for r in ai_narrative["risk_notes"]:
             exec_items.append(f"Note: {r}")
-        # Prepend so Executive Summary is first in the report and in email bodies.
-        sections.insert(0, {"type": "text", "heading": "Executive Summary", "items": exec_items})
+        # Prepend as executive_summary type so the rich renderer activates.
+        # items kept for email body formatting (format_report_as_email_body iterates items).
+        sections.insert(0, {
+            "type":          "executive_summary",
+            "heading":       "AI Executive Summary",
+            "summary":       ai_narrative["executive_summary"],
+            "key_takeaways": ai_narrative["key_takeaways"],
+            "risks":         ai_narrative["risk_notes"],
+            "ai_generated":  True,
+            "items":         exec_items,
+        })
+
+        # AI Key Findings — specific quantified findings (position 1, after exec summary)
+        if ai_narrative.get("key_findings"):
+            sections.insert(1, {
+                "type":    "ai_findings",
+                "heading": "AI Key Findings",
+                "items":   ai_narrative["key_findings"],
+            })
+
+        # AI Intelligence synthesis — anomaly + trend insights
+        insight_items: list[str] = []
+        if ai_narrative.get("anomaly_insights"):
+            insight_items.append(f"Anomaly insight: {ai_narrative['anomaly_insights']}")
+        if ai_narrative.get("trend_insights"):
+            insight_items.append(f"Trend insight: {ai_narrative['trend_insights']}")
+        if insight_items:
+            findings_pos = next(
+                (i for i, s in enumerate(sections) if s.get("type") == "ai_findings"), 1
+            )
+            sections.insert(findings_pos + 1, {
+                "type":    "ai_insights",
+                "heading": "AI Intelligence",
+                "items":   insight_items,
+            })
+
+        # AI Recommendations — summary + risk (placed before deterministic recommendations)
+        ai_rec_items: list[str] = []
+        if ai_narrative.get("recommendation_summary"):
+            ai_rec_items.append(ai_narrative["recommendation_summary"])
+        if ai_narrative.get("risk_summary"):
+            ai_rec_items.append(f"Key risk: {ai_narrative['risk_summary']}")
+        if ai_rec_items:
+            rec_pos = next(
+                (i for i, s in enumerate(sections) if s.get("type") == "recommendation"),
+                len(sections),
+            )
+            sections.insert(rec_pos, {
+                "type":    "ai_recommendations",
+                "heading": "AI Recommendations",
+                "items":   ai_rec_items,
+            })
 
     # ── Intent-based section filter (optional) ────────────────────────────────
     # selected_sections=None  → full report, all sections returned (unchanged behavior).

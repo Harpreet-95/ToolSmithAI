@@ -303,8 +303,28 @@ def run_analyze_dataset_plan(plan: dict, user_id: str | None, dataset_id: int | 
             "dataset_analysis_error": None}
 
 
-def run_send_notification_plan(plan: dict, user_id: str | None, dataset_id: int | None = None) -> dict:
+def _build_notification_message(ctx: dict, plan_intent: str) -> str:
+    """Build a contextual notification message from prior step outputs (Fix 7)."""
+    for ctx_key in ("dataset_analysis", "dataset_report"):
+        data = ctx.get(ctx_key)
+        if not isinstance(data, dict):
+            continue
+        sections = data.get("sections", [])
+        for section in sections:
+            if section.get("heading", "").lower() in ("overview", "executive summary"):
+                items = section.get("items", [])
+                if items:
+                    return str(items[0])[:200]
+        for section in sections:
+            items = section.get("items", [])
+            if items:
+                return f"{section.get('heading', 'Analysis')}: {str(items[0])[:180]}"
+    return plan_intent or "Workflow step completed."
+
+
+def run_send_notification_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None) -> dict:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    message = _build_notification_message(ctx or {}, plan.get("intent", ""))
     return {
         "plan_id": plan["plan_id"],
         "status": "completed",
@@ -314,7 +334,7 @@ def run_send_notification_plan(plan: dict, user_id: str | None, dataset_id: int 
         "step_results": [],
         "notification_sent": True,
         "channel": "in_app",
-        "message": f"Workflow step completed: {plan.get('intent', 'send_notification')}",
+        "message": message,
         "error": None,
     }
 
@@ -387,10 +407,9 @@ def _evaluate_condition(condition: str, step_outputs: dict) -> bool:
 
 
 _STEP_RUNNERS = {
-    "generate_dataset_report": run_dataset_report_plan,
-    "analyze_dataset":         run_analyze_dataset_plan,
-    "send_notification":       run_send_notification_plan,
-    # email_dataset_report is dispatched separately so ctx can be forwarded
+    "analyze_dataset": run_analyze_dataset_plan,
+    # generate_dataset_report, email_dataset_report, send_notification dispatched separately
+    # so ctx, dataset_id, and selected_sections all forward correctly
 }
 
 
@@ -413,6 +432,7 @@ def run_multi_step_workflow(
     dry_run: bool = False,
 ) -> dict:
     workflow_steps = workflow["definition"]["workflow_steps"]
+    dataset_id = workflow["definition"].get("dataset_id")  # Fix 6: forward into step runners
     plan_id = str(uuid.uuid4())
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -490,15 +510,24 @@ def run_multi_step_workflow(
         }
 
         try:
-            if step_type == "email_dataset_report":
-                # Allow a chained recipient from params, falling back to
-                # the step-level recipient field, then to the user's own email.
+            if step_type == "generate_dataset_report":
+                result = run_dataset_report_plan(
+                    step_plan, user_id=user_id, dataset_id=dataset_id,
+                    selected_sections=step_def.get("selected_sections"),
+                )
+            elif step_type == "email_dataset_report":
                 recipient = resolved_params.get("recipient") or step_def.get("recipient")
                 result = run_email_dataset_report_plan(
-                    step_plan, user_id=user_id, ctx=ctx, recipient=recipient
+                    step_plan, user_id=user_id, ctx=ctx, recipient=recipient,
+                    dataset_id=dataset_id,
+                    selected_sections=step_def.get("selected_sections"),
+                )
+            elif step_type == "send_notification":
+                result = run_send_notification_plan(
+                    step_plan, user_id=user_id, ctx=ctx, dataset_id=dataset_id,
                 )
             else:
-                result = _STEP_RUNNERS[step_type](step_plan, user_id=user_id)
+                result = _STEP_RUNNERS[step_type](step_plan, user_id=user_id, dataset_id=dataset_id)
 
             if result.get("status") in ("failed", "error"):
                 step_statuses[i]["status"] = "failed"
@@ -573,6 +602,80 @@ def run_multi_step_workflow(
         "error":          error_msg,
         "skipped_steps":  skipped_count,
     }
+
+
+def run_composed_workflow_proposal(
+    proposal: dict,
+    user_id: str | None,
+    dataset_id: int | None = None,
+    recipient: str | None = None,
+    selected_sections: list[str] | None = None,
+) -> dict:
+    """Execute a composer workflow proposal using trusted runner paths.
+
+    Single-step proposals call direct runners (preserving selected_sections / recipient).
+    Multi-step proposals build a synthetic workflow dict and delegate to run_multi_step_workflow.
+    """
+    steps = proposal.get("primitives_or_steps", [])
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    if not steps:
+        return {
+            "plan_id":      str(uuid.uuid4()),
+            "status":       "failed",
+            "task_type":    "workflow",
+            "started_at":   now,
+            "finished_at":  now,
+            "step_results": [],
+            "error":        "Composer proposal has no executable steps.",
+        }
+
+    plan_id = str(uuid.uuid4())
+    intent = proposal.get("interpreted_goal", "")
+
+    if len(steps) == 1:
+        step = steps[0]
+        step_type = step["step_type"]
+        step_sections = selected_sections or step.get("selected_sections")
+        plan = {"plan_id": plan_id, "intent": intent, "task_type": step_type, "steps": []}
+
+        if step_type == "generate_dataset_report":
+            return run_dataset_report_plan(
+                plan, user_id, dataset_id=dataset_id, selected_sections=step_sections
+            )
+        if step_type == "email_dataset_report":
+            return run_email_dataset_report_plan(
+                plan, user_id, dataset_id=dataset_id, recipient=recipient,
+                selected_sections=step_sections,
+            )
+        if step_type == "analyze_dataset":
+            return run_analyze_dataset_plan(plan, user_id, dataset_id=dataset_id)
+        if step_type == "send_notification":
+            return run_send_notification_plan(plan, user_id, dataset_id=dataset_id)
+        return {
+            "plan_id": plan_id, "status": "failed", "task_type": step_type,
+            "started_at": now, "finished_at": now, "step_results": [],
+            "error": f"Unknown step type: {step_type!r}",
+        }
+
+    # Multi-step: build synthetic workflow and delegate
+    workflow = {
+        "name": proposal.get("suggested_name", "composed_workflow"),
+        "definition": {
+            "workflow_steps": [
+                {
+                    "type":              s["step_type"],
+                    "order":             s["order"],
+                    "purpose":           s.get("purpose", ""),
+                    "selected_sections": selected_sections or s.get("selected_sections"),
+                }
+                for s in steps
+            ],
+            "dataset_id": dataset_id,
+            "intent":     intent,
+        },
+    }
+    return run_multi_step_workflow(workflow, user_id=user_id)
 
 
 def _build_plan(workflow: dict) -> dict:

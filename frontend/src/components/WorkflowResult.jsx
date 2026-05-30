@@ -1,6 +1,16 @@
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
 
+const TASK_TYPE_LABELS = {
+  generate_dataset_report: 'Intelligence Report',
+  email_dataset_report:    'Report Delivery',
+  analyze_dataset:         'Dataset Analysis',
+  send_notification:       'Notification',
+  set_reminder:            'Reminder Notification',
+  multi_step:              'Multi-Step Workflow',
+  workflow:                'Workflow',
+}
+
 // ─── Multi-step workflow result ───────────────────────────────────────────────
 function MultiStepResult({ result, C, S }) {
   const statusColor = (s) => s === 'completed' ? C.success : s === 'failed' ? C.danger : s === 'running' ? C.warn : C.textMuted
@@ -336,9 +346,51 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
 
   // ── Dataset report case: two-column workspace layout ─────────────────────
   if (hasReport) {
+    const aiMeta = result._ai_meta
+    const hasAIReasoning = aiMeta?.ai_enrichment_used && aiMeta?.reasoning_summary
+    const hasAIReport = result.dataset_report?.ai_narrative != null
+      || (result.dataset_report?.sections || []).some(s => s.type === 'ai_findings' || s.type === 'ai_insights')
+
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {header}
+
+        {/* AI Intelligence Status Banner */}
+        {(hasAIReasoning || hasAIReport || aiMeta) && (
+          <div style={{
+            background: hasAIReport || hasAIReasoning ? '#10b9810a' : '#6b72800a',
+            border: `1px solid ${hasAIReport || hasAIReasoning ? '#10b98128' : '#6b728020'}`,
+            borderRadius: '10px', padding: '11px 16px',
+            display: 'flex', flexDirection: 'column', gap: '6px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: hasAIReport || hasAIReasoning ? '#10b981' : '#9ca3af', flexShrink: 0, display: 'inline-block' }} />
+                <span style={{ fontSize: '0.7rem', fontWeight: '700', color: hasAIReport || hasAIReasoning ? '#10b981' : '#9ca3af', letterSpacing: '0.04em' }}>
+                  {hasAIReport || hasAIReasoning ? 'AI Intelligence Active' : aiMeta?.ai_enabled ? 'Deterministic Report' : 'Standard Report'}
+                </span>
+              </div>
+              {aiMeta?.ai_model_used && (
+                <span style={{ fontSize: '0.62rem', color: '#9ca3af', background: '#6b728012', border: '1px solid #6b728020', borderRadius: '4px', padding: '1px 6px' }}>
+                  {aiMeta.ai_model_used.replace('gpt-4o-mini','GPT-4o mini').replace('gpt-4o','GPT-4o')}
+                </span>
+              )}
+              {!hasAIReport && !hasAIReasoning && aiMeta?.ai_enabled && (
+                <span style={{ fontSize: '0.62rem', color: '#9ca3af' }}>AI reasoning unavailable — smart plan used</span>
+              )}
+            </div>
+            {hasAIReasoning && (
+              <div style={{ fontSize: '0.74rem', color: C.textSec, lineHeight: 1.55 }}>
+                {aiMeta.reasoning_summary}
+              </div>
+            )}
+            {(hasAIReport || hasAIReasoning) && (
+              <div style={{ fontSize: '0.65rem', color: '#9ca3af', marginTop: '2px' }}>
+                AI sections: Executive Summary · Key Findings · Insights · Recommendations
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
 
@@ -384,9 +436,39 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
   }
 
   // ── Non-report case: single-column, improved hierarchy ────────────────────
+  const aiMeta = result._ai_meta
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
       {header}
+
+      {/* AI Status + Reasoning Panel */}
+      {aiMeta && infoCard(<>
+        {sectionLabel('AI Status')}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: aiMeta.reasoning_summary ? '8px' : 0, flexWrap: 'wrap' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.7rem', fontWeight: '700', padding: '2px 8px', borderRadius: '4px', background: aiMeta.ai_enrichment_used ? '#10b9811a' : '#6b72800d', color: aiMeta.ai_enrichment_used ? '#10b981' : '#9ca3af', border: `1px solid ${aiMeta.ai_enrichment_used ? '#10b98128' : '#6b728020'}` }}>
+            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: aiMeta.ai_enrichment_used ? '#10b981' : '#9ca3af', display: 'inline-block', flexShrink: 0 }} />
+            {aiMeta.ai_enrichment_used ? 'AI Active' : aiMeta.ai_enabled ? 'Deterministic Fallback' : 'Smart Plan'}
+          </span>
+          {aiMeta.ai_model_used && (
+            <span style={{ fontSize: '0.62rem', color: '#9ca3af', background: '#6b728012', border: '1px solid #6b728018', borderRadius: '4px', padding: '1px 6px' }}>
+              {aiMeta.ai_model_used.replace('gpt-4o-mini','GPT-4o mini').replace('gpt-4o','GPT-4o')}
+            </span>
+          )}
+          {aiMeta.confidence != null && (
+            <span style={{ fontSize: '0.62rem', color: aiMeta.confidence >= 0.85 ? '#10b981' : aiMeta.confidence >= 0.65 ? '#f59e0b' : '#9ca3af', background: 'transparent', border: `1px solid ${aiMeta.confidence >= 0.85 ? '#10b98130' : aiMeta.confidence >= 0.65 ? '#f59e0b30' : '#9ca3af30'}`, borderRadius: '4px', padding: '1px 6px', fontWeight: '600' }}>
+              {Math.round(aiMeta.confidence * 100)}% match
+            </span>
+          )}
+        </div>
+        {aiMeta.reasoning_summary && (
+          <p style={{ margin: 0, fontSize: '0.76rem', color: C.textSec, lineHeight: 1.6 }}>{aiMeta.reasoning_summary}</p>
+        )}
+        {!aiMeta.ai_enrichment_used && aiMeta.ai_enabled && (
+          <p style={{ margin: aiMeta.reasoning_summary ? '6px 0 0' : 0, fontSize: '0.7rem', color: C.textMuted, lineHeight: 1.5, fontStyle: 'italic' }}>
+            Smart Plan generated using deterministic rules — AI reasoning unavailable for this request.
+          </p>
+        )}
+      </>)}
 
       {/* Detected intent — hero text */}
       {result.original_input && infoCard(<>
@@ -407,8 +489,10 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
         {sectionLabel('Plan Preview')}
         {result.task_type && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.77rem', color: C.textSec }}>Task:</span>
-            <div style={S.badge(C.accent, C.accentSoft)}>{result.task_type.replace(/_/g, ' ')}</div>
+            <span style={{ fontSize: '0.77rem', color: C.textSec }}>Type:</span>
+            <div style={S.badge(C.accent, C.accentSoft)}>
+              {TASK_TYPE_LABELS[result.task_type] || result.task_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+            </div>
           </div>
         )}
         {result.schedule && (
@@ -507,6 +591,18 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
             {result.finished_at && <span style={{ fontSize: '0.77rem', color: C.textSec }}>Finished: <span style={{ color: C.text }}>{new Date(result.finished_at).toLocaleString()}</span></span>}
           </div>
         )}
+      </>)}
+
+      {/* Next Suggested Action */}
+      {isSuccess && infoCard(<>
+        {sectionLabel('Next Action')}
+        <div style={{ fontSize: '0.78rem', color: C.text, lineHeight: 1.6 }}>
+          {result.report_id != null
+            ? 'Open the saved workspace to explore AI insights, export the report, or schedule it for future runs.'
+            : result.task_type === 'send_notification' || result.task_type === 'set_reminder'
+            ? 'Your notification has been dispatched. View delivery status in the Timeline above.'
+            : 'Review the execution steps above. Run another task or schedule this workflow for automation.'}
+        </div>
       </>)}
 
       {/* Email Delivery */}

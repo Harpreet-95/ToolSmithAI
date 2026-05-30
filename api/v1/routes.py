@@ -1894,6 +1894,121 @@ def get_report_route(report_id: int, user: AuthenticatedUser = Depends(require_j
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
+class AskReportRequest(BaseModel):
+    question: str
+
+
+_ASK_REPORT_SYSTEM_PROMPT = """\
+You are an AI analyst answering questions about a saved business report.
+You ONLY have access to the report sections provided. Do NOT invent data or make up statistics.
+Return exactly this JSON:
+{
+  "answer": "<clear, concise answer based solely on the report content, max 600 characters>",
+  "cited_sections": ["<section heading 1>", "<up to 3 section headings cited>"],
+  "confidence": "low" | "medium" | "high"
+}
+- If the question cannot be answered from the provided content, say so in the answer field.
+- confidence: "high" if the answer is directly in the text, "medium" if inferred, "low" if uncertain.
+- Return ONLY the JSON. No markdown. No code fences.
+"""
+
+
+def _ai_answer_report_question(sections: list, question: str) -> dict | None:
+    """Ask GPT to answer a question using only the report sections as context.
+
+    Safety: GPT receives only sanitized section text — no raw data, no secrets.
+    Returns None on any failure so the caller falls back to the deterministic answer.
+    """
+    import json as _json
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    from core.config import (
+        ENABLE_AI_REPORT_NARRATIVE, OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TIMEOUT_SECONDS,
+    )
+    if not ENABLE_AI_REPORT_NARRATIVE or not OPENAI_API_KEY:
+        return None
+
+    try:
+        import openai as _openai
+    except ImportError:
+        return None
+
+    context = _build_report_sections_context(sections)
+    user_msg = f"Report content:\n\n{context}\n\nQuestion: {question[:500]}"
+
+    try:
+        client = _openai.OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_SECONDS)
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _ASK_REPORT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            max_tokens=400,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        raw = _json.loads(resp.choices[0].message.content or "")
+        if not isinstance(raw, dict) or not raw.get("answer"):
+            return None
+        return {
+            "answer":              str(raw["answer"]).strip()[:600],
+            "cited_sections_used": [str(s) for s in (raw.get("cited_sections") or [])[:3]],
+            "confidence":          str(raw.get("confidence", "medium")) if raw.get("confidence") in ("low", "medium", "high") else "medium",
+        }
+    except Exception as exc:
+        _log.warning("[ask_report] ai failed: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+@router.post("/reports/{report_id}/ask")
+def ask_report_route(
+    report_id: int,
+    request: AskReportRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Ask a natural-language question about a saved report.
+
+    GPT answers from report content only — no invented data, no secrets exposed.
+    Falls back to a deterministic message when AI is disabled or unavailable.
+    """
+    question = (request.question or "").strip()
+    if not question:
+        return JSONResponse(status_code=400, content=build_error_response("question must not be empty"))
+
+    try:
+        report = get_report_by_id(report_id, str(user.user_id))
+        if report is None:
+            return JSONResponse(status_code=404, content=build_error_response("Report not found"))
+
+        sections = (report.get("content") or {}).get("sections", [])
+
+        ai_result = _ai_answer_report_question(sections, question)
+        if ai_result:
+            return {
+                "status": "success",
+                "data": {
+                    **ai_result,
+                    "fallback_used": False,
+                    "report_id": report_id,
+                },
+            }
+
+        return {
+            "status": "success",
+            "data": {
+                "answer":              "Conversational reporting requires AI narrative mode. Please review the report sections for insights.",
+                "cited_sections_used": [],
+                "confidence":          "low",
+                "fallback_used":       True,
+                "report_id":           report_id,
+            },
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
 @router.delete("/reports/{report_id}")
 def delete_report_route(report_id: int, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
     try:

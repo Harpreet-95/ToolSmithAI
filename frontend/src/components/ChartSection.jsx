@@ -312,6 +312,153 @@ function DonutChart({ labels, series, C }) {
   )
 }
 
+// ─── Stacked bar chart ────────────────────────────────────────────────────────
+// Multi-series stacked bars. Each series[i].data[j] is stacked on top of [i-1].
+function StackedBarChart({ labels, series, C }) {
+  if (!labels.length || !series.length) return <FallbackTable labels={labels} series={series} C={C} />
+
+  const n = labels.length
+  const totals = labels.map((_, j) =>
+    series.reduce((sum, s) => sum + (typeof s.data?.[j] === 'number' ? s.data[j] : 0), 0)
+  )
+  const maxTotal = Math.max(...totals, 1)
+
+  const LEFT = 42, RIGHT = 10, TOP = 18, CH = 180, LBL_H = 52
+  const SVG_W = 520, SVG_H = TOP + CH + LBL_H
+  const CHART_W = SVG_W - LEFT - RIGHT, BASE_Y = TOP + CH
+  const BAR_W = Math.max(10, Math.min(48, Math.floor(CHART_W / n * 0.7)))
+  const gap = (CHART_W - n * BAR_W) / (n + 1)
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ y: TOP + CH - f * CH, val: Math.round(f * maxTotal) }))
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} width="100%"
+        style={{ display: 'block', minWidth: '200px', maxWidth: `${SVG_W}px` }}
+        aria-label="stacked bar chart">
+        {ticks.map(({ y, val }, gi) => (
+          <g key={gi}>
+            <line x1={LEFT} y1={y} x2={SVG_W - RIGHT} y2={y}
+              stroke={C.border} strokeWidth={gi === 0 ? 1.2 : 0.6} strokeDasharray={gi === 0 ? 'none' : '3 3'} />
+            <text x={LEFT - 4} y={y + 3.5} textAnchor="end" fontSize={7} fill={C.textMuted} fontFamily={FONT}>{fmtVal(val)}</text>
+          </g>
+        ))}
+        {labels.map((label, j) => {
+          const x = LEFT + gap + j * (BAR_W + gap)
+          const lbl = String(label)
+          const rotate = lbl.length > 7 || n > 9
+          const short = lbl.length > 12 ? lbl.slice(0, 11) + '…' : lbl
+          let stackY = BASE_Y
+          return (
+            <g key={j}>
+              {series.map((s, si) => {
+                const val = typeof s.data?.[j] === 'number' ? s.data[j] : 0
+                const barH = Math.max(0, Math.round((val / maxTotal) * CH * 0.96))
+                stackY -= barH
+                return (
+                  <rect key={si} x={x} y={stackY} width={BAR_W} height={barH}
+                    fill={PALETTE[si % PALETTE.length]} opacity={0.85} rx={si === 0 ? 3 : 0}>
+                    <title>{label} · {s.name || `Series ${si + 1}`}: {val.toLocaleString()}</title>
+                  </rect>
+                )
+              })}
+              {rotate ? (
+                <text x={x + BAR_W / 2} y={BASE_Y + 10} textAnchor="end" fontSize={7} fill={C.textMuted} fontFamily={FONT}
+                  transform={`rotate(-42,${x + BAR_W / 2},${BASE_Y + 10})`}>{short}</text>
+              ) : (
+                <text x={x + BAR_W / 2} y={BASE_Y + 14} textAnchor="middle" fontSize={7.5} fill={C.textMuted} fontFamily={FONT}>{short}</text>
+              )}
+            </g>
+          )
+        })}
+      </svg>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px 14px', justifyContent: 'center', marginTop: '6px' }}>
+        {series.map((s, si) => (
+          <div key={si} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: PALETTE[si % PALETTE.length] }} />
+            <span style={{ fontSize: '0.67rem', color: C.textSec }}>{s.name || `Series ${si + 1}`}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Grouped line chart ───────────────────────────────────────────────────────
+// Multi-series line chart, each series rendered in a distinct palette colour.
+function GroupedLineChart({ labels, series, C }) {
+  if (!labels.length || !series.length) return <FallbackTable labels={labels} series={series} C={C} />
+  if (labels.length < 2) return <FallbackTable labels={labels} series={series} C={C} />
+
+  const allNums = series.flatMap(s => (s.data || []).filter(v => typeof v === 'number' && isFinite(v)))
+  if (!allNums.length) return <FallbackTable labels={labels} series={series} C={C} />
+
+  const n = labels.length
+  const maxVal = Math.max(...allNums, 1)
+  const minVal = Math.min(...allNums, 0)
+  const range = maxVal - minVal || 1
+
+  const LEFT = 42, RIGHT = 16, TOP = 20, CH = 160, LBL_H = 48
+  const SVG_W = 520, SVG_H = TOP + CH + LBL_H
+  const CHART_W = SVG_W - LEFT - RIGHT, BASE_Y = TOP + CH
+  const xStep = CHART_W / (n - 1)
+
+  const toY = v => TOP + CH * 0.96 - ((v - minVal) / range) * CH * 0.92
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({ val: Math.round(minVal + f * range), y: TOP + CH * 0.96 - f * CH * 0.92 }))
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} width="100%"
+        style={{ display: 'block', minWidth: '200px', maxWidth: `${SVG_W}px` }}
+        aria-label="grouped line chart">
+        {ticks.map(({ val, y }, gi) => (
+          <g key={gi}>
+            <line x1={LEFT} y1={y} x2={SVG_W - RIGHT} y2={y}
+              stroke={C.border} strokeWidth={0.7} strokeDasharray="3 3" />
+            <text x={LEFT - 4} y={y + 3.5} textAnchor="end" fontSize={7} fill={C.textMuted} fontFamily={FONT}>{fmtVal(val)}</text>
+          </g>
+        ))}
+        <line x1={LEFT} y1={BASE_Y} x2={SVG_W - RIGHT} y2={BASE_Y} stroke={C.border} strokeWidth={1} />
+        {series.map((s, si) => {
+          const color = PALETTE[si % PALETTE.length]
+          const nums = (s.data || []).map(v => (typeof v === 'number' && isFinite(v) ? v : null))
+          const pts = nums.map((v, i) => v != null ? { x: LEFT + i * xStep, y: toY(v), v } : null)
+          const linePts = pts.filter(Boolean).map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+          return (
+            <g key={si}>
+              {linePts && <polyline points={linePts} fill="none" stroke={color} strokeWidth={2}
+                strokeLinecap="round" strokeLinejoin="round" opacity={0.85} />}
+              {pts.map((p, i) => p && (
+                <circle key={i} cx={p.x} cy={p.y} r={3} fill={color} stroke={C.surface} strokeWidth={1.2}>
+                  <title>{labels[i]}: {p.v.toLocaleString()} ({s.name || `Series ${si + 1}`})</title>
+                </circle>
+              ))}
+            </g>
+          )
+        })}
+        {labels.map((label, i) => {
+          const x = LEFT + i * xStep, lbl = String(label)
+          const rotate = lbl.length > 6 || n > 10
+          const short = lbl.length > 12 ? lbl.slice(0, 11) + '…' : lbl
+          return rotate ? (
+            <text key={i} x={x} y={BASE_Y + 10} textAnchor="end" fontSize={7} fill={C.textMuted} fontFamily={FONT}
+              transform={`rotate(-42,${x},${BASE_Y + 10})`}>{short}</text>
+          ) : (
+            <text key={i} x={x} y={BASE_Y + 15} textAnchor="middle" fontSize={7.5} fill={C.textMuted} fontFamily={FONT}>{short}</text>
+          )
+        })}
+      </svg>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px 14px', justifyContent: 'center', marginTop: '6px' }}>
+        {series.map((s, si) => (
+          <div key={si} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <svg width="20" height="4"><line x1="0" y1="2" x2="20" y2="2" stroke={PALETTE[si % PALETTE.length]} strokeWidth="2" /></svg>
+            <span style={{ fontSize: '0.67rem', color: C.textSec }}>{s.name || `Series ${si + 1}`}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Scatter plot ─────────────────────────────────────────────────────────────
 // Schema: { chart_type:"scatter", x_label, y_label, points:[{x,y,label?}] }
 function ScatterPlot({ chart, C }) {
@@ -746,9 +893,11 @@ export default function ChartSection({ chart, C }) {
     return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No chart data available.</div>
   }
 
-  if (chartType === 'bar')                          return <BarChart   labels={labels} series={series} C={C} />
-  if (chartType === 'line')                         return <LineChart  labels={labels} series={series} C={C} />
-  if (chartType === 'pie' || chartType === 'donut') return <DonutChart labels={labels} series={series} C={C} />
+  if (chartType === 'bar')                          return <BarChart         labels={labels} series={series} C={C} />
+  if (chartType === 'line')                         return <LineChart        labels={labels} series={series} C={C} />
+  if (chartType === 'pie' || chartType === 'donut') return <DonutChart       labels={labels} series={series} C={C} />
+  if (chartType === 'stacked_bar')                  return <StackedBarChart  labels={labels} series={series} C={C} />
+  if (chartType === 'grouped_line')                 return <GroupedLineChart labels={labels} series={series} C={C} />
 
   return <FallbackTable labels={labels} series={series} C={C} />
 }

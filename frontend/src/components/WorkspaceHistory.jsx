@@ -6,6 +6,7 @@ const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
 const STATUS = {
   draft:    { label: 'Draft',    color: '#6b7280', bg: '#6b72801a', dot: '#6b7280' },
   proposed: { label: 'Proposed', color: '#6366f1', bg: '#6366f11a', dot: '#6366f1' },
+  running:  { label: 'Running',  color: '#f59e0b', bg: '#f59e0b1a', dot: '#f59e0b' },
   executed: { label: 'Executed', color: '#10b981', bg: '#10b9811a', dot: '#10b981' },
   saved:    { label: 'Saved',    color: '#059669', bg: '#05966918', dot: '#059669' },
 }
@@ -57,9 +58,10 @@ function applyFilter(workspaces, filter) {
 }
 
 // ─── Workspace row card ───────────────────────────────────────────────────────
-function WorkspaceCard({ ws, onReopen, C }) {
-  const reportType = ws.proposal_source === 'ai_assisted' ? 'AI-assisted' : 'Rule-based'
+function WorkspaceCard({ ws, onReopen, runningWorkspaceId, C }) {
+  const reportType = ws.proposal_source === 'ai_assisted' ? 'AI-assisted' : 'Smart Plan'
   const title = ws.title || ws.intent_text?.slice(0, 60) || 'Untitled'
+  const displayStatus = ws.id === runningWorkspaceId ? 'running' : ws.status
 
   return (
     <div
@@ -76,7 +78,7 @@ function WorkspaceCard({ ws, onReopen, C }) {
       onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', marginBottom: '7px' }}>
-        <StatusBadge status={ws.status} C={C} />
+        <StatusBadge status={displayStatus} C={C} />
         <span style={{
           fontSize: '0.82rem', fontWeight: '600', color: C.text, flex: 1, minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -101,7 +103,7 @@ function WorkspaceCard({ ws, onReopen, C }) {
         )}
         {ws.report_id && (
           <span style={{ fontSize: '0.64rem', color: '#10b981', background: '#10b9811a', padding: '1px 6px', borderRadius: '4px' }}>
-            Report #{ws.report_id}
+            Report attached
           </span>
         )}
         {ws.intent_text && (
@@ -130,7 +132,7 @@ function WorkspaceCard({ ws, onReopen, C }) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function WorkspaceHistory({ workspaces, loading, onReopen, C }) {
+export default function WorkspaceHistory({ workspaces, loading, onReopen, runningWorkspaceId = null, C }) {
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
 
@@ -222,7 +224,7 @@ export default function WorkspaceHistory({ workspaces, loading, onReopen, C }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {visible.map(ws => (
-            <WorkspaceCard key={ws.id} ws={ws} onReopen={onReopen} C={C} />
+            <WorkspaceCard key={ws.id} ws={ws} onReopen={onReopen} runningWorkspaceId={runningWorkspaceId} C={C} />
           ))}
         </div>
       )}

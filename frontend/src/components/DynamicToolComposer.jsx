@@ -227,7 +227,7 @@ export default function DynamicToolComposer({ C, S, token, onSessionExpired }) {
       <div style={{ background: C.warnSoft, border: `1px solid ${C.warn}40`, borderRadius: '9px', padding: '10px 14px', marginBottom: '18px', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.warn} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         <div style={{ fontSize: '0.73rem', color: C.warn, lineHeight: 1.55 }}>
-          <strong>No execution from this panel.</strong> Tools created here only execute when triggered by the workflow runner after approval. Dynamic tool execution requires <code style={{ fontFamily: MONO, fontSize: '0.7rem' }}>ENABLE_DYNAMIC_TOOL_EXECUTION=true</code> on the server.
+          <strong>No execution from this panel.</strong> Tools created here only execute when triggered by the workflow runner after approval. Dynamic tool execution is disabled on this server — contact your administrator to enable it.
         </div>
       </div>
 

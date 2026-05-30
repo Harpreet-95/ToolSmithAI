@@ -244,15 +244,6 @@ export async function rerunExecution(id, token) {
   return parseResponse(res);
 }
 
-export async function runWorkflowByName(name, token) {
-  const res = await fetch('/v1/workflows/run', {
-    method: 'POST',
-    headers: AUTH_HEADERS(token),
-    body: JSON.stringify({ name }),
-  });
-  return parseResponse(res);
-}
-
 export async function createMultiStepWorkflow(name, steps, token) {
   const definition = {
     workflow_steps: steps,
@@ -267,6 +258,10 @@ export async function createMultiStepWorkflow(name, steps, token) {
 }
 
 export async function runWorkflowById(id, token) {
+  if (!id) {
+    console.error('[runWorkflowById] called with missing workflow ID:', id)
+    throw new Error('Cannot execute workflow: workflow ID is missing.')
+  }
   const res = await fetch(`/v1/workflows/${id}/run`, {
     method: 'POST',
     headers: AUTH_HEADERS(token),
@@ -446,6 +441,23 @@ export async function saveWorkspaceById(id, token) {
   const res = await fetch(`/v1/workspaces/${id}/save`, {
     method: 'PATCH',
     headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function createWorkflowDraftFromWorkspace(workspaceId, token) {
+  const res = await fetch(`/v1/workspaces/${workspaceId}/create-workflow-draft`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function askReport(reportId, question, token) {
+  const res = await fetch(`/v1/reports/${reportId}/ask`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({ question }),
   });
   return parseResponse(res);
 }

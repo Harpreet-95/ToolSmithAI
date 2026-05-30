@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, runWorkflowByName, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById } from './api/client'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
 
@@ -11,6 +11,7 @@ const DatasetIntelligence = lazy(() => import('./components/DatasetIntelligence'
 const WorkspaceHistory    = lazy(() => import('./components/WorkspaceHistory'))
 const OperationsCenter   = lazy(() => import('./components/OperationsCenter'))
 const AdminDashboard     = lazy(() => import('./components/AdminDashboard'))
+const AIWorkspace        = lazy(() => import('./components/AIWorkspace'))
 
 // ─── Lazy-load fallback ────────────────────────────────────────────────────────
 function LazyFallback() {
@@ -23,16 +24,16 @@ function LazyFallback() {
 
 // ─── Design tokens ─────────────────────────────────────────────────────────────
 const C_DARK = {
-  bg:          '#09090f',
-  sidebar:     '#0c0d15',
-  surface:     '#101320',
-  border:      '#1b1f35',
-  borderAlt:   '#232840',
-  accent:      '#6366f1',
-  accentSoft:  '#6366f11a',
-  text:        '#eef0f8',
-  textSec:     '#8890a8',
-  textMuted:   '#40475e',
+  bg:          '#07091a',
+  sidebar:     '#080c1c',
+  surface:     '#0d1128',
+  border:      '#1e2b52',
+  borderAlt:   '#283465',
+  accent:      '#7c3aed',
+  accentSoft:  '#7c3aed1a',
+  text:        '#eef0ff',
+  textSec:     '#dde1ff',
+  textMuted:   '#545c82',
   success:     '#10b981',
   successSoft: '#10b9811a',
   warn:        '#f59e0b',
@@ -288,6 +289,7 @@ const STAT_CARDS = [
 ]
 
 const NAV_ITEMS = [
+  { id: 'ai-workspace', label: 'AI Workspace', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 L14 10 L22 12 L14 14 L12 22 L10 14 L2 12 L10 10 Z"/></svg> },
   { id: 'overview',  label: 'Overview',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> },
   { id: 'workflows', label: 'Workflows',    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg> },
   { id: 'datasets',  label: 'Datasets',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> },
@@ -321,14 +323,14 @@ const WAVE_ARCS = [
   { w: '54%', h: '115px', b: '-58px',  l: '9%',  opacity: 0.16 },
 ]
 
-const PARTICLES = Array.from({ length: 22 }, (_, i) => ({
-  x:   `${5  + ((i * 37 + 13) % 85)}%`,
-  y:   `${6  + ((i * 53 +  7) % 80)}%`,
-  s:   1.6 + (i % 3) * 0.9,
-  del: `${(i * 0.41) % 4.2}s`,
-  dur: `${3.4 + (i % 5) * 0.9}s`,
-  op:  0.14 + (i % 7) * 0.045,
-  col: i % 3 === 0 ? '#58a6ff' : i % 3 === 1 ? '#818cf8' : '#b067f5',
+const PARTICLES = Array.from({ length: 110 }, (_, i) => ({
+  x:   `${3  + ((i * 31 + 17) % 90)}%`,
+  y:   `${3  + ((i * 47 + 11) % 88)}%`,
+  s:   1.2 + (i % 4) * 0.8,
+  del: `${(i * 0.37) % 5.5}s`,
+  dur: `${1.5 + (i % 7) * 0.42}s`,
+  op:  0.10 + (i % 9) * 0.038,
+  col: i % 4 === 0 ? '#58a6ff' : i % 4 === 1 ? '#818cf8' : i % 4 === 2 ? '#b067f5' : '#67e8f9',
 }))
 
 // ─── Feature card icons ────────────────────────────────────────────────────────
@@ -473,7 +475,7 @@ function LoginView({ onSignIn, sessionExpired }) {
       <style>{`
         @keyframes tsFloat {
           0%,100% { transform: translateY(0px); }
-          50%      { transform: translateY(-10px); }
+          50%      { transform: translateY(-18px); }
         }
         .ts-signin-btn { transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.2s ease; }
         .ts-signin-btn:hover { opacity: 0.9 !important; transform: translateY(-1px) !important; box-shadow: 0 8px 40px rgba(99,102,241,0.55) !important; }
@@ -517,6 +519,26 @@ function LoginView({ onSignIn, sessionExpired }) {
         <rect width="100%" height="100%" fill="url(#circ-tile)"/>
       </svg>
 
+      {/* Full-page particles — fills the gap between panels */}
+      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
+        {Array.from({ length: 50 }, (_, i) => ({
+          x:   `${3  + ((i * 41 + 19) % 92)}%`,
+          y:   `${3  + ((i * 59 + 13) % 90)}%`,
+          s:   1.0 + (i % 4) * 0.75,
+          del: `${(i * 0.39) % 6.0}s`,
+          dur: `${1.7 + (i % 7) * 0.4}s`,
+          op:  0.08 + (i % 8) * 0.035,
+          col: i % 4 === 0 ? '#58a6ff' : i % 4 === 1 ? '#818cf8' : i % 4 === 2 ? '#b067f5' : '#67e8f9',
+        })).map((p, i) => (
+          <div key={i} style={{
+            position: 'absolute', left: p.x, top: p.y,
+            width: `${p.s}px`, height: `${p.s}px`,
+            borderRadius: '50%', background: p.col, opacity: p.op,
+            animation: `tsFloat ${p.dur} ${p.del} ease-in-out infinite`,
+          }} />
+        ))}
+      </div>
+
       {/* Ambient glows */}
       <div style={{
         position: 'absolute', top: '-200px', left: '-100px',
@@ -537,7 +559,7 @@ function LoginView({ onSignIn, sessionExpired }) {
       <div className="ts-landing-left" style={{
         flex: '1 1 480px',
         paddingLeft: 'clamp(32px, 5vw, 72px)',
-        paddingTop: 'clamp(40px, 5vh, 72px)',
+        paddingTop: '56px',
         paddingBottom: 'clamp(40px, 5vh, 72px)',
         paddingRight: 'clamp(32px, 5vw, 64px)',
         display: 'flex',
@@ -575,7 +597,7 @@ function LoginView({ onSignIn, sessionExpired }) {
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <div style={{
               fontSize: 'clamp(36px, 4vw, 60px)',
-              fontWeight: '700',
+              fontWeight: '650',
               lineHeight: 1,
               letterSpacing: '-1.8px',
               display: 'flex',
@@ -601,8 +623,8 @@ function LoginView({ onSignIn, sessionExpired }) {
         {/* Main headline — nowrap on first line guarantees no per-word stacking */}
         <h1 style={{
           margin: '48px 0 22px',
-          fontSize: 'clamp(26px, 3.5vw, 47px)',
-          fontWeight: '700',
+          fontSize: 'clamp(22px, 2.9vw, 40px)',
+          fontWeight: '600',
           lineHeight: 1.14,
           letterSpacing: '-1.2px',
           color: '#eef0f8',
@@ -708,13 +730,33 @@ function LoginView({ onSignIn, sessionExpired }) {
       <div className="ts-landing-right" style={{
         flex: '1 1 380px',
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         justifyContent: 'center',
-        padding: '32px 44px 32px 28px',
+        padding: '56px 44px 32px 28px',
         position: 'relative',
         zIndex: 1,
         boxSizing: 'border-box',
       }}>
+
+        {/* Right panel floating particles */}
+        <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
+          {Array.from({ length: 60 }, (_, i) => ({
+            x:   `${4  + ((i * 29 + 11) % 90)}%`,
+            y:   `${4  + ((i * 43 +  9) % 88)}%`,
+            s:   1.2 + (i % 4) * 0.8,
+            del: `${(i * 0.43) % 5.8}s`,
+            dur: `${1.6 + (i % 6) * 0.45}s`,
+            op:  0.10 + (i % 8) * 0.042,
+            col: i % 4 === 0 ? '#58a6ff' : i % 4 === 1 ? '#818cf8' : i % 4 === 2 ? '#b067f5' : '#67e8f9',
+          })).map((p, i) => (
+            <div key={i} style={{
+              position: 'absolute', left: p.x, top: p.y,
+              width: `${p.s}px`, height: `${p.s}px`,
+              borderRadius: '50%', background: p.col, opacity: p.op,
+              animation: `tsFloat ${p.dur} ${p.del} ease-in-out infinite`,
+            }} />
+          ))}
+        </div>
 
         {/* Card glow */}
         <div style={{
@@ -728,9 +770,9 @@ function LoginView({ onSignIn, sessionExpired }) {
         {/* Login card */}
         <div style={{
           width: '100%',
-          maxWidth: '480px',
-          padding: '40px 44px',
-          borderRadius: '28px',
+          maxWidth: '420px',
+          padding: '32px 36px',
+          borderRadius: '24px',
           transform: 'none',
           background: 'rgba(6, 8, 28, 0.96)',
           backdropFilter: 'blur(30px)',
@@ -747,7 +789,7 @@ function LoginView({ onSignIn, sessionExpired }) {
           <h2 style={{
             margin: 0,
             fontSize: '26px',
-            fontWeight: '700',
+            fontWeight: '500',
             lineHeight: 1.08,
             letterSpacing: '-0.8px',
             color: '#eef0f8',
@@ -758,11 +800,11 @@ function LoginView({ onSignIn, sessionExpired }) {
 
           {/* Subtitle */}
           <p style={{
-            fontSize: '17px',
+            fontSize: '14px',
             lineHeight: 1.6,
             opacity: 0.78,
-            marginTop: '12px',
-            marginBottom: '32px',
+            marginTop: '10px',
+            marginBottom: '26px',
             color: '#a0b0cc',
             textAlign: 'center',
           }}>
@@ -822,7 +864,7 @@ function LoginView({ onSignIn, sessionExpired }) {
             marginBottom: '10px',
             color: '#c8d4ec',
           }}>Email address</label>
-          <div style={{ position: 'relative', marginBottom: '26px' }}>
+          <div style={{ position: 'relative', marginBottom: '20px' }}>
             <span style={{ position: 'absolute', left: '20px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5a6080" strokeWidth="2" strokeLinecap="round">
                 <rect x="2" y="4" width="20" height="16" rx="2"/>
@@ -838,12 +880,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               className="ts-input"
               style={{
                 width: '100%', boxSizing: 'border-box',
-                height: '60px',
+                height: '50px',
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: '13px',
+                borderRadius: '11px',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '14px',
                 paddingLeft: '54px',
                 paddingRight: '20px',
                 outline: 'none',
@@ -876,12 +918,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               className="ts-input"
               style={{
                 width: '100%', boxSizing: 'border-box',
-                height: '60px',
+                height: '50px',
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: '13px',
+                borderRadius: '11px',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '14px',
                 paddingLeft: '54px',
                 paddingRight: '50px',
                 outline: 'none',
@@ -920,9 +962,9 @@ function LoginView({ onSignIn, sessionExpired }) {
                 onChange={e => setRememberMe(e.target.checked)}
                 style={{ accentColor: '#6366f1', width: '15px', height: '15px', cursor: 'pointer' }}
               />
-              <span style={{ fontSize: '14px', color: '#8892a4' }}>Remember me</span>
+              <span style={{ fontSize: '12px', color: '#8892a4' }}>Remember me</span>
             </label>
-            <span style={{ fontSize: '14px', color: '#818cf8', cursor: 'pointer', fontWeight: '500' }}>
+            <span style={{ fontSize: '12px', color: '#818cf8', cursor: 'pointer', fontWeight: '500' }}>
               Forgot password?
             </span>
           </div>
@@ -934,12 +976,12 @@ function LoginView({ onSignIn, sessionExpired }) {
             className="ts-signin-btn"
             style={{
               width: '100%',
-              height: '62px',
+              height: '50px',
               background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #7c3aed 100%)',
               color: '#ffffff',
               border: 'none',
-              borderRadius: '13px',
-              fontSize: '20px',
+              borderRadius: '11px',
+              fontSize: '16px',
               fontWeight: '600',
               cursor: loginLoading ? 'not-allowed' : 'pointer',
               fontFamily: FONT,
@@ -961,15 +1003,15 @@ function LoginView({ onSignIn, sessionExpired }) {
           <div style={{
             borderTop: '1px solid rgba(255,255,255,0.07)',
             borderBottom: '1px solid rgba(255,255,255,0.07)',
-            padding: '16px 0',
-            marginTop: '20px',
-            marginBottom: '20px',
+            padding: '12px 0',
+            marginTop: '16px',
+            marginBottom: '16px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             gap: '8px',
           }}>
-            <span style={{ fontSize: '14px', color: '#8892a4' }}>Don't have an account?</span>
+            <span style={{ fontSize: '12px', color: '#8892a4' }}>Don't have an account?</span>
             <button
               type="button"
               onClick={() => { setMode('register'); setFormError('') }}
@@ -977,7 +1019,7 @@ function LoginView({ onSignIn, sessionExpired }) {
                 background: 'none',
                 border: 'none',
                 color: '#818cf8',
-                fontSize: '14px',
+                fontSize: '12px',
                 fontWeight: '600',
                 cursor: 'pointer',
                 fontFamily: FONT,
@@ -990,26 +1032,26 @@ function LoginView({ onSignIn, sessionExpired }) {
           </div>
 
           {/* Divider */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
             <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.07)' }} />
-            <span style={{ fontSize: '13px', color: '#7a8aaa', whiteSpace: 'nowrap' }}>or continue with</span>
+            <span style={{ fontSize: '11px', color: '#7a8aaa', whiteSpace: 'nowrap' }}>or continue with</span>
             <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.07)' }} />
           </div>
 
           {/* Social buttons — side by side */}
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '18px' }}>
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '14px' }}>
             <button
               className="ts-social-btn"
               onClick={() => setFormError('Social login is not connected in this local demo.')}
               style={{
                 flex: 1,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                height: '50px',
+                height: '42px',
                 background: 'rgba(255,255,255,0.07)',
                 border: '1px solid rgba(255,255,255,0.18)',
-                borderRadius: '11px',
+                borderRadius: '10px',
                 color: '#e2e8f0',
-                fontSize: '14px', fontWeight: '600',
+                fontSize: '12px', fontWeight: '600',
                 cursor: 'pointer', fontFamily: FONT,
               }}
             >
@@ -1021,12 +1063,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               style={{
                 flex: 1,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                height: '50px',
+                height: '42px',
                 background: 'rgba(255,255,255,0.07)',
                 border: '1px solid rgba(255,255,255,0.18)',
-                borderRadius: '11px',
+                borderRadius: '10px',
                 color: '#e2e8f0',
-                fontSize: '14px', fontWeight: '600',
+                fontSize: '12px', fontWeight: '600',
                 cursor: 'pointer', fontFamily: FONT,
               }}
             >
@@ -1050,23 +1092,25 @@ function LoginView({ onSignIn, sessionExpired }) {
           {/* Create your account */}
           <h2 style={{
             margin: 0,
-            fontSize: '36px',
-            fontWeight: '700',
-            lineHeight: 1.1,
-            letterSpacing: '-0.6px',
+            fontSize: '26px',
+            fontWeight: '500',
+            lineHeight: 1.08,
+            letterSpacing: '-0.8px',
             color: '#eef0f8',
+            textAlign: 'center',
           }}>
             Create your <span style={GT}>account</span>
           </h2>
 
           {/* Subtitle */}
           <p style={{
-            fontSize: '15px',
-            lineHeight: 1.65,
+            fontSize: '14px',
+            lineHeight: 1.6,
             opacity: 0.78,
-            marginTop: '12px',
-            marginBottom: '32px',
+            marginTop: '10px',
+            marginBottom: '26px',
             color: '#a0b0cc',
+            textAlign: 'center',
           }}>
             Start building AI-powered workflows with ToolSmithAI.
           </p>
@@ -1118,12 +1162,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               className="ts-input"
               style={{
                 width: '100%', boxSizing: 'border-box',
-                height: '56px',
+                height: '50px',
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: '13px',
+                borderRadius: '11px',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '14px',
                 paddingLeft: '54px',
                 paddingRight: '20px',
                 outline: 'none',
@@ -1149,12 +1193,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               className="ts-input"
               style={{
                 width: '100%', boxSizing: 'border-box',
-                height: '56px',
+                height: '50px',
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: '13px',
+                borderRadius: '11px',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '14px',
                 paddingLeft: '54px',
                 paddingRight: '20px',
                 outline: 'none',
@@ -1180,12 +1224,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               className="ts-input"
               style={{
                 width: '100%', boxSizing: 'border-box',
-                height: '56px',
+                height: '50px',
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: '13px',
+                borderRadius: '11px',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '14px',
                 paddingLeft: '54px',
                 paddingRight: '20px',
                 outline: 'none',
@@ -1212,12 +1256,12 @@ function LoginView({ onSignIn, sessionExpired }) {
               className="ts-input"
               style={{
                 width: '100%', boxSizing: 'border-box',
-                height: '56px',
+                height: '50px',
                 background: 'rgba(255,255,255,0.05)',
                 border: '1px solid rgba(255,255,255,0.12)',
-                borderRadius: '13px',
+                borderRadius: '11px',
                 color: '#ffffff',
-                fontSize: '16px',
+                fontSize: '14px',
                 paddingLeft: '54px',
                 paddingRight: '20px',
                 outline: 'none',
@@ -1233,12 +1277,12 @@ function LoginView({ onSignIn, sessionExpired }) {
             className="ts-signin-btn"
             style={{
               width: '100%',
-              height: '58px',
+              height: '50px',
               background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #7c3aed 100%)',
               color: '#ffffff',
               border: 'none',
-              borderRadius: '13px',
-              fontSize: '18px',
+              borderRadius: '11px',
+              fontSize: '16px',
               fontWeight: '600',
               cursor: regLoading ? 'not-allowed' : 'pointer',
               fontFamily: FONT,
@@ -1435,36 +1479,55 @@ function ReportSection({ section, C }) {
       {(() => {
         switch (secType) {
           case 'kpi': {
-            const fmtVal = (value, format) => {
+            const fmtKpiVal = (value, format) => {
               if (value == null) return '—'
               if (format === 'percent')  return `${value}%`
               if (format === 'currency') return `$${Number(value).toLocaleString()}`
               if (format === 'number')   return Number(value).toLocaleString()
               return String(value)
             }
-            const TrendIcon = ({ trend }) => {
-              if (trend === 'up')   return <span style={{ fontSize: '0.75rem', color: C.success, fontWeight: '700', lineHeight: 1 }}>↑</span>
-              if (trend === 'down') return <span style={{ fontSize: '0.75rem', color: C.danger,  fontWeight: '700', lineHeight: 1 }}>↓</span>
-              return <span style={{ fontSize: '0.75rem', color: C.textMuted, lineHeight: 1 }}>—</span>
+            const KPI_STATUS = {
+              good:    { color: C.success, bg: `${C.success}18`, border: `${C.success}30` },
+              warning: { color: C.warn,    bg: `${C.warn}18`,    border: `${C.warn}30`    },
+              risk:    { color: C.danger,  bg: `${C.danger}18`,  border: `${C.danger}30`  },
+            }
+            const DeltaTag = ({ delta, dir }) => {
+              if (delta == null) return null
+              const color = dir === 'up' ? C.success : dir === 'down' ? C.danger : C.textMuted
+              const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '→'
+              return (
+                <span style={{ fontSize: '0.62rem', color, fontWeight: '700', background: `${color}18`, borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>
+                  {arrow} {delta > 0 ? `+${delta}` : delta}
+                </span>
+              )
             }
             return (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '10px' }}>
-                {(section.kpis || []).map((kpi, j) => (
-                  <div key={j} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '11px 13px' }}>
-                    <div style={{ fontSize: '0.61rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>
-                      {kpi.label || '—'}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '10px' }}>
+                {(section.kpis || []).map((kpi, j) => {
+                  const st = KPI_STATUS[kpi.status] || KPI_STATUS.good
+                  return (
+                    <div key={j} style={{ background: C.bg, border: `1px solid ${kpi.status ? st.border : C.border}`, borderRadius: '9px', padding: '11px 13px', position: 'relative' }}>
+                      {kpi.status && kpi.status !== 'good' && (
+                        <div style={{ position: 'absolute', top: '8px', right: '9px', width: '6px', height: '6px', borderRadius: '50%', background: st.color }} />
+                      )}
+                      <div style={{ fontSize: '0.61rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>
+                        {kpi.label || '—'}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '1.25rem', fontWeight: '700', color: kpi.status ? st.color : C.text, letterSpacing: '-0.5px', lineHeight: 1 }}>
+                          {fmtKpiVal(kpi.value, kpi.format)}
+                        </span>
+                        <DeltaTag delta={kpi.delta} dir={kpi.delta_direction} />
+                      </div>
+                      {kpi.explanation && (
+                        <div style={{ fontSize: '0.64rem', color: st.color, fontWeight: '500', lineHeight: 1.4, marginBottom: '2px' }}>{kpi.explanation}</div>
+                      )}
+                      {!kpi.explanation && kpi.description && (
+                        <div style={{ fontSize: '0.66rem', color: C.textMuted, lineHeight: 1.4 }}>{kpi.description}</div>
+                      )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px', marginBottom: '3px' }}>
-                      <span style={{ fontSize: '1.25rem', fontWeight: '700', color: C.text, letterSpacing: '-0.5px', lineHeight: 1 }}>
-                        {fmtVal(kpi.value, kpi.format)}
-                      </span>
-                      <TrendIcon trend={kpi.trend} />
-                    </div>
-                    {kpi.description && (
-                      <div style={{ fontSize: '0.66rem', color: C.textMuted, lineHeight: 1.4 }}>{kpi.description}</div>
-                    )}
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )
           }
@@ -1523,6 +1586,7 @@ function ReportSection({ section, C }) {
           }
           case 'executive_summary': {
             const { summary, key_takeaways: takeaways, risks, opportunities } = section
+            const isAI = section.ai_generated === true
             const hasContent = summary || takeaways?.length || risks?.length || opportunities?.length
             if (!hasContent) {
               return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No executive summary available.</div>
@@ -1545,6 +1609,12 @@ function ReportSection({ section, C }) {
             }
             return (
               <div>
+                {isAI && (
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: '#10b9811a', border: '1px solid #10b98130', borderRadius: '4px', padding: '2px 8px', marginBottom: '8px' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#10b981', flexShrink: 0, display: 'inline-block' }} />
+                    <span style={{ fontSize: '0.6rem', fontWeight: '700', color: '#10b981', letterSpacing: '0.06em', textTransform: 'uppercase' }}>AI Generated</span>
+                  </div>
+                )}
                 {summary && <p style={{ margin: '0 0 2px', fontSize: '0.82rem', color: C.text, lineHeight: 1.65 }}>{summary}</p>}
                 {renderList('Key Takeaways', takeaways,     C.accent)}
                 {renderList('Risks',         risks,         C.danger)}
@@ -1864,6 +1934,163 @@ function ReportSection({ section, C }) {
               </div>
             )
           }
+          case 'ai_dashboard': {
+            const { most_important_insight, highest_risk, recommended_action, watchlist } = section
+            const Cell = ({ label, color, children }) => (
+              <div style={{ background: `${color}0c`, border: `1px solid ${color}28`, borderRadius: '9px', padding: '10px 13px' }}>
+                <div style={{ fontSize: '0.58rem', fontWeight: '700', color, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '5px' }}>{label}</div>
+                <div style={{ fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>{children}</div>
+              </div>
+            )
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {most_important_insight && (
+                  <Cell label="Most Important Insight" color={C.accent}>{most_important_insight}</Cell>
+                )}
+                {highest_risk && (
+                  <Cell label="Highest Risk" color={C.danger}>{highest_risk}</Cell>
+                )}
+                {recommended_action && (
+                  <Cell label="Recommended Action" color={C.success}>{recommended_action}</Cell>
+                )}
+                {(watchlist || []).length > 0 && (
+                  <div style={{ background: `${C.warn}0c`, border: `1px solid ${C.warn}28`, borderRadius: '9px', padding: '10px 13px' }}>
+                    <div style={{ fontSize: '0.58rem', fontWeight: '700', color: C.warn, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '6px' }}>Watchlist</div>
+                    {watchlist.map((item, j) => (
+                      <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '7px', marginBottom: '4px' }}>
+                        <span style={{ color: C.warn, fontWeight: '700', flexShrink: 0, fontSize: '0.7rem', marginTop: '1px' }}>◉</span>
+                        <span style={{ fontSize: '0.74rem', color: C.text, lineHeight: 1.5 }}>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          }
+          case 'insight_priority': {
+            const insights = section.insights || []
+            if (!insights.length) return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No prioritized insights found.</div>
+            const SEV = {
+              high:   { color: C.danger,  label: 'HIGH'   },
+              medium: { color: C.warn,    label: 'MEDIUM' },
+              low:    { color: C.success, label: 'LOW'    },
+            }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {insights.map((ins, j) => {
+                  const s = SEV[ins.severity] || SEV.low
+                  return (
+                    <div key={j} style={{ background: `${s.color}08`, border: `1px solid ${s.color}28`, borderLeft: `3px solid ${s.color}`, borderRadius: '8px', padding: '10px 13px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px', flexWrap: 'wrap' }}>
+                        <span style={{ background: `${s.color}20`, color: s.color, borderRadius: '4px', padding: '1px 6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', flexShrink: 0 }}>{s.label}</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: C.text }}>{ins.title}</span>
+                        {ins.confidence && (
+                          <span style={{ fontSize: '0.6rem', color: C.textMuted, marginLeft: 'auto' }}>{ins.confidence} confidence</span>
+                        )}
+                      </div>
+                      {ins.evidence && (
+                        <div style={{ fontSize: '0.72rem', color: C.textSec, lineHeight: 1.5, marginBottom: ins.recommended_action ? '5px' : 0 }}>{ins.evidence}</div>
+                      )}
+                      {ins.recommended_action && (
+                        <div style={{ fontSize: '0.7rem', color: C.success, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <span style={{ fontWeight: '700' }}>→</span> {ins.recommended_action}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          }
+          case 'drilldown_table': {
+            const rows = section.rows || []
+            const cols = section.columns || (rows[0] ? Object.keys(rows[0]) : [])
+            if (!cols.length || !rows.length) return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No table data available.</div>
+            return (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.73rem', fontFamily: 'inherit' }}>
+                  <thead>
+                    <tr>
+                      {cols.map((col, ci) => (
+                        <th key={ci} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, color: C.textMuted, fontWeight: '600', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap' }}>{col}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, ri) => (
+                      <tr key={ri} style={{ borderBottom: `1px solid ${C.border}` }}
+                        onMouseEnter={e => { e.currentTarget.style.background = C.accentSoft }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}>
+                        {cols.map((col, ci) => (
+                          <td key={ci} style={{ padding: '6px 10px', color: ci === 0 ? C.text : C.textSec, whiteSpace: 'nowrap' }}>
+                            {row[col] != null ? String(row[col]) : '—'}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {section.note && <div style={{ marginTop: '8px', fontSize: '0.65rem', color: C.textMuted }}>{section.note}</div>}
+              </div>
+            )
+          }
+          case 'ai_findings': {
+            const items = section.items || []
+            if (!items.length) return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No findings available.</div>
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {items.map((item, j) => (
+                  <div key={j} style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', background: `${C.accent}0a`, border: `1px solid ${C.accent}22`, borderRadius: '8px', padding: '9px 13px' }}>
+                    <span style={{ color: C.accent, fontWeight: '700', flexShrink: 0, fontSize: '0.78rem', marginTop: '1px' }}>◆</span>
+                    <span style={{ fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>{typeof item === 'string' ? item : JSON.stringify(item)}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          }
+          case 'ai_insights': {
+            const items = section.items || []
+            if (!items.length) return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No insights available.</div>
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                {items.map((item, j) => {
+                  const text = typeof item === 'string' ? item : JSON.stringify(item)
+                  const isAnomaly = text.toLowerCase().startsWith('anomaly')
+                  const isTrend   = text.toLowerCase().startsWith('trend')
+                  const color     = isAnomaly ? C.danger : isTrend ? C.success : C.accent
+                  const label     = isAnomaly ? '⚠ Anomaly Insight' : isTrend ? '↗ Trend Insight' : '● Insight'
+                  const body      = text.replace(/^(anomaly insight|trend insight):\s*/i, '')
+                  return (
+                    <div key={j} style={{ background: `${color}08`, border: `1px solid ${color}28`, borderLeft: `3px solid ${color}`, borderRadius: '8px', padding: '9px 13px' }}>
+                      <div style={{ fontSize: '0.58rem', fontWeight: '700', color, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>{label}</div>
+                      <div style={{ fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>{body}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          }
+          case 'ai_recommendations': {
+            const items = section.items || []
+            if (!items.length) return <div style={{ fontSize: '0.75rem', color: C.textMuted }}>No AI recommendations available.</div>
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                {items.map((item, j) => {
+                  const text   = typeof item === 'string' ? item : JSON.stringify(item)
+                  const isRisk = text.toLowerCase().startsWith('key risk')
+                  const color  = isRisk ? C.warn : C.success
+                  const label  = isRisk ? 'KEY RISK' : 'RECOMMENDATION'
+                  const body   = text.replace(/^key risk:\s*/i, '')
+                  return (
+                    <div key={j} style={{ background: `${color}08`, border: `1px solid ${color}28`, borderLeft: `3px solid ${color}`, borderRadius: '8px', padding: '9px 13px' }}>
+                      <div style={{ fontSize: '0.58rem', fontWeight: '700', color, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '4px' }}>{label}</div>
+                      <div style={{ fontSize: '0.76rem', color: C.text, lineHeight: 1.6 }}>{body}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          }
           case 'text':
           default:
             return (
@@ -2031,6 +2258,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [activeWorkspaceId,    setActiveWorkspaceId]    = useState(null)
   const [workspaceList,        setWorkspaceList]        = useState([])
   const [workspaceListLoading, setWorkspaceListLoading] = useState(false)
+  const [workspaceRunning,     setWorkspaceRunning]     = useState(false)
   const [dsModal,             setDsModal]             = useState(null)
   const [dsRenaming,          setDsRenaming]          = useState(null)
   const [dsRenameVal,         setDsRenameVal]         = useState('')
@@ -2126,6 +2354,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
   useEffect(() => { refreshWorkflows() }, [token])
 
+  async function handleSaveDraft() {
+    if (!activeWorkspaceId) throw new Error('No active workspace to save as draft.')
+    const result = await createWorkflowDraftFromWorkspace(activeWorkspaceId, token)
+    refreshWorkflows()
+    return result
+  }
+
   async function handleSaveMultiStepWorkflow() {
     if (!builderName.trim()) { setBuilderError('Enter a workflow name.'); return }
     if (builderSteps.length === 0) { setBuilderError('Add at least one step.'); return }
@@ -2167,15 +2402,18 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   }
 
   async function handleRunWorkflow(wf) {
+    if (!wf?.id) {
+      console.error('[handleRunWorkflow] workflow missing ID', wf)
+      setWfRunError('Cannot run workflow: workflow ID is missing.')
+      return
+    }
     const isMultiStep = Array.isArray(wf.definition?.workflow_steps)
     const intent = wf.definition?.intent || wf.name
     setWfRunningId(wf.id)
     setWfRunError(null)
     setWfRunResult(null)
     try {
-      const data = isMultiStep
-        ? await runWorkflowById(wf.id, token)
-        : await interpretTask(intent, token)
+      const data = await runWorkflowById(wf.id, token)
       setWfRunResult(data.data)
       if (!isMultiStep) {
         setResult(data.data)
@@ -2552,7 +2790,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     }
   }
 
-  async function handleRunTask(selectedSections = null) {
+  async function handleRunTask(selectedSections = null, approvedProposal = null, suppressPanel = false) {
     setError(null)
     setValidationError(null)
     setResult(null)
@@ -2578,26 +2816,76 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       setValidationError('Please enter a recipient email address.')
       return
     }
+    const isMultiStepWorkspace = activeWorkspaceId != null
+      && approvedProposal?.proposal_type === 'workflow'
+      && (approvedProposal?.primitives_or_steps || []).length > 1
     setLoading(true)
-    setResultPanelOpen(true)
+    if (!suppressPanel) setResultPanelOpen(true)
+    if (isMultiStepWorkspace) setWorkspaceRunning(true)
     try {
       let data
-      try {
-        data = await runWorkflowByName(trimmed, token)
-      } catch (wfErr) {
-        if (is401(wfErr)) { onSessionExpired(); return }
-        if (!wfErr.message.startsWith('404:')) throw wfErr
-        data = await interpretTask(trimmed, token, selectedDatasetId, recipientEmail.trim() || null, selectedSections)
+      if (isMultiStepWorkspace) {
+        const draft = await createWorkflowDraftFromWorkspace(activeWorkspaceId, token)
+        const draftData = draft?.data ?? draft
+        if (!draftData?.workflow_id) throw new Error('Workflow draft created but no workflow ID was returned.')
+        data = await runWorkflowById(draftData.workflow_id, token)
+      } else {
+        // Check if the user's input matches a saved workflow by name or intent.
+        // If so, run it by ID (canonical path). Otherwise interpret as a new task.
+        const matchedWf = workflowList.find(wf =>
+          (wf.name && wf.name.toLowerCase() === trimmed.toLowerCase()) ||
+          (wf.definition?.intent && wf.definition.intent.toLowerCase() === trimmed.toLowerCase())
+        )
+        if (matchedWf) {
+          if (!matchedWf.id) {
+            console.error('[handleRunTask] matched workflow has no ID', matchedWf)
+            throw new Error('Matched workflow is missing an ID — cannot execute.')
+          }
+          console.log('[handleRunTask] running saved workflow', matchedWf.id, matchedWf.name)
+          data = await runWorkflowById(matchedWf.id, token)
+        } else {
+          data = await interpretTask(trimmed, token, selectedDatasetId, recipientEmail.trim() || null, selectedSections)
+        }
       }
-      setResult(data.data)
-      if (data.data?.report_id != null) refreshReports()
+
+      const executionResult = data?.data ?? null
+
+      // For multi-step runs, report_id lives inside step_results[n].result.report_id.
+      // Hoist it so refreshReports, attachWorkspaceExecution, and ActionCenter all see it.
+      let resolvedReportId = executionResult?.report_id ?? null
+      if (resolvedReportId == null && isMultiStepWorkspace) {
+        const stepWithReport = (executionResult?.step_results ?? []).find(
+          s => s?.result?.report_id != null
+        )
+        resolvedReportId = stepWithReport?.result?.report_id ?? null
+      }
+
+      // Augment result with AI metadata from the approved proposal so WorkflowResult
+      // can surface reasoning, confidence, and AI status without a separate prop.
+      const resultWithAI = executionResult == null ? null : {
+        ...executionResult,
+        _ai_meta: approvedProposal ? {
+          reasoning_summary:  approvedProposal.reasoning_summary  ?? null,
+          confidence:         approvedProposal.confidence         ?? null,
+          ai_enrichment_used: approvedProposal.ai_enrichment_used ?? false,
+          ai_enabled:         approvedProposal.ai_enabled         ?? false,
+          ai_model_used:      approvedProposal.ai_model_used      ?? null,
+        } : null,
+      }
+      // Store result in the same state used by single-step executions, then
+      // re-assert the panel open so a backdrop-dismiss during loading doesn't
+      // swallow the completed result.
+      setResult(resultWithAI)
+      if (!suppressPanel) setResultPanelOpen(true)
+
+      if (resolvedReportId != null) refreshReports()
       getUsage(token).then(d => setUsage(d)).catch(() => {})
       getMyData(token).then(d => setHistory(d?.data?.execution_history ?? [])).catch(() => {})
       if (activeWorkspaceId != null) {
-        const execSummary = { task_type: data.data?.task_type, status: data.data?.status }
+        const execSummary = { task_type: executionResult?.task_type, status: executionResult?.status }
         attachWorkspaceExecution(activeWorkspaceId, {
           execution_summary: execSummary,
-          report_id: data.data?.report_id ?? null,
+          report_id: resolvedReportId,
           selected_sections: selectedSections ?? null,
         }, token)
           .then(() => refreshWorkspaces())
@@ -2608,6 +2896,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       setError(err.message)
     } finally {
       setLoading(false)
+      if (isMultiStepWorkspace) setWorkspaceRunning(false)
     }
   }
 
@@ -2893,12 +3182,12 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       <aside style={{
         position: 'fixed', top: 0, left: 0,
         width: `${SIDEBAR_W}px`, height: '100vh',
-        background: C.sidebar, borderRight: `1px solid ${C.border}`,
+        background: C.sidebar, borderRight: `1px solid rgba(37,48,96,0.45)`,
         display: 'flex', flexDirection: 'column', zIndex: 100,
       }}>
         <div style={{
           height: `${HEADER_H}px`, display: 'flex', alignItems: 'center',
-          gap: '10px', padding: '0 18px', borderBottom: `1px solid ${C.border}`, flexShrink: 0,
+          gap: '10px', padding: '0 18px', borderBottom: `1px solid rgba(30,43,82,0.45)`, flexShrink: 0,
         }}>
           <img
             src="/toolsmith-logo-transparent.png"
@@ -2918,20 +3207,20 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                 padding: '9px 12px', borderRadius: '8px', border: 'none',
                 background: active ? C.accentSoft : 'transparent',
                 color: active ? C.accent : C.textSec,
-                fontSize: '0.855rem', fontWeight: active ? '600' : '400',
+                fontSize: '0.75rem', fontWeight: active ? '600' : '400',
                 cursor: 'pointer', fontFamily: FONT, letterSpacing: '0.01em',
                 transition: 'background 0.12s, color 0.12s',
               }}
               onMouseEnter={e => { if (!active) { e.currentTarget.style.background = C.borderAlt; e.currentTarget.style.color = C.text } }}
               onMouseLeave={e => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSec } }}>
-                <span style={{ flexShrink: 0, display: 'flex', opacity: active ? 1 : 0.7 }}>{icon}</span>
+                <span style={{ flexShrink: 0, display: 'flex' }}>{icon}</span>
                 {label}
               </button>
             )
           })}
         </nav>
 
-        <div style={{ padding: '12px 10px', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
+        <div style={{ padding: '12px 10px', borderTop: `1px solid rgba(30,43,82,0.45)`, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 8px', borderRadius: '8px', cursor: 'pointer' }}
             onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
@@ -3130,8 +3419,33 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           </div>
         </header>
 
-        <main style={{ flex: 1, padding: '12px 28px 36px', boxSizing: 'border-box' }}>
-          <div style={{ maxWidth: '1060px', margin: '0 auto' }}>
+        <main style={{ flex: 1, padding: '0px 12px 36px 35px', boxSizing: 'border-box' }}>
+          <div style={{ width: '100%' }}>
+
+            {/* ── AI Workspace ─────────────────────────────────────── */}
+            {activeNav === 'ai-workspace' && (
+              <ErrorBoundary C={C}>
+                <Suspense fallback={<LazyFallback />}>
+                  <AIWorkspace
+                    C={C}
+                    S={S}
+                    token={token}
+                    onSessionExpired={onSessionExpired}
+                    user={user}
+                    datasetList={datasetList}
+                    selectedDatasetId={selectedDatasetId}
+                    setSelectedDatasetId={setSelectedDatasetId}
+                    externalResult={result}
+                    externalLoading={loading}
+                    externalError={error}
+                    setActiveNav={setActiveNav}
+                    onOpenReport={handleOpenSavedReport}
+                    onExportReport={(id, fmt) => exportReport(id, token, fmt).catch(() => {})}
+                    onUploadDataset={handleComposerAttach}
+                  />
+                </Suspense>
+              </ErrorBoundary>
+            )}
 
             {/* ── Overview ─────────────────────────────────────────── */}
             {activeNav === 'overview' && (() => {
@@ -3398,11 +3712,15 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                       C={C}
                       onApprove={() => {
                         const sections = composerProposal?.selected_sections ?? null
+                        const proposal = composerProposal
                         setComposerProposal(null)
-                        handleRunTask(sections)
+                        setActiveNav('ai-workspace')
+                        handleRunTask(sections, proposal, true)
                       }}
                       onEdit={() => setComposerProposal(null)}
                       onClear={() => { setComposerProposal(null); setTaskInput(''); setComposerProposalError(null) }}
+                      onSaveDraft={activeWorkspaceId ? handleSaveDraft : undefined}
+                      onGoToDatasets={() => setActiveNav('datasets')}
                     />
                   </Suspense>
                 )}
@@ -4956,6 +5274,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                         onExport={fmt => exportReport(r.id, token, fmt)}
                                         onEmail={to => emailReport(r.id, to, token)}
                                         SectionRenderer={ReportSection}
+                                        token={token}
                                       />
                                     </Suspense>
                                   </ErrorBoundary>
@@ -5162,6 +5481,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                   workspaces={workspaceList}
                   loading={workspaceListLoading}
                   onReopen={handleReopenWorkspace}
+                  runningWorkspaceId={workspaceRunning ? activeWorkspaceId : null}
                   C={C}
                 />
               </Suspense>
