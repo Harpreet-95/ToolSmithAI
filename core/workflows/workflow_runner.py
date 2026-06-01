@@ -67,6 +67,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
         previous_snapshot=previous_snapshot,
         baseline_snapshots=baseline_snapshots,
         selected_sections=selected_sections,
+        intent_text=plan.get("intent") or "",
     )
 
     report_id = None
@@ -183,6 +184,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             previous_snapshot=previous_snapshot,
             baseline_snapshots=baseline_snapshots,
             selected_sections=selected_sections,
+            intent_text=plan.get("intent") or "",
         )
     body = format_report_as_email_body(report, dataset["filename"])
     subject = f"Dataset Report — {dataset['filename']}"

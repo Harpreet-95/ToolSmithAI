@@ -17,9 +17,31 @@ from data.audit import log_audit_event
 from data.execution_history import log_execution_history
 from data.usage_service import log_usage_event
 
+# These signals intentionally bias business intelligence requests toward dataset
+# reporting paths (Path 1 / Path 2) instead of generic workflow execution or
+# the legacy interpreter. Any word here with a dataset attached routes directly
+# to dataset report generation unless a compound multi-step signal is also present.
 _REPORT_HINT_WORDS = frozenset({
+    # Core report vocabulary
     "report", "summary", "analyze", "analyse",
     "summarize", "summarise", "insight", "insights",
+    "analysis", "analytics", "overview", "data",
+    # Business performance
+    "revenue", "sales", "profit", "margin", "growth",
+    "trend", "trends", "performance", "forecast", "projection",
+    "dashboard", "metrics", "kpi", "kpis",
+    # Segmentation and ranking
+    "breakdown", "segment", "segmentation", "top", "best", "worst",
+    # Operations
+    "logistics", "shipment", "delay", "delivery", "inventory",
+    "warehouse", "operations", "throughput", "sla", "utilization",
+    # Risk and compliance
+    "risk", "risks", "anomaly", "anomalies", "fraud", "incident",
+    "compliance", "churn", "retention", "failure",
+    # Business entities
+    "product", "products", "customer", "customers",
+    "client", "clients", "region", "regions",
+    "store", "stores", "category", "categories",
 })
 _EMAIL_HINT_WORDS = frozenset({"email", "send", "mail", "share"})
 
@@ -30,15 +52,34 @@ _MULTI_STEP_SIGNALS: frozenset = frozenset({
     "notify", "notification", "notif", "alert", "ping",
 })
 
-# Intents matching these signals are eligible for the composer bridge.
+# These signals intentionally bias business intelligence requests toward dataset
+# reporting paths (Path 2 composer bridge) instead of generic workflow execution.
 # Pure notification/email/reminder intents are NOT included — they stay on the
 # legacy path. The composer is only canonical for analysis/report/dataset work.
 _COMPOSER_ELIGIBLE_SIGNALS: frozenset = frozenset([
+    # Core analysis vocabulary
     "report", "analyze", "analyse", "analysis",
     "summarize", "summarise", "summary", "overview",
     "digest", "insights", "intelligence", "breakdown",
-    "kpi", "kpis", "dataset",
+    "kpi", "kpis", "dataset", "analytics",
+    # Anomaly and monitoring
     "anomaly", "anomalies", "monitor", "drift", "outlier", "spike",
+    # Business performance
+    "revenue", "sales", "profit", "margin", "growth",
+    "trend", "trends", "performance", "forecast", "projection",
+    "metrics", "segment", "segmentation",
+    # Operations
+    "logistics", "shipment", "delay", "delivery", "inventory",
+    "warehouse", "operations", "throughput", "sla", "utilization",
+    # Risk and compliance
+    "risk", "risks", "fraud", "incident", "compliance",
+    "churn", "retention", "failure",
+    # Business entities
+    "product", "products", "customer", "customers",
+    "client", "clients", "region", "regions",
+    "store", "stores", "category", "categories",
+    # Comparative ranking
+    "top", "best", "worst",
 ])
 
 

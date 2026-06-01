@@ -470,3 +470,83 @@ export async function createAdminInvite(email, token) {
   });
   return parseResponse(res);
 }
+
+// ---------------------------------------------------------------------------
+// Dynamic Tool Creation Engine — lifecycle API
+// ---------------------------------------------------------------------------
+
+export async function planEngineTool(intent, token, context = null) {
+  const body = { intent };
+  if (context != null) body.context = context;
+  const res = await fetch('/v1/engine/tools/plan', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(body),
+  });
+  return parseResponse(res);
+}
+
+export async function saveEngineTool(toolDefinition, token) {
+  const res = await fetch('/v1/engine/tools/save', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    // source="ai_workspace" tells the backend this originated from the
+    // "Save as Reusable Workflow" CTA — enabling autonomous auto-approval
+    // when ENABLE_AUTO_APPROVE_ENGINE_TOOLS=true is set server-side.
+    body: JSON.stringify({ tool_definition: toolDefinition, source: 'ai_workspace' }),
+  });
+  return parseResponse(res);
+}
+
+export async function submitEngineTool(toolId, token) {
+  const res = await fetch(`/v1/engine/tools/${toolId}/submit`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function approveEngineTool(toolId, token) {
+  const res = await fetch(`/v1/engine/tools/${toolId}/approve`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function executeEngineTool(toolId, inputs, token) {
+  const res = await fetch(`/v1/engine/tools/${toolId}/execute`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({ inputs: inputs || {} }),
+  });
+  return parseResponse(res);
+}
+
+export async function listEngineTools(token) {
+  const res = await fetch('/v1/engine/tools', {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function getEngineTool(toolId, token) {
+  const res = await fetch(`/v1/engine/tools/${toolId}`, {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function getEngineToolRuns(toolId, token) {
+  const res = await fetch(`/v1/engine/tools/${toolId}/runs`, {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}
+
+export async function getEngineRun(runId, token) {
+  const res = await fetch(`/v1/engine/runs/${runId}`, {
+    headers: AUTH_HEADERS(token),
+  });
+  return parseResponse(res);
+}

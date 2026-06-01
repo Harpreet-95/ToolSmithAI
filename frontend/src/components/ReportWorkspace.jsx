@@ -59,13 +59,27 @@ const MODES = [
   { key: 'operations', label: 'Operations' },
 ]
 
+// Style badge (inline — no external dep needed)
+const STYLE_META = {
+  executive_brief:    { label: 'Executive Brief',    color: '#7c3aed', bg: 'rgba(124,58,237,0.10)', border: 'rgba(124,58,237,0.25)' },
+  visual_dashboard:   { label: 'Visual Dashboard',   color: '#38bdf8', bg: 'rgba(56,189,248,0.10)',  border: 'rgba(56,189,248,0.25)'  },
+  table_heavy_report: { label: 'Table-Heavy',        color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.25)'  },
+  operational_report: { label: 'Operational',        color: '#10b981', bg: 'rgba(16,185,129,0.10)',  border: 'rgba(16,185,129,0.25)'  },
+  anomaly_report:     { label: 'Anomaly Report',     color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.25)' },
+  kpi_summary:        { label: 'KPI Summary',        color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.25)'  },
+  monitoring_report:  { label: 'Monitoring',         color: '#60a5fa', bg: 'rgba(96,165,250,0.10)',  border: 'rgba(96,165,250,0.25)'  },
+}
+
 // SectionRenderer is passed as a prop so ReportSection stays in App.jsx and
 // ReportWorkspace has no import dependency on it — keeping this extraction small.
-export default function ReportWorkspace({ sections, reportMeta, C, onExport, onEmail, SectionRenderer, token }) {
+export default function ReportWorkspace({ sections, reportMeta, C, onExport, onEmail, SectionRenderer, token, reportPlan }) {
+  const heroSet   = new Set(reportPlan?.layout_metadata?.hero_sections || [])
   const [expanded, setExpanded] = useState(() => {
     const s = new Set()
     sections.forEach((sec, i) => {
-      if ((sec.type || 'text') === 'executive_summary') s.add(i)
+      const t = sec.type || 'text'
+      // Always expand executive_summary; also expand any hero section from plan
+      if (t === 'executive_summary' || heroSet.has(t)) s.add(i)
     })
     return s
   })
@@ -133,6 +147,18 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
     return null
   }
 
+  // ── Dynamic priority from report_plan (falls back to PRIORITY dict) ──────
+  const planScores = reportPlan?.section_scores || null
+  const getPriority = type => {
+    if (planScores && Object.prototype.hasOwnProperty.call(planScores, type)) {
+      const score = planScores[type]
+      if (score >= 8) return 'high'
+      if (score >= 5) return 'medium'
+      return 'low'
+    }
+    return PRIORITY[type] || 'low'
+  }
+
   // ── Priority border colors ────────────────────────────────────────────────
   const priorityStyle = p => ({
     high:   { borderColor: `${C.danger}50`,  bg: `${C.danger}06`  },
@@ -174,8 +200,22 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
           {/* Top row: meta + exports */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
             <div>
-              <div style={{ fontSize: '1rem', fontWeight: '700', color: C.text, letterSpacing: '-0.3px', marginBottom: '4px' }}>
-                {reportMeta?.title || 'Report'}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                <div style={{ fontSize: '1rem', fontWeight: '700', color: C.text, letterSpacing: '-0.3px' }}>
+                  {reportMeta?.title || 'Report'}
+                </div>
+                {/* Report style badge — only when plan specifies a non-default style */}
+                {(() => {
+                  const s = reportPlan?.report_style
+                  const m = s ? STYLE_META[s] : null
+                  if (!m) return null
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: m.bg, border: `1px solid ${m.border}`, borderRadius: '20px', padding: '2px 8px', fontSize: '0.56rem', fontWeight: '700', color: m.color, textTransform: 'uppercase', letterSpacing: '0.09em', flexShrink: 0 }}>
+                      <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: m.color }} />
+                      {m.label}
+                    </span>
+                  )
+                })()}
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
                 {reportMeta?.dataset_filename && (
@@ -265,7 +305,7 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
           const idx  = sec._i
           const t    = sec.type || 'text'
           const open = expanded.has(idx)
-          const p    = PRIORITY[t] || 'low'
+          const p    = getPriority(t)
           const ps   = priorityStyle(p)
           const cnt  = sectionCount(sec)
           const lbl  = sec.heading || SEC_LABEL[t] || t

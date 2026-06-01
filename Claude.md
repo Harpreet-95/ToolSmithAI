@@ -1,3 +1,5 @@
+
+
 # Claude Code Rules
 
 1. Always explain what you are going to do before making any code changes.

@@ -276,9 +276,11 @@ def init_db() -> None:
         for row in cursor.execute("PRAGMA table_info(datasets)").fetchall()
     }
     ds_migrations = [
-        ("date_profile_json",       "ALTER TABLE datasets ADD COLUMN date_profile_json TEXT"),
-        ("correlation_profile_json","ALTER TABLE datasets ADD COLUMN correlation_profile_json TEXT"),
-        ("categorical_meta_json",   "ALTER TABLE datasets ADD COLUMN categorical_meta_json TEXT"),
+        ("date_profile_json",           "ALTER TABLE datasets ADD COLUMN date_profile_json TEXT"),
+        ("correlation_profile_json",    "ALTER TABLE datasets ADD COLUMN correlation_profile_json TEXT"),
+        ("categorical_meta_json",       "ALTER TABLE datasets ADD COLUMN categorical_meta_json TEXT"),
+        ("semantic_profile_json",       "ALTER TABLE datasets ADD COLUMN semantic_profile_json TEXT"),
+        ("segmentation_profile_json",   "ALTER TABLE datasets ADD COLUMN segmentation_profile_json TEXT"),
     ]
     for col, stmt in ds_migrations:
         if col not in ds_existing:

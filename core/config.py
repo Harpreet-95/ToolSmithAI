@@ -122,6 +122,22 @@ OPENAI_TIMEOUT_SECONDS:      int = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "10")
 ENABLE_DYNAMIC_TOOLS:           bool = os.getenv("ENABLE_DYNAMIC_TOOLS",           "false").lower() == "true"
 ENABLE_DYNAMIC_TOOL_EXECUTION:  bool = os.getenv("ENABLE_DYNAMIC_TOOL_EXECUTION",  "false").lower() == "true"
 
+# ---------------------------------------------------------------------------
+# AI Workspace Autonomous Mode
+# When true, engine tools saved via the AI Workspace "Save as Reusable
+# Workflow" CTA are automatically transitioned draft→pending→approved so
+# that executeEngineTool() succeeds immediately without manual governance.
+#
+# Intended for: demo environments, free-trial deployments, autonomous
+# orchestration mode.  The full approval state machine is still exercised —
+# SUBMITTED and APPROVED events are recorded with actor_id="system:auto_approve"
+# so the audit trail remains complete.
+#
+# Enterprise tenants: leave this false and use the submit→approve workflow.
+# Future: replace with per-tenant governance policy / RBAC compliance mode.
+# ---------------------------------------------------------------------------
+ENABLE_AUTO_APPROVE_ENGINE_TOOLS: bool = os.getenv("ENABLE_AUTO_APPROVE_ENGINE_TOOLS", "false").lower() == "true"
+
 # HTTP primitive safety settings
 DYNAMIC_TOOL_HTTP_TIMEOUT_SECONDS:     int  = int(os.getenv("DYNAMIC_TOOL_HTTP_TIMEOUT_SECONDS",     "10"))
 DYNAMIC_TOOL_HTTP_MAX_RESPONSE_BYTES:  int  = int(os.getenv("DYNAMIC_TOOL_HTTP_MAX_RESPONSE_BYTES",  str(1024 * 1024)))  # 1 MB

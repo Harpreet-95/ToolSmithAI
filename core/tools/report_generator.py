@@ -3,6 +3,12 @@ import logging
 import math
 from datetime import datetime, timezone
 
+from core.intelligence.business_kpi_engine import build_business_kpi_section
+from core.intelligence.segmentation_engine import (
+    build_segmentation_section,
+    build_drilldown_table_section,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -327,6 +333,181 @@ def _build_kpi_section(
     }
 
 
+# ── Chart intelligence helpers ─────────────────────────────────────────────────
+# Private utilities for intent-aware, semantic-aware chart generation.
+# All are pure functions — no DB access, no AI calls.
+
+_CHART_INTENT_REVENUE  = frozenset(["revenue", "sales", "income", "profit", "financial", "money", "price"])
+_CHART_INTENT_PRODUCT  = frozenset(["product", "sku", "item", "merchandise", "catalog", "category"])
+_CHART_INTENT_CUSTOMER = frozenset(["customer", "client", "user", "buyer", "account", "member"])
+_CHART_INTENT_RISK     = frozenset(["risk", "anomaly", "fraud", "incident", "issue", "alert", "quality"])
+_CHART_INTENT_REGION   = frozenset(["region", "geography", "location", "territory", "area", "country", "city"])
+
+# Styles where data-quality (missing values) charts are appropriate
+_QUALITY_STYLES = frozenset({"analyst_deep_dive", "anomaly_report", "operational_report",
+                              "monitoring_report", "table_heavy_report"})
+
+# Styles where the histogram is suppressed (KPI/executive focus)
+_NO_HISTOGRAM_STYLES = frozenset({"kpi_summary", "executive_brief"})
+
+
+def _col_display(col: str) -> str:
+    """Convert a raw column name (snake_case or basic CamelCase) to a Title Case label."""
+    result = []
+    for i, ch in enumerate(col):
+        if i > 0 and ch.isupper() and col[i - 1].islower():
+            result.append(" ")
+        result.append(ch)
+    name = "".join(result)
+    return name.replace("_", " ").replace("-", " ").replace(".", " ").strip().title()
+
+
+def _viz_score_for(chart_type: str, report_plan: dict | None) -> int:
+    """Return this chart type's preference score from report_plan (0 = suppress, default 5)."""
+    if not report_plan:
+        return 5
+    return report_plan.get("viz_type_scores", {}).get(chart_type, 5)
+
+
+def _sem_lookup(col: str, semantic_profile: list[dict]) -> dict:
+    """Return the semantic descriptor for a column, or an empty dict if not found."""
+    for s in semantic_profile:
+        if s.get("column") == col:
+            return s
+    return {}
+
+
+def _is_id_column(col: str, semantic_profile: list[dict]) -> bool:
+    """True when a column is likely a unique identifier — not useful to chart."""
+    s = _sem_lookup(col, semantic_profile)
+    return bool(s.get("likely_id") or s.get("semantic_type") == "id")
+
+
+def _best_dimension_col(
+    categorical_profile: dict,
+    semantic_profile: list[dict],
+    intent_lowered: str,
+    exclude: set | None = None,
+) -> tuple[str, str] | None:
+    """Return (column_name, display_label) for the most business-relevant categorical column.
+
+    Priority order:
+      0 — semantic dimension whose type matches the user's intent keywords
+      1 — any semantic dimension column (non-ID, reasonable cardinality)
+      2 — any non-ID categorical column
+      (ID columns are never returned)
+    """
+    exclude = exclude or set()
+    id_cols = {s["column"] for s in semantic_profile
+               if s.get("likely_id") or s.get("semantic_type") == "id"}
+
+    candidates: list[tuple[int, int, str]] = []
+    for col, entries in categorical_profile.items():
+        if not entries or col in exclude or col in id_cols:
+            continue
+        s    = _sem_lookup(col, semantic_profile)
+        st   = s.get("semantic_type", "unknown")
+        sg   = s.get("semantic_group", "unknown")
+        n    = len(entries)
+
+        if sg == "dimension":
+            intent_match = (
+                (st in ("product", "category") and any(w in intent_lowered for w in _CHART_INTENT_PRODUCT)) or
+                (st == "customer"              and any(w in intent_lowered for w in _CHART_INTENT_CUSTOMER)) or
+                (st in ("region", "country", "state", "city") and any(w in intent_lowered for w in _CHART_INTENT_REGION)) or
+                (st in ("risk", "status")      and any(w in intent_lowered for w in _CHART_INTENT_RISK))
+            )
+            priority = 0 if intent_match else 1
+        else:
+            priority = 2
+
+        candidates.append((priority, -n, col))
+
+    if not candidates:
+        return None
+    candidates.sort()
+    col = candidates[0][2]
+
+    # Build a business-friendly label from semantic type when available
+    s  = _sem_lookup(col, semantic_profile)
+    st = s.get("semantic_type", "")
+    _type_labels = {
+        "product": "Product", "category": "Category", "customer": "Customer Segment",
+        "region": "Region", "country": "Country", "state": "State", "city": "City",
+        "status": "Status", "risk": "Risk Category",
+    }
+    label = _type_labels.get(st) or _col_display(col)
+    return col, label
+
+
+def _best_metric_col(
+    numeric_profile: dict,
+    semantic_profile: list[dict],
+    intent_lowered: str,
+    exclude: set | None = None,
+) -> tuple[str, str] | None:
+    """Return (column_name, display_label) for the most business-relevant numeric column.
+
+    Priority order:
+      0 — financial metric matching intent keywords (revenue, sales, etc.)
+      1 — any financial metric (revenue, profit, cost, price)
+      2 — operational metric (score, risk, percentage)
+      3 — quantity metric
+      4 — any financial/operational group
+      9 — other numeric (statistical fallback — highest std)
+     10 — ID/identifier (never returned)
+    """
+    exclude = exclude or set()
+    candidates: list[tuple[int, float, str]] = []
+
+    for col, stats in numeric_profile.items():
+        if col in exclude:
+            continue
+        bins = stats.get("histogram_bins") or []
+        if not any(b.get("count", 0) > 0 for b in bins):
+            continue
+
+        s  = _sem_lookup(col, semantic_profile)
+        st = s.get("semantic_type", "unknown")
+        sg = s.get("semantic_group", "unknown")
+
+        if s.get("likely_id") or st == "id":
+            continue  # never chart IDs
+
+        if st in ("revenue", "profit", "amount", "price", "cost") and \
+                any(w in intent_lowered for w in _CHART_INTENT_REVENUE):
+            priority = 0
+        elif st in ("revenue", "profit", "amount", "price", "cost"):
+            priority = 1
+        elif st in ("score", "risk", "percentage", "ratio"):
+            priority = 2
+        elif st == "quantity":
+            priority = 3
+        elif sg in ("financial_metric", "operational_metric"):
+            priority = 4
+        else:
+            priority = 9
+
+        std_val = abs(float(stats.get("std") or 0))
+        candidates.append((priority, -std_val, col))
+
+    if not candidates:
+        return None
+    candidates.sort()
+    col = candidates[0][2]
+
+    s  = _sem_lookup(col, semantic_profile)
+    st = s.get("semantic_type", "")
+    _type_labels = {
+        "revenue": "Revenue", "sales": "Sales", "cost": "Cost",
+        "profit": "Profit", "amount": "Transaction Amount", "price": "Price",
+        "quantity": "Quantity", "score": "Score", "risk": "Risk Score",
+        "percentage": "Percentage", "ratio": "Ratio",
+    }
+    label = _type_labels.get(st) or _col_display(col)
+    return col, label
+
+
 def _build_chart_sections(
     categorical_profile: dict,
     missing_values: dict,
@@ -334,125 +515,193 @@ def _build_chart_sections(
     date_profile: dict,
     numeric_profile: dict | None = None,
     correlation_profile: list | None = None,
+    report_plan: dict | None = None,
+    intent_text: str | None = None,
+    semantic_profile: list | None = None,
 ) -> list[dict]:
-    """Build chart sections from stored profile data. Returns [] on any failure.
+    """Build intent-aware, semantically-enriched chart sections from stored profile data.
 
-    Uses only pre-computed profile JSON — never requires the raw DataFrame.
-    All sections are pre-stamped type='chart' so the setdefault loop ignores them.
+    Improvements over the previous deterministic version:
+    - Uses semantic_profile to prefer business-relevant columns over statistical picks.
+    - Uses report_plan.viz_type_scores to suppress irrelevant chart types per style.
+    - Uses intent_text to boost columns matching the user's stated business focus.
+    - Adds per-chart business explanations derived from real profile data values.
+    - Suppresses data-QA charts (missing values, correlations) in executive/KPI styles.
+    - Filters ID/UUID columns from all chart slots.
+    - Returns [] on any failure.
     """
     charts: list[dict] = []
+    semantic_profile = semantic_profile or []
+    intent_lowered   = (intent_text or "").lower()
+    report_style     = (report_plan or {}).get("report_style", "analyst_deep_dive")
+    visual_pref      = (report_plan or {}).get("visual_preference", "balanced")
+    charted_cols: set[str] = set()
 
-    # 1. Categorical bar chart — the column with the most distinct top values
-    try:
-        best = max(
-            ((col, entries) for col, entries in categorical_profile.items() if entries),
-            key=lambda x: len(x[1]),
-            default=None,
-        )
-        if best:
-            col_name, entries = best
-            top    = entries[:10]
-            labels = [str(e.get("value", "")) for e in top]
-            data   = [int(e.get("count", 0))  for e in top]
-            if labels and any(d > 0 for d in data):
-                charts.append({
-                    "type": "chart",
-                    "heading": f"{col_name} — Category Breakdown",
-                    "chart": {
-                        "chart_type": "bar",
-                        "labels": labels,
-                        "series": [{"name": "Count", "data": data}],
-                    },
-                })
-    except Exception:
-        pass
-
-    # 2. Missing values bar chart — only columns that have at least one missing value
-    try:
-        missing_entries = sorted(
-            [
-                (col, int(cnt))
-                for col, cnt in missing_values.items()
-                if isinstance(cnt, (int, float)) and math.isfinite(cnt) and cnt > 0
-            ],
-            key=lambda x: x[1],
-            reverse=True,
-        )[:8]
-        if missing_entries:
-            charts.append({
-                "type": "chart",
-                "heading": "Missing Values by Column",
-                "chart": {
-                    "chart_type": "bar",
-                    "labels": [col for col, _ in missing_entries],
-                    "series": [{"name": "Missing Count", "data": [cnt for _, cnt in missing_entries]}],
-                },
-            })
-    except Exception:
-        pass
-
-    # 3. Histogram chart — numeric column with highest std (most informative spread)
-    if numeric_profile:
+    # ── 1. Business dimension bar chart ──────────────────────────────────────────
+    # Selects the most business-relevant categorical column instead of the one with
+    # the highest cardinality. Intent keywords boost matching dimension types.
+    if _viz_score_for("bar", report_plan) > 0:
         try:
-            best_hist_col = max(
-                (
-                    (col, s)
-                    for col, s in numeric_profile.items()
-                    if s.get("histogram_bins") and any(b.get("count", 0) > 0 for b in s["histogram_bins"])
-                ),
-                key=lambda x: abs(float(x[1].get("std") or 0)),
-                default=None,
+            dim = _best_dimension_col(
+                categorical_profile, semantic_profile, intent_lowered, exclude=charted_cols
             )
-            if best_hist_col:
-                col, stats = best_hist_col
-                bins   = stats["histogram_bins"]
-                labels = [f"{b['min']:.2f}" for b in bins]
-                data   = [b.get("count", 0) for b in bins]
-                if any(d > 0 for d in data):
+            if dim:
+                col_name, label = dim
+                entries = categorical_profile.get(col_name, [])
+                top     = entries[:10]
+                labels  = [str(e.get("value", "")) for e in top]
+                data    = [int(e.get("count", 0))  for e in top]
+                if labels and any(d > 0 for d in data):
+                    total     = sum(data)
+                    top_label = labels[0]
+                    top_count = data[0]
+                    top_pct   = round(top_count / total * 100) if total > 0 else 0
+                    explanation = (
+                        f"'{top_label}' leads with {top_count:,} records "
+                        f"({top_pct}% of {label.lower()} distribution)."
+                    )
+                    charted_cols.add(col_name)
                     charts.append({
-                        "type":    "chart",
-                        "heading": f"{col} — Value Distribution",
-                        "chart":   {
+                        "type":        "chart",
+                        "heading":     f"{label} — Breakdown",
+                        "explanation": explanation,
+                        "chart": {
                             "chart_type": "bar",
                             "labels":     labels,
-                            "series":     [{"name": "Count", "data": data}],
+                            "series":     [{"name": label, "data": data}],
                         },
                     })
         except Exception:
             pass
 
-    # 4. Monthly trend chart — primary date column (line for time-series clarity)
-    try:
-        for dc in (date_profile.get("date_columns") or [])[:1]:
-            mc = dc.get("monthly_counts", [])
-            if len(mc) >= 2:
-                labels = [m.get("month", "") for m in mc]
-                data   = [m.get("count", 0) for m in mc]
-                col    = dc.get("column", "date")
-                charts.append({
-                    "type":    "chart",
-                    "heading": f"{col} — Monthly Volume",
-                    "chart":   {
-                        "chart_type": "line",
-                        "labels":     labels,
-                        "series":     [{"name": "Records", "data": data}],
-                    },
-                })
-    except Exception:
-        pass
+    # ── 2. Data completeness chart (missing values) ───────────────────────────────
+    # Only generated for quality-focused report styles. Suppressed for executive,
+    # visual-dashboard, and KPI-summary styles. Requires ≥5% missing in at least
+    # one column to be meaningful.
+    if report_style in _QUALITY_STYLES or not report_plan:
+        if _viz_score_for("bar", report_plan) >= 3:
+            try:
+                missing_entries = sorted(
+                    [
+                        (col, int(cnt))
+                        for col, cnt in missing_values.items()
+                        if isinstance(cnt, (int, float)) and math.isfinite(cnt) and cnt > 0
+                        and (row_count == 0 or cnt / row_count >= 0.05)
+                    ],
+                    key=lambda x: x[1],
+                    reverse=True,
+                )[:8]
+                if missing_entries:
+                    worst_col, worst_cnt = missing_entries[0]
+                    worst_pct = round(worst_cnt / row_count * 100) if row_count > 0 else 0
+                    explanation = (
+                        f"'{_col_display(worst_col)}' has the highest missing rate: "
+                        f"{worst_cnt:,} nulls ({worst_pct}% of rows)."
+                    )
+                    charts.append({
+                        "type":        "chart",
+                        "heading":     "Data Completeness by Column",
+                        "explanation": explanation,
+                        "chart": {
+                            "chart_type": "bar",
+                            "labels":     [_col_display(col) for col, _ in missing_entries],
+                            "series":     [{"name": "Missing Rows", "data": [cnt for _, cnt in missing_entries]}],
+                        },
+                    })
+            except Exception:
+                pass
 
-    # 5. Correlation matrix — from stored pairwise Pearson pairs, capped at 8 columns
-    if correlation_profile and len(correlation_profile) >= 2:
+    # ── 3. Metric distribution histogram ─────────────────────────────────────────
+    # Prefers revenue/financial/operational columns over the highest-std fallback.
+    # Suppressed for kpi_summary and executive_brief (both prefer KPI cards).
+    if numeric_profile and report_style not in _NO_HISTOGRAM_STYLES and \
+            _viz_score_for("bar", report_plan) >= 3:
         try:
-            # Collect unique columns in descending order of |correlation| coverage
+            metric = _best_metric_col(
+                numeric_profile, semantic_profile, intent_lowered, exclude=charted_cols
+            )
+            if metric:
+                col, label = metric
+                stats  = numeric_profile[col]
+                bins   = stats["histogram_bins"]
+                b_data = [b.get("count", 0) for b in bins]
+                if any(d > 0 for d in b_data):
+                    mn, mx, mean = stats.get("min"), stats.get("max"), stats.get("mean")
+                    parts: list[str] = []
+                    if mn is not None and mx is not None:
+                        parts.append(f"Values range from {_safe_fmt(mn)} to {_safe_fmt(mx)}")
+                    if mean is not None:
+                        parts.append(f"average {_safe_fmt(mean)}")
+                    explanation = (". ".join(parts) + ".") if parts else f"Distribution of {label}."
+                    charted_cols.add(col)
+                    charts.append({
+                        "type":        "chart",
+                        "heading":     f"{label} — Distribution",
+                        "explanation": explanation,
+                        "chart": {
+                            "chart_type": "bar",
+                            "labels":     [f"{b['min']:.2f}" for b in bins],
+                            "series":     [{"name": label, "data": b_data}],
+                        },
+                    })
+        except Exception:
+            pass
+
+    # ── 4. Monthly trend (line chart) ────────────────────────────────────────────
+    # Heading now reflects business context rather than raw column names.
+    # Generated whenever date data with ≥2 months exists (all styles value time-series).
+    if _viz_score_for("line", report_plan) > 0:
+        try:
+            for dc in (date_profile.get("date_columns") or [])[:1]:
+                mc = dc.get("monthly_counts", [])
+                if len(mc) >= 2:
+                    labels = [m.get("month", "") for m in mc]
+                    data   = [m.get("count", 0) for m in mc]
+                    col    = dc.get("column", "date")
+                    first, last = data[0], data[-1]
+                    direction = "increased" if last > first else ("decreased" if last < first else "stable")
+                    pct_change = round(abs(last - first) / first * 100) if first > 0 else 0
+                    explanation = (
+                        f"Activity {direction} from {first:,} to {last:,} records/month "
+                        f"over {len(mc)} months"
+                        + (f" ({pct_change}% change)." if pct_change > 0 else ".")
+                    )
+                    # Use a business-contextual heading
+                    if any(w in intent_lowered for w in _CHART_INTENT_REVENUE | _CHART_INTENT_PRODUCT):
+                        heading = "Activity Trend Over Time"
+                    else:
+                        heading = f"{_col_display(col)} — Monthly Trend"
+                    charts.append({
+                        "type":        "chart",
+                        "heading":     heading,
+                        "explanation": explanation,
+                        "chart": {
+                            "chart_type": "line",
+                            "labels":     labels,
+                            "series":     [{"name": "Volume", "data": data}],
+                        },
+                    })
+        except Exception:
+            pass
+
+    # ── 5. Correlation matrix ────────────────────────────────────────────────────
+    # Only generated for analyst/anomaly styles (viz score ≥ 3).
+    # Suppressed for executive_brief (score 0) and kpi_summary (score not set → 5,
+    # but kpi_summary rarely has numeric correlations). ID columns are filtered out
+    # so the matrix only shows meaningful business metric relationships.
+    if correlation_profile and len(correlation_profile) >= 2 and \
+            _viz_score_for("correlation_matrix", report_plan) >= 3:
+        try:
+            id_cols = {s["column"] for s in semantic_profile
+                       if s.get("likely_id") or s.get("semantic_type") == "id"}
             seen: set = set()
             ordered_cols: list[str] = []
             for pair in correlation_profile:
                 for col in (pair["column_a"], pair["column_b"]):
-                    if col not in seen:
+                    if col not in seen and col not in id_cols:
                         ordered_cols.append(col)
                         seen.add(col)
-            ordered_cols = ordered_cols[:8]  # cap at 8 for readability
+            ordered_cols = ordered_cols[:8]
             n = len(ordered_cols)
             if n >= 2:
                 lookup: dict[tuple, float] = {}
@@ -462,52 +711,96 @@ def _build_chart_sections(
                         lookup[(a, b)] = c
                         lookup[(b, a)] = c
                 matrix = [
-                    [
-                        1.0 if row_col == col else round(lookup.get((row_col, col), 0.0), 4)
-                        for col in ordered_cols
-                    ]
-                    for row_col in ordered_cols
+                    [1.0 if rc == col else round(lookup.get((rc, col), 0.0), 4)
+                     for col in ordered_cols]
+                    for rc in ordered_cols
                 ]
+                best_pair = max(
+                    correlation_profile,
+                    key=lambda p: abs(p.get("correlation", 0)),
+                    default=None,
+                )
+                explanation = ""
+                if best_pair:
+                    r = best_pair.get("correlation", 0)
+                    direction = "positive" if r >= 0 else "negative"
+                    explanation = (
+                        f"Strongest {direction} relationship: "
+                        f"{_col_display(best_pair['column_a'])} and "
+                        f"{_col_display(best_pair['column_b'])} "
+                        f"(r = {r:+.2f})."
+                    )
                 charts.append({
-                    "type": "chart",
-                    "heading": "Numeric Column Correlations",
+                    "type":        "chart",
+                    "heading":     "Metric Correlations",
+                    "explanation": explanation,
                     "chart": {
                         "chart_type": "correlation_matrix",
-                        "columns": ordered_cols,
-                        "matrix": matrix,
+                        "columns":    [_col_display(c) for c in ordered_cols],
+                        "matrix":     matrix,
                     },
                 })
         except Exception:
             pass
 
-    # 6. Categorical pie chart — column with fewest distinct values (2–7) not already charted
-    try:
-        bar_col_name = best[0] if best else None
-        pie_candidate = min(
-            (
-                (col, entries)
-                for col, entries in categorical_profile.items()
-                if 2 <= len(entries) <= 7 and entries and col != bar_col_name
-            ),
-            key=lambda x: len(x[1]),
-            default=None,
-        )
-        if pie_candidate:
-            pie_col, pie_entries = pie_candidate
-            pie_labels = [str(e.get("value", "")) for e in pie_entries]
-            pie_data   = [int(e.get("count",  0)) for e in pie_entries]
-            if pie_labels and any(d > 0 for d in pie_data):
-                charts.append({
-                    "type":    "chart",
-                    "heading": f"{pie_col} — Category Share",
-                    "chart":   {
-                        "chart_type": "pie",
-                        "labels":     pie_labels,
-                        "series":     [{"name": "Count", "data": pie_data}],
-                    },
-                })
-    except Exception:
-        pass
+    # ── 6. Segment share (pie / donut) ────────────────────────────────────────────
+    # Prefers status/risk/low-cardinality dimension columns (2–7 distinct values).
+    # Skipped when both donut and pie viz scores are 0 (rare but defensive).
+    if _viz_score_for("donut", report_plan) > 0 or _viz_score_for("pie", report_plan) > 0:
+        try:
+            id_cols_set = {s["column"] for s in semantic_profile
+                           if s.get("likely_id") or s.get("semantic_type") == "id"}
+            pie_candidates: list[tuple[int, str]] = []
+            for col, entries in categorical_profile.items():
+                if col in charted_cols or col in id_cols_set:
+                    continue
+                if not (2 <= len(entries) <= 7):
+                    continue
+                s  = _sem_lookup(col, semantic_profile)
+                st = s.get("semantic_type", "")
+                sg = s.get("semantic_group", "")
+                if st in ("status", "risk") and any(w in intent_lowered for w in _CHART_INTENT_RISK):
+                    priority = 0  # intent-matching status/risk column
+                elif st in ("status", "risk"):
+                    priority = 1
+                elif sg == "dimension":
+                    priority = 2
+                else:
+                    priority = 4
+                pie_candidates.append((priority, col))
+
+            if pie_candidates:
+                pie_candidates.sort()
+                pie_col     = pie_candidates[0][1]
+                pie_entries = categorical_profile[pie_col]
+                pie_labels  = [str(e.get("value", "")) for e in pie_entries]
+                pie_data    = [int(e.get("count",  0)) for e in pie_entries]
+                if pie_labels and any(d > 0 for d in pie_data):
+                    pie_total = sum(pie_data)
+                    top_label = pie_labels[0]
+                    top_count = pie_data[0]
+                    top_pct   = round(top_count / pie_total * 100) if pie_total > 0 else 0
+                    s  = _sem_lookup(pie_col, semantic_profile)
+                    st = s.get("semantic_type", "")
+                    col_label = ("Status" if st == "status" else
+                                 "Risk Level" if st == "risk" else
+                                 _col_display(pie_col))
+                    explanation = (
+                        f"'{top_label}' is the leading {col_label.lower()}, "
+                        f"representing {top_pct}% of all records."
+                    )
+                    charts.append({
+                        "type":        "chart",
+                        "heading":     f"{col_label} — Share",
+                        "explanation": explanation,
+                        "chart": {
+                            "chart_type": "pie",
+                            "labels":     pie_labels,
+                            "series":     [{"name": col_label, "data": pie_data}],
+                        },
+                    })
+        except Exception:
+            pass
 
     return charts
 
@@ -2488,6 +2781,7 @@ def generate_dataset_report(
     previous_snapshot: dict | None = None,
     baseline_snapshots: list[dict] | None = None,
     selected_sections: list[str] | None = None,
+    intent_text: str | None = None,
 ) -> dict:
     """
     Build a structured report from a stored dataset summary row.
@@ -2518,6 +2812,43 @@ def generate_dataset_report(
     except Exception:
         pass
 
+    semantic_profile: list = []
+    try:
+        raw = dataset.get("semantic_profile_json")
+        if raw:
+            semantic_profile = json.loads(raw) or []
+    except Exception:
+        pass
+
+    # Parse date_profile here so all subsequent section builders can use it.
+    # (Must be before the business_kpis block which references date_profile.)
+    date_profile_raw = dataset.get("date_profile_json")
+    date_profile: dict = json.loads(date_profile_raw) if date_profile_raw else {}
+
+    segmentation_profile: dict = {}
+    try:
+        raw = dataset.get("segmentation_profile_json")
+        if raw:
+            segmentation_profile = json.loads(raw) or {}
+    except Exception:
+        pass
+
+    # ── Adaptive Report Plan ─────────────────────────────────────────────────
+    # Computed once from intent + profiles; applied for section ordering later.
+    # Lazy import so old datasets without planner never fail.
+    _report_plan: dict | None = None
+    try:
+        from core.intelligence.report_planner import plan_report as _plan_report
+        _report_plan = _plan_report(
+            intent_text         = intent_text,
+            semantic_profile    = semantic_profile,
+            date_profile        = date_profile,
+            numeric_profile     = numeric_profile,
+            categorical_profile = categorical_profile,
+        )
+    except Exception:
+        pass
+
     sections: list[dict] = []
 
     # ── Overview ──────────────────────────────────────────────────────────────
@@ -2528,10 +2859,35 @@ def generate_dataset_report(
         ],
     })
 
-    # ── Key Metrics (KPI) ─────────────────────────────────────────────────────
+    # ── Key Metrics (KPI — structural) ───────────────────────────────────────
     sections.append(_build_kpi_section(
         row_count, column_count, numeric_profile, missing_values, categorical_profile,
     ))
+
+    # ── Business Intelligence KPIs (semantic — skipped on old datasets) ───────
+    if semantic_profile:
+        biz_kpi_sec = build_business_kpi_section(
+            semantic_profile    = semantic_profile,
+            numeric_profile     = numeric_profile,
+            categorical_profile = categorical_profile,
+            categorical_meta    = categorical_meta,
+            date_profile        = date_profile,
+            row_count           = row_count,
+        )
+        if biz_kpi_sec is not None:
+            sections.append(biz_kpi_sec)
+
+    # ── Segmentation Intelligence (semantic + stored cross-tab data required) ──
+    # Injected directly after business_kpis so metric breakdowns follow the KPI
+    # cards.  Both sections are silently omitted when no segmentation data exists.
+    if semantic_profile and segmentation_profile:
+        seg_sec = build_segmentation_section(segmentation_profile, row_count=row_count)
+        if seg_sec is not None:
+            sections.append(seg_sec)
+
+        drill_sec = build_drilldown_table_section(segmentation_profile)
+        if drill_sec is not None:
+            sections.append(drill_sec)
 
     # ── Numeric Insights ──────────────────────────────────────────────────────
     num_entries = [
@@ -2599,9 +2955,7 @@ def generate_dataset_report(
         sections.append({"heading": "Top Category Observations", "items": cat_items})
 
     # ── Date Coverage ──────────────────────────────────────────────────────────
-    date_profile_raw = dataset.get("date_profile_json")
-    date_profile: dict = json.loads(date_profile_raw) if date_profile_raw else {}
-
+    # (date_profile already parsed at top of function)
     date_cols = date_profile.get("date_columns") or []
     if date_cols:
         date_items: list[str] = []
@@ -2658,6 +3012,9 @@ def generate_dataset_report(
         categorical_profile, missing_values, row_count, date_profile,
         numeric_profile=numeric_profile,
         correlation_profile=correlation_profile,
+        report_plan=_report_plan,
+        intent_text=intent_text,
+        semantic_profile=semantic_profile,
     ):
         sections.append(chart_sec)
 
@@ -2818,6 +3175,30 @@ def generate_dataset_report(
                 "items":   ai_rec_items,
             })
 
+    # ── Planner-driven section reordering ────────────────────────────────────
+    # Only reorder when the planner detected explicit intent keywords AND chose a
+    # non-default style.  No intent → report order is exactly as built above
+    # (preserves all existing report behavior unchanged).
+    if (
+        _report_plan
+        and intent_text
+        and _report_plan.get("detected_preferences")
+        and _report_plan.get("report_style") != "analyst_deep_dive"
+    ):
+        try:
+            from core.intelligence.report_planner import reorder_sections as _reorder
+            present_types = [s.get("type", "text") for s in sections]
+            plan_scores   = _report_plan.get("section_scores", {})
+            # Rebuild section_order from only the types actually present
+            _report_plan["section_order"] = sorted(
+                present_types,
+                key=lambda t: plan_scores.get(t, 0),
+                reverse=True,
+            )
+            sections = _reorder(sections, plan_scores)
+        except Exception:
+            pass
+
     # ── Intent-based section filter (optional) ────────────────────────────────
     # selected_sections=None  → full report, all sections returned (unchanged behavior).
     # selected_sections=[...] → keep only sections whose stamped type is in the list.
@@ -2827,8 +3208,8 @@ def generate_dataset_report(
         sections = [s for s in sections if s.get("type", "text") in selected_sections]
 
     if ai_narrative:
-        return {"version": 2, "sections": sections, "ai_narrative": ai_narrative}
-    return {"version": 2, "sections": sections}
+        return {"version": 2, "sections": sections, "ai_narrative": ai_narrative, "report_plan": _report_plan}
+    return {"version": 2, "sections": sections, "report_plan": _report_plan}
 
 
 def format_report_as_email_body(report: dict, filename: str) -> str:

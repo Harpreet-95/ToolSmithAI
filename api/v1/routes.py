@@ -19,6 +19,8 @@ from core.input.input_handler import handle_input
 from core.security.encryption import decrypt
 from core.output.output_formatter import format_output
 from core.workflows.workflow_runner import run_workflow_by_name
+from core.intelligence.semantic_classifier import classify_columns
+from core.intelligence.segmentation_engine import compute_segmentation_profile_from_df
 from data.dataset_service import create_dataset_summary, list_datasets_for_user, delete_dataset, rename_dataset, get_dataset_by_id
 from data.scheduled_workflow_service import (
     create_scheduled_workflow,
@@ -40,7 +42,7 @@ from data.scheduler_run_service import (
 )
 from core.interpreter.task_interpreter import interpret_task
 from data.workflow_service import create_workflow, list_workflows, delete_workflow, ALLOWED_MULTI_STEP_TYPES
-from core.config import ENABLE_REAL_EMAIL, RETENTION_DAYS
+from core.config import ENABLE_REAL_EMAIL, RETENTION_DAYS, ENABLE_AUTO_APPROVE_ENGINE_TOOLS
 from data.audit import delete_audit_log_entries, purge_old_audit_db, purge_old_audit_log_file
 from data.db import get_connection
 from data.execution_history import enrich_execution_record, get_execution_by_id, get_repeated_intent_suggestions, get_workflow_success_insights, purge_old_execution_history
@@ -919,6 +921,343 @@ def get_tool_route(tool_id: int, user: AuthenticatedUser = Depends(require_role(
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
+# ---------------------------------------------------------------------------
+# Engine — Tool Planning
+# ---------------------------------------------------------------------------
+
+class PlanToolRequest(BaseModel):
+    intent: str
+    context: dict | None = None
+
+
+@router.post("/engine/tools/plan")
+def plan_tool_route(
+    request: PlanToolRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Convert a natural-language intent into a draft ToolDefinition.
+
+    Does not persist, execute, approve, or schedule anything.
+    Returns the ToolDefinition as JSON for client review.
+    """
+    if not request.intent or not request.intent.strip():
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response("intent must not be empty"),
+        )
+    try:
+        import dataclasses
+        import json as _json
+        from enum import Enum
+        from core.engine.planner import plan_tool
+
+        tool_def = plan_tool(request.intent.strip(), context=request.context)
+
+        def _default(obj):
+            if isinstance(obj, Enum):
+                return obj.value
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            raise TypeError(f"Not serializable: {type(obj)}")
+
+        data = _json.loads(_json.dumps(dataclasses.asdict(tool_def), default=_default))
+        return {"status": "success", "data": data}
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Internal server error", str(e)),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Engine — Full Lifecycle (save, approve, execute, query)
+# ---------------------------------------------------------------------------
+
+def _engine_serial(obj) -> dict:
+    """Serialise an engine dataclass (ToolDefinition, RunRecord, etc.) to a
+    JSON-safe dict. Enums → .value, datetime → ISO string."""
+    import dataclasses
+    import json as _json
+    from enum import Enum
+
+    def _default(o):
+        if isinstance(o, Enum):
+            return o.value
+        if isinstance(o, datetime):
+            return o.isoformat()
+        raise TypeError(f"Not serializable: {type(o)}")
+
+    return _json.loads(_json.dumps(dataclasses.asdict(obj), default=_default))
+
+
+class SaveToolRequest(BaseModel):
+    tool_definition: dict
+    # "ai_workspace" identifies saves from the AI Workspace "Save as Reusable
+    # Workflow" CTA.  All other callers omit this field (defaults to
+    # "engine_workspace"), preserving the existing governance path.
+    source: str = "engine_workspace"
+
+
+@router.post("/engine/tools/save")
+def save_tool_route(
+    request: SaveToolRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Validate and persist a ToolDefinition and its graph. No execution."""
+    import sqlite3
+    from core.engine.schema import validate_tool_definition
+    from core.engine.contracts import SchemaValidationError
+    from data.engine.tool_store import create_tool
+    from data.engine.graph_store import save_graph
+
+    try:
+        tool_def = validate_tool_definition(request.tool_definition)
+    except SchemaValidationError as e:
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response(str(e), getattr(e, "field_name", None)),
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response("Invalid tool definition", str(e)),
+        )
+
+    try:
+        create_tool(tool_def)
+    except sqlite3.IntegrityError:
+        return JSONResponse(
+            status_code=409,
+            content=build_error_response(f"Tool '{tool_def.id}' already exists"),
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Internal server error", str(e)),
+        )
+
+    try:
+        save_graph(tool_def.id, tool_def.graph)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content=build_error_response("Internal server error", str(e)),
+        )
+
+    # ── Autonomous mode: auto-approve for immediate AI Workspace execution ────
+    #
+    # When ENABLE_AUTO_APPROVE_ENGINE_TOOLS=true and the save originates from
+    # the AI Workspace "Save as Reusable Workflow" CTA (source="ai_workspace"),
+    # the tool is automatically transitioned:
+    #   draft → pending_approval → approved
+    # so that executeEngineTool() succeeds without any manual governance step.
+    #
+    # The full approval state machine is still exercised (not bypassed):
+    # SUBMITTED + APPROVED events are recorded with actor_id="system:auto_approve"
+    # so the audit trail remains complete and enterprise-compatible.
+    #
+    # Intended for: demo / free-trial / autonomous orchestration mode.
+    # Enterprise: set ENABLE_AUTO_APPROVE_ENGINE_TOOLS=false and use the
+    # full submit → approve workflow (submit_engine_tool_route / approve_engine_tool_route).
+    # Future: replace with per-tenant governance policy and RBAC compliance mode.
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    final_status = tool_def.status.value  # "draft" by default
+
+    if ENABLE_AUTO_APPROVE_ENGINE_TOOLS and request.source == "ai_workspace":
+        try:
+            from core.engine.approval import submit_for_approval, approve_tool
+            submit_for_approval(
+                tool_def.id,
+                actor_id="system:auto_approve",
+                notes=(
+                    "Autonomous mode — auto-submitted by AI Workspace "
+                    "(ENABLE_AUTO_APPROVE_ENGINE_TOOLS=true)."
+                ),
+            )
+            approve_tool(
+                tool_def.id,
+                actor_id="system:auto_approve",
+                notes=(
+                    "Autonomous mode — auto-approved for immediate AI Workspace execution. "
+                    "Set ENABLE_AUTO_APPROVE_ENGINE_TOOLS=false to require manual governance."
+                ),
+            )
+            final_status = "approved"
+            _log.info(
+                "Tool '%s' auto-approved [source=ai_workspace, autonomous_mode=true]",
+                tool_def.id,
+            )
+        except Exception as _auto_err:
+            # Non-fatal — tool remains in draft; Run Again will gracefully fall back.
+            _log.warning(
+                "Auto-approval failed for tool '%s': %s — tool remains in draft state",
+                tool_def.id, _auto_err,
+            )
+
+    return {
+        "status": "success",
+        "data": {
+            "tool_id": tool_def.id,
+            "name":    tool_def.name,
+            "status":  final_status,
+        },
+    }
+
+
+@router.post("/engine/tools/{tool_id}/submit")
+def submit_engine_tool_route(
+    tool_id: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Submit a draft tool for approval."""
+    from data.engine.tool_store import get_tool
+    from core.engine.approval import submit_for_approval
+    from core.engine.contracts import EngineError
+
+    if get_tool(tool_id) is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Tool not found"),
+        )
+    try:
+        submit_for_approval(tool_id, actor_id=str(user.user_id))
+        return {"status": "success", "data": {"tool_id": tool_id, "action": "submitted"}}
+    except EngineError as e:
+        return JSONResponse(status_code=400, content=build_error_response(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/engine/tools/{tool_id}/approve")
+def approve_engine_tool_route(
+    tool_id: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Approve a pending tool so it can be executed."""
+    from data.engine.tool_store import get_tool
+    from core.engine.approval import approve_tool
+    from core.engine.contracts import EngineError
+
+    if get_tool(tool_id) is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Tool not found"),
+        )
+    try:
+        approve_tool(tool_id, actor_id=str(user.user_id))
+        return {"status": "success", "data": {"tool_id": tool_id, "action": "approved"}}
+    except EngineError as e:
+        return JSONResponse(status_code=400, content=build_error_response(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+class ExecuteEngineToolRequest(BaseModel):
+    inputs: dict = {}
+
+
+@router.post("/engine/tools/{tool_id}/execute")
+def execute_engine_tool_route(
+    tool_id: str,
+    request: ExecuteEngineToolRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Execute an approved tool with the supplied inputs."""
+    from data.engine.tool_store import get_tool
+    from core.engine.runtime import execute_tool
+    from core.engine.contracts import ApprovalRequiredError, EngineError
+
+    tool_def = get_tool(tool_id)
+    if tool_def is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Tool not found"),
+        )
+    try:
+        record = execute_tool(tool_def, request.inputs, user_id=str(user.user_id))
+        return {"status": "success", "data": _engine_serial(record)}
+    except ApprovalRequiredError as e:
+        return JSONResponse(status_code=403, content=build_error_response(str(e)))
+    except EngineError as e:
+        return JSONResponse(status_code=400, content=build_error_response(str(e)))
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/engine/tools/{tool_id}/runs")
+def list_engine_tool_runs_route(
+    tool_id: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return all run records for a tool, newest first."""
+    from data.engine.run_store import list_runs_for_tool
+
+    records = list_runs_for_tool(tool_id)
+    return {"status": "success", "data": [_engine_serial(r) for r in records]}
+
+
+@router.get("/engine/tools")
+def list_engine_tools_route(
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return a lightweight summary list of all saved engine tools, newest first.
+
+    Does not include the execution graph — use GET /engine/tools/{tool_id} for full detail.
+    """
+    from data.engine.tool_store import list_tools
+
+    tools = list_tools()
+    data = [
+        {
+            "id":           t.id,
+            "name":         t.name,
+            "description":  t.description,
+            "status":       t.status.value,
+            "trigger_type": t.trigger.type.value,
+            "created_at":   t.metadata.created_at.isoformat(),
+            "updated_at":   t.metadata.updated_at.isoformat(),
+        }
+        for t in tools
+    ]
+    return {"status": "success", "data": data, "count": len(data)}
+
+
+@router.get("/engine/tools/{tool_id}")
+def get_engine_tool_route(
+    tool_id: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return a ToolDefinition by ID."""
+    from data.engine.tool_store import get_tool
+
+    tool_def = get_tool(tool_id)
+    if tool_def is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Tool not found"),
+        )
+    return {"status": "success", "data": _engine_serial(tool_def)}
+
+
+@router.get("/engine/runs/{run_id}")
+def get_engine_run_route(
+    run_id: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return a RunRecord by run_id, including step_results."""
+    from data.engine.run_store import get_run
+
+    record = get_run(run_id)
+    if record is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Run not found"),
+        )
+    return {"status": "success", "data": _engine_serial(record)}
+
+
 @router.get("/workspaces")
 def list_workspaces_route(user: AuthenticatedUser = Depends(require_auth)) -> dict:
     try:
@@ -1281,6 +1620,22 @@ async def upload_dataset(
 
     date_profile = _compute_date_profile(df, numeric_cols, categorical_cols)
 
+    semantic_profile = classify_columns(
+        columns=df.columns.tolist(),
+        numeric_profile=numeric_profile,
+        categorical_meta=categorical_meta,
+        date_profile=date_profile,
+        missing_values=missing_values,
+        row_count=len(df),
+    )
+
+    segmentation_profile = compute_segmentation_profile_from_df(
+        df=df,
+        semantic_profile=semantic_profile,
+        numeric_profile=numeric_profile,
+        row_count=len(df),
+    )
+
     dataset_id = create_dataset_summary(
         user_id=str(user.user_id),
         filename=file.filename,
@@ -1293,6 +1648,8 @@ async def upload_dataset(
         date_profile=date_profile,
         correlation_profile=correlation_profile or None,
         categorical_meta=categorical_meta or None,
+        semantic_profile=semantic_profile or None,
+        segmentation_profile=segmentation_profile if segmentation_profile.get("computed_pairs", 0) > 0 else None,
     )
 
     sample_rows = df.head(5).fillna("").to_dict(orient="records")
@@ -1348,6 +1705,7 @@ def get_dataset_detail_route(dataset_id: int, user: AuthenticatedUser = Depends(
             "correlation_profile": _safe_json("correlation_profile_json"),
             "date_profile":        _safe_json("date_profile_json"),
             "categorical_meta":    _safe_json("categorical_meta_json"),
+            "semantic_profile":    _safe_json("semantic_profile_json"),
             "sample_rows":         [],
         },
     }
