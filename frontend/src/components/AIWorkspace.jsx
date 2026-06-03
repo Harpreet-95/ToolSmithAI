@@ -103,12 +103,44 @@ function getFileType(f) {
 const DS_COLOR = { CSV: '#10b981', Excel: '#34d399', JSON: '#8b5cf6', SQL: '#f59e0b' }
 const DS_BG    = { CSV: '#10b9811a', Excel: '#34d3991a', JSON: '#8b5cf61a', SQL: '#f59e0b1a' }
 
+// Routes tool/workflow creation intent to the engine planner instead of interpretTask.
+// Matches explicit construction verbs or scheduling/recurrence signals paired with automation
+// nouns — never fires for plain analytics ("analyze my dataset", "generate a report").
+const TOOL_CREATION_RE = /\b(create|build|make|set ?up|develop|design)\b.{0,60}\b(tool|workflow|automation|agent|pipeline)\b|\breusable\b.{0,40}\b(workflow|tool|process)\b|\bmonitoring tool\b|\balert workflow\b|\b(schedule[d]?|recurring|automated)\b.{0,40}\b(report|workflow|automation|monitoring|alert)\b|\b(weekly|daily|monthly)\b.{0,40}\b(report|workflow|automation|monitoring)\b/i
+
+function isToolCreationIntent(input) {
+  return TOOL_CREATION_RE.test(input || '')
+}
+
+const SCHEDULE_TYPE_MAP = [
+  { re: /\b(weekly|week)\b/i,          type: 'weekly'    },
+  { re: /\b(daily|day|every ?day)\b/i, type: 'daily'     },
+  { re: /\b(monthly|month)\b/i,        type: 'monthly'   },
+  { re: /\b(recurring|recur)\b/i,      type: 'recurring' },
+  { re: /\b(automat(ed?|ic))\b/i,      type: 'automated' },
+]
+
+function extractScheduleType(input) {
+  for (const { re, type } of SCHEDULE_TYPE_MAP) {
+    if (re.test(input || '')) return type
+  }
+  return null
+}
+
 function extractIntel(result) {
   if (!result) return null
   const report = result.dataset_report
   const aiMeta = result._ai_meta ?? null
   if (!report) {
-    return { kind: 'basic', status: result.status, taskType: result.task_type, aiMeta, emailDelivery: result.email_delivery }
+    return {
+      kind: 'basic', status: result.status, taskType: result.task_type, aiMeta,
+      emailDelivery:     result.email_delivery,
+      notificationSent:  result.notification_sent  ?? null,
+      notificationId:    result.notification_id    ?? null,
+      scheduleRequested: result.schedule_requested ?? null,
+      scheduleCreated:   result.schedule_created   ?? null,
+      scheduleId:        result.schedule_id        ?? null,
+    }
   }
   const sections = report.sections || []
 
@@ -174,10 +206,36 @@ function extractIntel(result) {
     highestRisk:     risks[0] ?? recs.find(r => r.priority === 'high')?.reason ?? null,
     topAction:       recs.find(r => r.priority === 'high')?.title ?? recs[0]?.title ?? opps[0] ?? null,
     topOpportunity:  opps[1] ?? opps[0] ?? null,
-    emailDelivery:   result.email_delivery,
-    started_at:      result.started_at,
-    finished_at:     result.finished_at,
+    emailDelivery:     result.email_delivery,
+    notificationSent:  result.notification_sent  ?? null,
+    notificationId:    result.notification_id    ?? null,
+    scheduleRequested: result.schedule_requested ?? null,
+    scheduleCreated:   result.schedule_created   ?? null,
+    scheduleId:        result.schedule_id        ?? null,
+    started_at:        result.started_at,
+    finished_at:       result.finished_at,
   }
+}
+
+function normalizeExecutionResult(raw) {
+  if (!raw) return raw
+  if (raw.dataset_report) return raw
+  if (raw.task_type === 'multi_step' || raw.step_results) {
+    const reportStep = (raw.step_results ?? []).find(s => s.result?.dataset_report)
+    if (reportStep) {
+      const notifStep = (raw.step_results ?? []).find(
+        s => s.result?.notification_sent != null || s.result?.notification_id != null
+      )
+      return {
+        ...raw,
+        dataset_report:    reportStep.result.dataset_report,
+        report_id:         reportStep.result.report_id    ?? raw.report_id,
+        notification_sent: notifStep?.result?.notification_sent ?? raw.notification_sent ?? null,
+        notification_id:   notifStep?.result?.notification_id  ?? raw.notification_id  ?? null,
+      }
+    }
+  }
+  return raw
 }
 
 // ─── Global CSS ───────────────────────────────────────────────────────────────
@@ -1303,6 +1361,16 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
               <p style={{ margin: 0, fontSize: '0.72rem', color: C.textSec, lineHeight: 1.55, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
                 {wf.intent}
               </p>
+
+              {/* Schedule badge */}
+              {wf.scheduleType && {{ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[wf.scheduleType] && (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', alignSelf: 'flex-start' }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  <span style={{ fontSize: '0.62rem', fontWeight: '700', color: '#a78bfa', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.22)', borderRadius: '5px', padding: '1px 7px', letterSpacing: '0.02em' }}>
+                    {{ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[wf.scheduleType]}
+                  </span>
+                </div>
+              )}
 
               {/* Dataset tag */}
               {wf.datasetName && (
@@ -2762,7 +2830,11 @@ export default function AIWorkspace({
     if (!enginePlan) return
     setEngineBusy('save')
     try {
-      const res = await saveEngineTool(enginePlan, token)
+      const scheduleType = extractScheduleType(wsInput)
+      const planToSave   = scheduleType
+        ? { ...enginePlan, schedule: { enabled: true, schedule_type: scheduleType, timezone: 'UTC', cron: '' } }
+        : enginePlan
+      const res = await saveEngineTool(planToSave, token)
       const d = res?.data ?? res
       setSavedToolId(d.tool_id)
       setToolStatus(d.status ?? 'draft')
@@ -2802,6 +2874,13 @@ export default function AIWorkspace({
   async function handleRun(sections = null, proposal = null, overrideIntent = null, overrideDsId = undefined) {
     const trimmed = overrideIntent ?? wsInput.trim()
     if (!trimmed) return
+    // Route tool/workflow creation intents to the engine planner.
+    // Guard: only re-route direct user invocations — not saved-workflow runs
+    // (overrideIntent set) and not proposal approvals (sections/proposal set).
+    if (overrideIntent === null && sections === null && proposal === null && isToolCreationIntent(trimmed)) {
+      handleEnginePlan()
+      return
+    }
     const dsId = overrideDsId !== undefined ? overrideDsId : (selectedDatasetId || null)
     setWsError(null); setWsLoading(true); setWsResult(null); setBackToComposer(false); setWsRunSource(null)
     try {
@@ -2849,7 +2928,11 @@ export default function AIWorkspace({
       const toolDef  = planData?.data ?? planData
 
       // Step 2: persist tool definition to engine backend
-      const saveData = await saveEngineTool(toolDef, token)
+      const scheduleType   = extractScheduleType(intent)
+      const toolDefToSave  = scheduleType
+        ? { ...toolDef, schedule: { enabled: true, schedule_type: scheduleType, timezone: 'UTC', cron: '' } }
+        : toolDef
+      const saveData = await saveEngineTool(toolDefToSave, token)
       const saved    = saveData?.data ?? saveData
       const toolId   = saved?.tool_id ?? null
 
@@ -2864,6 +2947,7 @@ export default function AIWorkspace({
         datasetName:  dsRecord?.filename || null,
         createdAt:    new Date().toISOString(),
         backendSaved: true,
+        scheduleType: scheduleType || null,
       }
       setSavedWorkflows(prev => [wf, ...prev.filter(w => w.intent !== intent)])
 
@@ -2964,7 +3048,7 @@ export default function AIWorkspace({
       }
 
       const normalized = normalizeRun(runResult)
-      setWsResult(normalized)
+      setWsResult(normalizeExecutionResult(normalized))
       setWsRunSource(wf.title)  // marks result as coming from a saved workflow
     } catch (err) {
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
