@@ -450,10 +450,13 @@ def _build_schedule_spec(raw: Any) -> ScheduleSpec:
         return raw
     if not isinstance(raw, dict):
         raise SchemaValidationError("Field 'schedule' must be a dict", "schedule")
+    stype = raw.get("schedule_type")
     return ScheduleSpec(
         enabled=bool(raw.get("enabled", False)),
         cron=str(raw.get("cron", "")),
         timezone=str(raw.get("timezone", "UTC")),
+        schedule_type=str(stype) if stype else None,
+        human_label=str(raw.get("human_label", "")),
     )
 
 

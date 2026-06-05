@@ -238,6 +238,130 @@ function normalizeExecutionResult(raw) {
   return raw
 }
 
+function buildStepsFromResult(result, wsInput, enginePlan) {
+  const steps = []
+
+  function actionTypeToLabel(at) {
+    return (at || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  }
+
+  function toStatus(raw) {
+    if (raw === 'completed') return 'completed'
+    if (raw === 'failed')    return 'failed'
+    if (raw === 'skipped')   return 'skipped'
+    return 'pending'
+  }
+
+  const stepResults = result?.step_results ?? []
+
+  // ── A: Engine path ──────────────────────────────────────────────────────────
+  // enginePlan.graph.nodes are ActionNodes from contracts.py; step_results use node_id.
+  const graphNodes = (enginePlan?.graph?.nodes ?? []).filter(n => n != null)
+  if (graphNodes.length > 0) {
+    const byNodeId = {}
+    for (const sr of stepResults) {
+      if (sr?.node_id) byNodeId[sr.node_id] = sr
+    }
+    for (const node of graphNodes) {
+      const sr = byNodeId[node.id] ?? null
+      steps.push({
+        id:          node.id,
+        label:       node.label || actionTypeToLabel(node.action_type),
+        status:      sr ? toStatus(sr.status) : 'pending',
+        action_type: node.action_type,
+        human_label: sr?.duration_ms != null ? `${sr.duration_ms}ms` : null,
+      })
+    }
+  }
+
+  // ── B: Interpret multi-step path ────────────────────────────────────────────
+  // interpretTask step_results use { tool, operation, success, status } — not node_id.
+  else if (stepResults.length > 0 && stepResults[0]?.tool !== undefined) {
+    for (const sr of stepResults) {
+      const id = `${sr.tool ?? 'step'}_${sr.operation ?? ''}`.replace(/\s+/g, '_')
+      steps.push({
+        id,
+        label:       sr.operation ? actionTypeToLabel(sr.operation) : (sr.tool ?? 'Step'),
+        status:      sr.success === false ? 'failed' : toStatus(sr.status),
+        action_type: sr.operation || sr.tool || '',
+        human_label: sr.duration_ms != null ? `${sr.duration_ms}ms` : null,
+      })
+    }
+  }
+
+  // ── B flat: Interpret single-step path ──────────────────────────────────────
+  // No step_results array — derive from top-level result fields only.
+  else if (result) {
+    const ok     = result.status === 'success' || result.status === 'completed'
+    const failed = result.status === 'failed'
+    const mainStatus = ok ? 'completed' : failed ? 'failed' : 'pending'
+
+    if (result.dataset_report || result.report_id ||
+        (result.task_type ?? '').includes('dataset_report')) {
+      steps.push({
+        id:          'generate_report',
+        label:       'Generate Dataset Report',
+        status:      mainStatus,
+        action_type: 'generate_dataset_report',
+        human_label: null,
+      })
+    }
+
+    if (result.email_delivery) {
+      steps.push({
+        id:          'send_email',
+        label:       'Send Email',
+        status:      result.email_delivery.sent ? 'completed' : 'failed',
+        action_type: 'send_email',
+        human_label: result.email_delivery.to ?? null,
+      })
+    }
+  }
+
+  // ── C: Schedule step ────────────────────────────────────────────────────────
+  // Appended only when user intent includes scheduling or backend confirms schedule created.
+  const schedType      = extractScheduleType(wsInput)
+  const hasSchedIntent = !!schedType || enginePlan?.schedule?.enabled === true
+  if (hasSchedIntent) {
+    const schedCreated = result?.schedule_created
+    const schedStatus  = (schedCreated === true || result?.schedule_id != null) ? 'completed'
+                       : schedCreated === false                                  ? 'failed'
+                       : 'pending'
+    const typeLabel    = schedType
+      ? { weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[schedType]
+      : null
+    steps.push({
+      id:          'schedule_creation',
+      label:       'Create Schedule',
+      status:      schedStatus,
+      action_type: 'schedule',
+      human_label: enginePlan?.schedule?.human_label || typeLabel || 'Recurring',
+    })
+  }
+
+  // ── D: Notification step ────────────────────────────────────────────────────
+  // Appended last. Skipped if a notification node already appears from engine path (A).
+  const notifKeyword    = /\b(notify|alert|notification)\b/i.test(wsInput ?? '')
+  const notifInResult   = result?.notification_sent != null || result?.notification_id != null
+  const notifInPlan     = graphNodes.some(n => /notif|send_notification/i.test(n.action_type ?? ''))
+  const alreadyHasNotif = steps.some(s => /notif|send_notification/i.test(s.action_type ?? ''))
+
+  if ((notifKeyword || notifInResult || notifInPlan) && !alreadyHasNotif) {
+    const notifStatus = (result?.notification_sent === true || result?.notification_id != null) ? 'completed'
+                      : result?.notification_sent === false                                       ? 'failed'
+                      : 'pending'
+    steps.push({
+      id:          'send_notification',
+      label:       'Send Notification',
+      status:      notifStatus,
+      action_type: 'send_notification',
+      human_label: null,
+    })
+  }
+
+  return steps
+}
+
 // ─── Global CSS ───────────────────────────────────────────────────────────────
 
 const WS_STYLES = `
@@ -425,9 +549,9 @@ function AIExecutionFlow({ C }) {
           </div>
 
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '0.56rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '5px' }}>AI Processing</div>
-            <div style={{ fontSize: '1.05rem', fontWeight: '700', color: C.text, letterSpacing: '-0.3px', marginBottom: '4px' }}>AI Orchestration in Progress</div>
-            <div style={{ fontSize: '0.74rem', color: C.textSec }}>Autonomously orchestrating your business intelligence…</div>
+            <div style={{ fontSize: '0.56rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '5px' }}>Analyzing</div>
+            <div style={{ fontSize: '1.05rem', fontWeight: '700', color: C.text, letterSpacing: '-0.3px', marginBottom: '4px' }}>Preparing Your Report</div>
+            <div style={{ fontSize: '0.74rem', color: C.textSec }}>Building your intelligence report…</div>
           </div>
 
           <div style={{ flexShrink: 0, textAlign: 'right' }}>
@@ -491,6 +615,428 @@ function AIExecutionFlow({ C }) {
       </div>
     </div>
   )
+}
+
+// ─── Execution Console ────────────────────────────────────────────────────────
+
+const EC_STATUS = {
+  pending:   { dotBg: 'transparent', dotBorder: '#6b7280', labelColor: '#6b7280', rowBg: 'transparent',              rowBorder: null },
+  completed: { dotBg: 'rgba(16,185,129,0.12)', dotBorder: '#10b981', labelColor: '#10b981', rowBg: 'rgba(16,185,129,0.05)', rowBorder: 'rgba(16,185,129,0.18)' },
+  failed:    { dotBg: 'rgba(239,68,68,0.12)',  dotBorder: '#ef4444', labelColor: '#ef4444', rowBg: 'rgba(239,68,68,0.05)',  rowBorder: 'rgba(239,68,68,0.18)'  },
+  skipped:   { dotBg: 'rgba(245,158,11,0.1)',  dotBorder: '#f59e0b', labelColor: '#f59e0b', rowBg: 'rgba(245,158,11,0.04)', rowBorder: 'rgba(245,158,11,0.18)' },
+}
+
+function ECStatusIcon({ status }) {
+  const s = { width: 11, height: 11, viewBox: '0 0 24 24', fill: 'none', strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round' }
+  if (status === 'completed') return <svg {...s} stroke="#10b981"><polyline points="20 6 9 17 4 12"/></svg>
+  if (status === 'failed')    return <svg {...s} stroke="#ef4444"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  if (status === 'skipped')   return <svg {...s} stroke="#f59e0b"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+  return <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#6b7280' }} />
+}
+
+const EC_ACTION_LABELS = {
+  generate_dataset_report: 'Generate Intelligence Report',
+  generate_report:         'Generate Intelligence Report',
+  send_notification:       'Send Notification',
+  create_schedule:         'Create Schedule',
+  save_workflow:           'Saving',
+  create_tool:             'Create Tool',
+  validate_workflow:       'Validate Request',
+  build_workflow_graph:    'Prepare Analysis',
+  send_email:              'Send Email',
+}
+
+const STATUS_DISPLAY_LABELS = {
+  completed: 'Done',
+  pending:   'Waiting',
+  failed:    'Could Not Complete',
+  skipped:   'Not Needed',
+}
+
+function ecDisplayLabel(step) {
+  const at = (step.action_type ?? '').toLowerCase()
+  if (at === 'schedule' || at === 'create_schedule') {
+    const freq = (step.human_label ?? '').toLowerCase()
+    if (freq === 'weekly')  return 'Create Weekly Schedule'
+    if (freq === 'daily')   return 'Create Daily Schedule'
+    if (freq === 'monthly') return 'Create Monthly Schedule'
+    return 'Create Schedule'
+  }
+  return EC_ACTION_LABELS[at] ?? step.label
+}
+
+const EC_PHASE_COLORS = [
+  { bg: 'rgba(124,58,237,0.15)', border: 'rgba(124,58,237,0.28)', fg: '#a78bfa' },
+  { bg: 'rgba(59,130,246,0.15)',  border: 'rgba(59,130,246,0.28)',  fg: '#60a5fa' },
+  { bg: 'rgba(20,184,166,0.15)', border: 'rgba(20,184,166,0.28)', fg: '#2dd4bf' },
+  { bg: 'rgba(16,185,129,0.15)', border: 'rgba(16,185,129,0.28)', fg: '#34d399' },
+  { bg: 'rgba(124,58,237,0.15)', border: 'rgba(124,58,237,0.28)', fg: '#a78bfa' },
+  { bg: 'rgba(16,185,129,0.15)', border: 'rgba(16,185,129,0.28)', fg: '#34d399' },
+]
+
+function ExecutionConsole({ result, wsInput, enginePlan, datasetName, C, onOpenReport, setActiveNav }) {
+  const [expanded,    setExpanded]    = useState(() => !!result)
+  const [activePhase, setActivePhase] = useState(0)
+
+  useEffect(() => {
+    if (result) return
+    setActivePhase(0)
+    let elapsed = 0
+    const timers = EXEC_PHASES.map((phase, i) => {
+      const t = setTimeout(() => setActivePhase(i), elapsed)
+      elapsed += phase.dur
+      return t
+    })
+    return () => timers.forEach(clearTimeout)
+  }, [result])
+
+  useEffect(() => { if (result) setExpanded(true) }, [result])
+
+  const totalPhaseDur   = EXEC_PHASES.reduce((s, p) => s + p.dur, 0)
+  const elapsedPhaseDur = EXEC_PHASES.slice(0, activePhase + 1).reduce((s, p) => s + p.dur, 0)
+  const phaseProgress   = !result ? Math.min(95, Math.round((elapsedPhaseDur / totalPhaseDur) * 100)) : 0
+
+  const steps = result
+    ? buildStepsFromResult(result, wsInput, enginePlan)
+    : null
+
+  const completedCount = steps ? steps.filter(s => s.status === 'completed').length : 0
+  const totalCount     = steps ? steps.length : 0
+
+  const rows = steps ?? [{
+    id: '__waiting', label: 'Preparing your analysis…',
+    status: 'pending', action_type: '', human_label: null,
+  }]
+
+  const taskType = result?.task_type ?? null
+  const execType = taskType
+    ? taskType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    : enginePlan?.name ? 'Engine Workflow' : 'Analysis'
+
+  const durSec = result?.started_at && result?.finished_at
+    ? (new Date(result.finished_at) - new Date(result.started_at)) / 1000
+    : null
+  const durDisplay = durSec != null ? (durSec < 0.5 ? 'Completed' : `${durSec.toFixed(1)}s`) : null
+
+  const resultType = (result?.dataset_report || result?.report_id)
+    ? 'Intelligence Report'
+    : taskType?.includes('email') ? 'Email Delivery'
+    : taskType ? execType
+    : null
+
+  const reportGenerated = !!(result?.report_id || result?.dataset_report)
+  const scheduleCreated = result?.schedule_created === true || result?.schedule_id != null
+  const notifSent       = result?.notification_sent === true || result?.notification_id != null
+  const completionItems = [
+    reportGenerated && { label: 'Report Generated', color: '#10b981' },
+    scheduleCreated && { label: 'Schedule Created',  color: '#a78bfa' },
+    notifSent       && { label: 'Notification Sent', color: '#38bdf8' },
+  ].filter(Boolean)
+
+  // ── LOADING: enterprise ops console ──────────────────────────────────────────
+  if (!result) {
+    const title = wsInput.trim() || 'Analysis in progress'
+    return (
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '20px', overflow: 'hidden', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', animation: 'ws-fadein 0.35s ease' }}>
+
+        {/* Animated top progress bar */}
+        <div style={{ height: '3px', background: C.border }}>
+          <div style={{ height: '100%', width: `${phaseProgress}%`, background: 'linear-gradient(90deg,#6d28d9,#7c3aed,#a78bfa,#7c3aed,#6d28d9)', backgroundSize: '300% 100%', animation: 'ws-progress-shimmer 2.2s linear infinite', transition: 'width 0.7s ease', borderRadius: '0 2px 2px 0' }} />
+        </div>
+
+        {/* Header */}
+        <div style={{ padding: '20px 24px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {/* Orbital animation */}
+          <div style={{ width: '44px', height: '44px', position: 'relative', flexShrink: 0 }}>
+            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid rgba(124,58,237,0.30)', animation: 'ws-arc-cw 3.5s linear infinite' }}>
+              <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', boxShadow: '0 0 8px #7c3aed' }} />
+            </div>
+            <div style={{ position: 'absolute', inset: '10px', borderRadius: '50%', border: '1.5px solid rgba(59,130,246,0.25)', animation: 'ws-arc-ccw 2.4s linear infinite' }}>
+              <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '4px', height: '4px', borderRadius: '50%', background: '#3b82f6', boxShadow: '0 0 6px #3b82f6' }} />
+            </div>
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: 'radial-gradient(circle,#a78bfa 0%,#7c3aed 100%)', boxShadow: '0 0 12px rgba(124,58,237,0.55)', animation: 'ws-core-breathe 2s ease-in-out infinite' }} />
+            </div>
+          </div>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px' }}>
+              <span style={{ fontSize: '0.50rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Execution Console</span>
+              <span style={{ fontSize: '0.58rem', fontWeight: '700', color: '#7c3aed', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '20px', padding: '2px 9px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1.2s ease infinite' }} />
+                Running
+              </span>
+            </div>
+            <div style={{ fontSize: '1.0rem', fontWeight: '700', color: C.text, letterSpacing: '-0.2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {title.length > 80 ? title.slice(0, 80) + '…' : title}
+            </div>
+          </div>
+
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontSize: '2.2rem', fontWeight: '800', color: '#7c3aed', lineHeight: 1, fontFamily: MONO, letterSpacing: '-2px' }}>{phaseProgress}%</div>
+            <div style={{ fontSize: '0.53rem', color: C.textMuted, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Overall Progress</div>
+          </div>
+        </div>
+
+        {/* Summary chips */}
+        <div style={{ display: 'flex', gap: '10px', padding: '11px 24px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'rgba(124,58,237,0.07)', border: '1px solid rgba(124,58,237,0.20)', borderRadius: '10px' }}>
+            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1.5s ease infinite', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Status</div>
+              <div style={{ fontSize: '0.69rem', fontWeight: '600', color: '#a78bfa' }}>In Progress</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px' }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+            <div>
+              <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Type</div>
+              <div style={{ fontSize: '0.69rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
+            </div>
+          </div>
+          {datasetName && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px' }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              <div>
+                <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Dataset</div>
+                <div style={{ fontSize: '0.69rem', fontWeight: '600', color: C.textSec, maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{datasetName}</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Two-column body */}
+        <div style={{ display: 'flex' }}>
+          {/* Left: Execution steps */}
+          <div style={{ flex: 1, minWidth: 0, borderRight: `1px solid ${C.border}` }}>
+            <div style={{ padding: '12px 20px 10px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '0.78rem', fontWeight: '700', color: C.text }}>Execution Steps</span>
+              <span style={{ fontSize: '0.59rem', fontWeight: '700', color: C.textMuted, background: C.borderAlt, border: `1px solid ${C.border}`, borderRadius: '20px', padding: '2px 8px' }}>{EXEC_PHASES.length} Steps</span>
+            </div>
+
+            <div style={{ padding: '10px 16px 14px' }}>
+              {EXEC_PHASES.map((phase, i) => {
+                const isActive  = i === activePhase
+                const isDone    = i < activePhase
+                const isPending = i > activePhase
+                const isLast    = i === EXEC_PHASES.length - 1
+                const pc        = EC_PHASE_COLORS[i] ?? EC_PHASE_COLORS[0]
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', animation: `ws-fadeup 0.3s ease both`, animationDelay: `${i * 0.05}s` }}>
+                    {/* Number + connector */}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '28px', flexShrink: 0 }}>
+                      <div style={{ width: '26px', height: '26px', borderRadius: '50%', flexShrink: 0, background: isDone ? '#10b981' : isActive ? '#7c3aed' : 'transparent', border: `2px solid ${isDone ? '#10b981' : isActive ? '#7c3aed' : C.borderAlt}`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '7px', animation: isActive ? 'ws-phase-active 1.6s ease-in-out infinite' : 'none', transition: 'background 0.4s ease, border-color 0.4s ease' }}>
+                        {isDone
+                          ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          : <span style={{ fontSize: '0.57rem', fontWeight: '800', color: isActive ? '#fff' : C.textMuted }}>{i + 1}</span>
+                        }
+                      </div>
+                      {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '10px', background: isDone ? 'rgba(16,185,129,0.35)' : 'rgba(107,114,128,0.18)', borderRadius: '1px', margin: '3px 0' }} />}
+                    </div>
+                    {/* Step row */}
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', borderRadius: '10px', background: isActive ? 'rgba(124,58,237,0.06)' : 'transparent', border: `1px solid ${isActive ? 'rgba(124,58,237,0.18)' : 'transparent'}`, marginBottom: isLast ? '0' : '4px', opacity: isPending ? 0.5 : 1, transition: 'background 0.3s ease, opacity 0.3s ease' }}>
+                      {/* Colored icon square */}
+                      <div style={{ width: '30px', height: '30px', borderRadius: '8px', flexShrink: 0, background: isDone ? 'rgba(16,185,129,0.15)' : isActive ? pc.bg : C.bg, border: `1px solid ${isDone ? 'rgba(16,185,129,0.30)' : isActive ? pc.border : C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.3s ease' }}>
+                        <ExecPhaseIcon type={phase.icon} color={isDone ? '#10b981' : isActive ? pc.fg : C.textMuted} size={13} />
+                      </div>
+                      {/* Label */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '0.76rem', fontWeight: isActive ? '700' : '500', color: isDone ? C.text : isActive ? C.text : C.textMuted, lineHeight: 1.3, transition: 'color 0.3s ease' }}>{phase.label}</div>
+                      </div>
+                      {/* Status badge */}
+                      {isDone && <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#10b981', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '20px', padding: '3px 9px', flexShrink: 0 }}>Completed</div>}
+                      {isActive && <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#a78bfa', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '20px', padding: '3px 9px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1s ease infinite' }} />In Progress</div>}
+                      {isPending && <div style={{ fontSize: '0.57rem', color: C.textMuted, flexShrink: 0 }}>Pending</div>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Right: Execution details — real data only, no fake sections */}
+          <div style={{ width: '220px', flexShrink: 0, padding: '14px 18px', borderTop: 'none' }}>
+            <div style={{ fontSize: '0.54rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '14px' }}>Execution Details</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div>
+                <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Request</div>
+                <div style={{ fontSize: '0.70rem', color: C.textSec, lineHeight: 1.5, wordBreak: 'break-word' }}>{wsInput.trim().length > 100 ? wsInput.trim().slice(0, 100) + '…' : wsInput.trim() || '—'}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Type</div>
+                <div style={{ fontSize: '0.70rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
+              </div>
+              {datasetName && (
+                <div>
+                  <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Dataset</div>
+                  <div style={{ fontSize: '0.70rem', fontWeight: '600', color: C.textSec, wordBreak: 'break-all' }}>{datasetName}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── COMPLETED: persistent panel, user controls collapse ─────────────────────
+  if (result) {
+    const isSuccess   = result.status !== 'failed'
+    const sColor      = isSuccess ? '#10b981' : '#ef4444'
+    const accentGrad  = isSuccess ? 'linear-gradient(90deg,#10b981,#34d399,#10b981)' : 'linear-gradient(90deg,#ef4444,#f87171,#ef4444)'
+    const statusLabel = isSuccess ? 'Analysis Complete' : 'Request Failed'
+    const statusBadge = isSuccess ? 'Complete' : 'Failed'
+    return (
+      <div style={{ background: C.surface, border: `1px solid ${expanded ? (isSuccess ? 'rgba(16,185,129,0.22)' : 'rgba(239,68,68,0.22)') : C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.10)', animation: 'ws-fadein 0.25s ease' }}>
+
+        {/* ── Expanded details (collapsible) ── */}
+        {expanded && (
+          <>
+            <div style={{ height: '3px', background: accentGrad }} />
+
+            {/* Header */}
+            <div style={{ padding: '16px 20px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: `${sColor}14`, border: `2px solid ${sColor}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                {isSuccess
+                  ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                }
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '3px' }}>
+                  <span style={{ fontSize: '0.49rem', fontWeight: '800', color: sColor, textTransform: 'uppercase', letterSpacing: '0.16em' }}>Execution Console</span>
+                  <span style={{ fontSize: '0.57rem', fontWeight: '700', color: sColor, background: `${sColor}14`, border: `1px solid ${sColor}35`, borderRadius: '20px', padding: '2px 8px' }}>{statusBadge}</span>
+                </div>
+                <div style={{ fontSize: '0.92rem', fontWeight: '700', color: C.text, letterSpacing: '-0.2px' }}>{statusLabel}</div>
+              </div>
+              {durDisplay && (
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: '1.3rem', fontWeight: '800', color: sColor, lineHeight: 1, fontFamily: MONO }}>{durDisplay}</div>
+                  <div style={{ fontSize: '0.50rem', color: C.textMuted, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Duration</div>
+                </div>
+              )}
+            </div>
+
+            {/* Summary chips */}
+            <div style={{ display: 'flex', gap: '8px', padding: '10px 20px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', background: `${sColor}0d`, border: `1px solid ${sColor}28`, borderRadius: '8px' }}>
+                <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: sColor, flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontSize: '0.46rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Status</div>
+                  <div style={{ fontSize: '0.67rem', fontWeight: '600', color: sColor }}>{statusBadge}</div>
+                </div>
+              </div>
+              {execType && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px' }}>
+                  <div>
+                    <div style={{ fontSize: '0.46rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Type</div>
+                    <div style={{ fontSize: '0.67rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
+                  </div>
+                </div>
+              )}
+              {datasetName && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px' }}>
+                  <div>
+                    <div style={{ fontSize: '0.46rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Dataset</div>
+                    <div style={{ fontSize: '0.67rem', fontWeight: '600', color: C.textSec, maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{datasetName}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Run details — steps + delivery */}
+            {steps && steps.length > 0 && (
+              <div style={{ display: 'flex' }}>
+                <div style={{ flex: 1, minWidth: 0, borderRight: completionItems.length > 0 ? `1px solid ${C.border}` : 'none' }}>
+                  <div style={{ padding: '11px 18px 9px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '0.76rem', fontWeight: '700', color: C.text }}>Run Details</span>
+                    <span style={{ fontSize: '0.58rem', fontWeight: '700', color: '#10b981', background: 'rgba(16,185,129,0.09)', border: '1px solid rgba(16,185,129,0.22)', borderRadius: '20px', padding: '2px 8px' }}>{completedCount}/{totalCount} steps</span>
+                  </div>
+                  <div style={{ padding: '10px 16px 12px' }}>
+                    {rows.map((step, i) => {
+                      const ec     = EC_STATUS[step.status] ?? EC_STATUS.pending
+                      const isLast = i === rows.length - 1
+                      return (
+                        <div key={step.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', animation: `ws-fadeup 0.25s ease both`, animationDelay: `${i * 0.04}s` }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '26px', flexShrink: 0 }}>
+                            <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: ec.dotBg, border: `2px solid ${ec.dotBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '6px' }}>
+                              <ECStatusIcon status={step.status} />
+                            </div>
+                            {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '8px', background: `linear-gradient(180deg,${ec.dotBorder}40,${ec.dotBorder}10)`, borderRadius: '1px', margin: '2px 0' }} />}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 9px', borderRadius: '8px', background: ec.rowBg || 'transparent', border: `1px solid ${ec.rowBorder || 'transparent'}`, marginBottom: isLast ? '0' : '3px' }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '0.74rem', fontWeight: '600', color: ec.labelColor, lineHeight: 1.3 }}>{ecDisplayLabel(step)}</div>
+                              {step.human_label && <div style={{ fontSize: '0.59rem', color: C.textMuted, marginTop: '1px', fontFamily: MONO }}>{step.human_label}</div>}
+                            </div>
+                            <div style={{ fontSize: '0.56rem', fontWeight: '700', color: ec.labelColor, textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>{STATUS_DISPLAY_LABELS[step.status] ?? step.status}</div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+                {/* Delivery Status */}
+                {completionItems.length > 0 && (
+                  <div style={{ width: '190px', flexShrink: 0, padding: '12px 16px' }}>
+                    <div style={{ fontSize: '0.52rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '10px' }}>Delivery Status</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {completionItems.map((item, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 9px', background: `${item.color}0d`, border: `1px solid ${item.color}25`, borderRadius: '8px', animation: `ws-fadeup 0.25s ease both`, animationDelay: `${i * 0.06}s` }}>
+                          <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: `${item.color}18`, border: `1.5px solid ${item.color}55`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={item.color} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          </div>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: item.color }}>{item.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── Run Complete footer bar — always visible ── */}
+        <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '10px', borderTop: expanded ? `1px solid ${C.border}` : 'none' }}>
+          <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: sColor, flexShrink: 0 }} />
+          <span style={{ fontSize: '0.75rem', fontWeight: '600', color: C.text }}>Run Complete</span>
+          <span style={{ fontSize: '0.63rem', color: C.textMuted }}>·</span>
+          <span style={{ fontSize: '0.63rem', color: C.textMuted }}>{completedCount}/{totalCount} steps</span>
+          {durDisplay && (
+            <>
+              <span style={{ fontSize: '0.63rem', color: C.textMuted }}>·</span>
+              <span style={{ fontSize: '0.63rem', color: C.textMuted }}>{durDisplay}</span>
+            </>
+          )}
+          <div style={{ flex: 1 }} />
+          {result?.report_id && onOpenReport && (
+            <button onClick={() => onOpenReport(result.report_id)} style={{ background: 'rgba(16,185,129,0.10)', border: '1px solid rgba(16,185,129,0.30)', borderRadius: '7px', padding: '5px 14px', fontSize: '0.70rem', fontWeight: '600', color: '#10b981', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              View Report
+            </button>
+          )}
+          {scheduleCreated && setActiveNav && (
+            <button onClick={() => setActiveNav('scheduled')} style={{ background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.30)', borderRadius: '7px', padding: '5px 14px', fontSize: '0.70rem', fontWeight: '600', color: '#a78bfa', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              View Schedule
+            </button>
+          )}
+          {result?.email_delivery?.sent && setActiveNav && (
+            <button onClick={() => setActiveNav('reports')} style={{ background: 'rgba(56,189,248,0.10)', border: '1px solid rgba(56,189,248,0.30)', borderRadius: '7px', padding: '5px 14px', fontSize: '0.70rem', fontWeight: '600', color: '#38bdf8', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              View Delivery
+            </button>
+          )}
+          <button
+            onClick={() => setExpanded(v => !v)}
+            style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: '7px', padding: '4px 10px', fontSize: '0.70rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {expanded ? 'Hide Details' : 'Show Details'}
+          </button>
+        </div>
+      </div>
+    )
+  }
 }
 
 // ─── Result canvas subcomponents (unchanged) ──────────────────────────────────
@@ -1363,7 +1909,7 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
               </p>
 
               {/* Schedule badge */}
-              {wf.scheduleType && {{ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[wf.scheduleType] && (
+              {wf.scheduleType && { weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[wf.scheduleType] && (
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', alignSelf: 'flex-start' }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
                   <span style={{ fontSize: '0.62rem', fontWeight: '700', color: '#a78bfa', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.22)', borderRadius: '5px', padding: '1px 7px', letterSpacing: '0.02em' }}>
@@ -1762,6 +2308,166 @@ function AnswerSummaryBlock({ intel, C }) {
   )
 }
 
+function ReportDeliveryCard({ result, wsInput, C }) {
+  if (!result) return null
+
+  const schedType  = extractScheduleType(wsInput)
+  const schedLabel = schedType
+    ? ({ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' })[schedType] ?? schedType
+    : null
+
+  const reportGenerated = !!(result.report_id || result.dataset_report)
+  const savedToReports  = !!result.report_id
+  const scheduleCreated = result.schedule_created === true || result.schedule_id != null
+  const notifSent       = result.notification_sent === true || result.notification_id != null
+  const workflowCreated = !!result.workflow_id ||
+    /create_tool|create_workflow|save_workflow|build_workflow/i.test(result.task_type ?? '')
+
+  const items = [
+    reportGenerated && {
+      label:  'Report Generated',
+      detail: result.report_id ? `Report ID: ${result.report_id}` : null,
+      color:  '#10b981',
+    },
+    savedToReports && {
+      label:  'Saved to Reports',
+      detail: null,
+      color:  '#34d399',
+    },
+    scheduleCreated && {
+      label:  'Schedule Created',
+      detail: schedLabel ? `Schedule: ${schedLabel}` : result.schedule_id ? `ID: ${result.schedule_id}` : null,
+      color:  '#a78bfa',
+    },
+    notifSent && {
+      label:  'Send Notification',
+      detail: 'Notification Status: Sent',
+      color:  '#38bdf8',
+    },
+    workflowCreated && {
+      label:  'Workflow Created',
+      detail: result.workflow_id ? `ID: ${result.workflow_id}` : null,
+      color:  '#f59e0b',
+    },
+  ].filter(Boolean)
+
+  if (items.length === 0) return null
+
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.border}`, borderRadius: '12px',
+      padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap',
+      animation: 'ws-fadein 0.35s ease',
+    }}>
+      <span style={{ fontSize: '0.63rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.12em', flexShrink: 0 }}>Delivery Status</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+        {items.map((item, i) => (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'center', gap: '5px',
+            padding: '4px 10px', background: `${item.color}0d`,
+            border: `1px solid ${item.color}28`, borderRadius: '20px',
+            animation: `ws-fadeup 0.25s ease both`, animationDelay: `${i * 0.05}s`,
+          }}>
+            <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={item.color} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            <span style={{ fontSize: '0.70rem', fontWeight: '600', color: item.color, lineHeight: 1, whiteSpace: 'nowrap' }}>{item.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function WorkflowExplanationCard({ result, wsInput, enginePlan, datasetName, C }) {
+  const hasCreationResult = !!result?.workflow_id ||
+    /create_tool|create_workflow|save_workflow|build_workflow/i.test(result?.task_type ?? '')
+  const hasCreationIntent = isToolCreationIntent(wsInput)
+  const hasPlan           = !!enginePlan
+
+  if (!hasPlan && !hasCreationIntent && !hasCreationResult) return null
+
+  // ── Workflow Name ──────────────────────────────────────────────────────────
+  const rawName = enginePlan?.description || (enginePlan?.name ? slugToTitle(enginePlan.name) : null)
+  const wfName  = rawName
+    ? (rawName.length <= 68 ? rawName : rawName.split(/[.!?]/)[0].trim() || rawName.slice(0, 68) + '…')
+    : wsInput?.trim()
+      ? (wsInput.trim().length <= 68 ? wsInput.trim() : wsInput.trim().slice(0, 68) + '…')
+      : null
+
+  // ── Workflow Type ──────────────────────────────────────────────────────────
+  const schedType    = extractScheduleType(wsInput)
+  const schedEnabled = enginePlan?.schedule?.enabled === true || !!schedType
+  const isToolIntent = /\b(tool|automation|agent|pipeline)\b/i.test(wsInput ?? '')
+  const wfType = schedEnabled                                   ? 'Scheduled Workflow'
+    : isToolIntent                                              ? 'Automation'
+    : (enginePlan?.graph?.nodes ?? []).length > 0              ? 'Workflow'
+    : hasCreationResult                                        ? 'Workflow'
+    : null
+
+  // ── Output ─────────────────────────────────────────────────────────────────
+  const reportOut = !!(result?.report_id || result?.dataset_report)
+  const emailOut  = !!(result?.task_type?.includes('email') ||
+    (enginePlan?.graph?.nodes ?? []).some(n => /send_email|email/i.test(n.action_type ?? '')))
+  const outputLabel = reportOut && schedEnabled ? 'Scheduled Report'
+    : reportOut && emailOut                     ? 'Email Report Delivery'
+    : reportOut                                 ? 'Intelligence Report'
+    : emailOut                                  ? 'Email Delivery'
+    : null
+
+  // ── Schedule ───────────────────────────────────────────────────────────────
+  const schedFreq = enginePlan?.schedule?.human_label ??
+    (schedType
+      ? ({ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' })[schedType]
+      : null)
+
+  // ── Notifications (only when actually sent) ────────────────────────────────
+  const notifLabel = (result?.notification_sent === true || result?.notification_id != null)
+    ? 'Enabled' : null
+
+  // ── Status ─────────────────────────────────────────────────────────────────
+  const status = (result?.schedule_created === true || result?.schedule_id != null) ? 'Scheduled'
+    : result?.workflow_id                                                            ? 'Saved'
+    : (result?.status === 'success' || result?.status === 'completed')              ? 'Executed'
+    : null
+
+  const fields = [
+    wfName      && { label: 'Workflow Name', value: wfName },
+    wfType      && { label: 'Workflow Type', value: wfType },
+    datasetName && { label: 'Input',         value: datasetName },
+    outputLabel && { label: 'Output',        value: outputLabel },
+    schedFreq   && { label: 'Schedule',      value: schedFreq },
+    notifLabel  && { label: 'Notifications', value: notifLabel },
+    status      && { label: 'Status',        value: status },
+  ].filter(Boolean)
+
+  if (fields.length === 0) return null
+
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px',
+      overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
+      animation: 'ws-fadein 0.35s ease',
+    }}>
+      <div style={{ padding: '14px 20px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'rgba(124,58,237,0.12)', border: '1.5px solid rgba(124,58,237,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+        </div>
+        <div style={{ fontSize: '0.54rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em' }}>What ToolSmithAI Created</div>
+      </div>
+      <div style={{ padding: '14px 20px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px 20px' }}>
+        {fields.map((f, i) => (
+          <div key={i} style={{ animation: `ws-fadeup 0.3s ease both`, animationDelay: `${i * 0.05}s` }}>
+            <div style={{ fontSize: '0.52rem', fontWeight: '800', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '3px' }}>{f.label}</div>
+            <div style={{ fontSize: '0.74rem', fontWeight: '600', color: C.textSec, lineHeight: 1.4, wordBreak: 'break-word' }}>{f.value}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function IntelligenceCanvas({ intel, C, onOpenReport, onExportReport, setActiveNav, onSaveWorkflow, workflowAlreadySaved, workflowSaving }) {
   // Hook must be called before any conditional returns (Rules of Hooks)
   const [activeTab, setActiveTab] = useState(() => getDefaultTabForStyle(intel?.reportPlan?.report_style))
@@ -1777,8 +2483,8 @@ function IntelligenceCanvas({ intel, C, onOpenReport, onExportReport, setActiveN
           {ok ? <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                : <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>}
         </div>
-        <div style={{ fontSize: '1.15rem', fontWeight: '700', color: C.text, marginBottom: '8px' }}>{ok ? 'Workflow Completed' : 'Workflow Failed'}</div>
-        <div style={{ fontSize: '0.8rem', color: C.textMuted }}>Task type: {intel.taskType || '—'} · Status: {intel.status || '—'}</div>
+        <div style={{ fontSize: '1.15rem', fontWeight: '700', color: C.text, marginBottom: '8px' }}>{ok ? 'Analysis Complete' : 'Request Failed'}</div>
+        <div style={{ fontSize: '0.8rem', color: C.textMuted }}>{ok ? 'Your request was processed successfully.' : 'Something went wrong. Please try again.'}</div>
         {intel.emailDelivery?.sent && <div style={{ marginTop: '12px', fontSize: '0.8rem', color: '#10b981' }}>Delivered to {intel.emailDelivery.to}</div>}
       </div>
     )
@@ -2193,8 +2899,8 @@ function EmptyAssistantPanel({ C, proposal }) {
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             <span style={{ fontSize: '0.69rem', color: '#9ca3af', lineHeight: 1.4 }}>
               {proposal.ai_enabled
-                ? 'Smart Plan generated — AI reasoning unavailable for this request.'
-                : 'Smart Plan generated using deterministic rules.'}
+                ? 'Analysis prepared — additional AI reasoning not available for this request.'
+                : 'Analysis prepared using standard rules.'}
             </span>
           </div>
         </div>
@@ -2714,6 +3420,7 @@ export default function AIWorkspace({
   user,
   datasetList,
   selectedDatasetId, setSelectedDatasetId,
+  datasetExplicit, setDatasetExplicit,
   externalResult, externalLoading, externalError,
   setActiveNav, onOpenReport, onExportReport,
   onUploadDataset,
@@ -2743,11 +3450,15 @@ export default function AIWorkspace({
   const [engineTools,       setEngineTools]       = useState([])
   const [workflowSaving,    setWorkflowSaving]    = useState(false)
   const [wsRunSource,       setWsRunSource]       = useState(null) // null | workflow title string
+  const [dsPendingRun,      setDsPendingRun]      = useState(null) // pending run args awaiting dataset confirmation
+  const [noDsWarning,       setNoDsWarning]       = useState(false)
+  const [dsSearch,          setDsSearch]          = useState('')
 
   useEffect(() => { if (externalLoading) { setWsResult(null); setWsError(null) } }, [externalLoading])
   useEffect(() => { if (externalResult) setWsResult(externalResult) }, [externalResult])
   useEffect(() => { if (externalError) setWsError(externalError) }, [externalError])
   useEffect(() => { if (token) loadEngineTools() }, [token])
+  useEffect(() => { if (!dsPicker) setDsSearch('') }, [dsPicker])
 
   const activeResult  = wsResult
   const activeLoading = wsLoading || externalLoading
@@ -2871,7 +3582,7 @@ export default function AIWorkspace({
     } finally { setEngineBusy(null) }
   }
 
-  async function handleRun(sections = null, proposal = null, overrideIntent = null, overrideDsId = undefined) {
+  async function handleRun(sections = null, proposal = null, overrideIntent = null, overrideDsId = undefined, _skipDsCheck = false) {
     const trimmed = overrideIntent ?? wsInput.trim()
     if (!trimmed) return
     // Route tool/workflow creation intents to the engine planner.
@@ -2882,6 +3593,24 @@ export default function AIWorkspace({
       return
     }
     const dsId = overrideDsId !== undefined ? overrideDsId : (selectedDatasetId || null)
+
+    // ── Dataset trust guards ──────────────────────────────────────────────────
+    // Only apply when using the ambient selectedDatasetId (not an explicit override
+    // from a saved workflow which carries its own intentional dataset binding).
+    if (!_skipDsCheck && overrideDsId === undefined) {
+      const isAnalysis = /\b(report|analyz|analysis|summarize|summarise|insight|overview|kpi|dashboard|anomal|trend|forecast|metric|revenue|sales|performance|breakdown|segment|risk|drift|detect)\b/i.test(trimmed)
+      if (isAnalysis && !dsId) {
+        setWsError('Select a dataset before running an analysis.')
+        setNoDsWarning(true)
+        return
+      }
+      if (dsId && !datasetExplicit) {
+        setDsPendingRun({ sections, proposal, overrideIntent, overrideDsId })
+        return
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     setWsError(null); setWsLoading(true); setWsResult(null); setBackToComposer(false); setWsRunSource(null)
     try {
       const data = await interpretTask(trimmed, token, dsId, wsEmail.trim() || null, sections)
@@ -2898,6 +3627,13 @@ export default function AIWorkspace({
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
       setWsError(err.message?.replace(/^\d+:\s*/, '') || 'Execution failed.')
     } finally { setWsLoading(false) }
+  }
+
+  function handleConfirmDataset() {
+    const args = dsPendingRun
+    setDsPendingRun(null)
+    setDatasetExplicit(true)
+    handleRun(args.sections, args.proposal, args.overrideIntent, args.overrideDsId, true)
   }
 
   function handleReset() {
@@ -3193,7 +3929,7 @@ export default function AIWorkspace({
                     placeholder="Example: Analyze my uploaded sales dataset, identify the top 3 anomalies, generate an executive report with KPIs, and highlight risks…"
                     rows={4}
                     value={wsInput}
-                    onChange={e => { setWsInput(e.target.value); setWsProposalError(null) }}
+                    onChange={e => { setWsInput(e.target.value); setWsProposalError(null); setDsPendingRun(null); setNoDsWarning(false) }}
                     onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleEnginePlan() } }}
                     style={{
                       width: '100%', boxSizing: 'border-box',
@@ -3240,44 +3976,71 @@ export default function AIWorkspace({
                     <div style={{ position: 'relative', flex: 1, minWidth: '180px' }}>
                       {dsPicker && <div style={{ position: 'fixed', inset: 0, zIndex: 998 }} onClick={() => setDsPicker(false)} />}
                       <button className="ws-ghost-btn" onClick={() => setDsPicker(o => !o)}
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', background: activeDs ? 'rgba(124,58,237,0.07)' : C.bg, border: `1px solid ${activeDs ? 'rgba(124,58,237,0.35)' : C.border}`, borderRadius: '10px', padding: '9px 14px', fontSize: '0.76rem', color: activeDs ? '#7c3aed' : C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '400', textAlign: 'left', position: 'relative', zIndex: 999 }}>
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', background: (activeDs && datasetExplicit) ? 'rgba(124,58,237,0.07)' : (activeDs && !datasetExplicit) ? 'rgba(245,158,11,0.07)' : C.bg, border: `1px solid ${(activeDs && datasetExplicit) ? 'rgba(124,58,237,0.35)' : (activeDs && !datasetExplicit) ? 'rgba(245,158,11,0.45)' : C.border}`, borderRadius: '10px', padding: '9px 14px', fontSize: '0.76rem', color: (activeDs && datasetExplicit) ? '#7c3aed' : (activeDs && !datasetExplicit) ? '#d97706' : C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '400', textAlign: 'left', position: 'relative', zIndex: 999 }}>
                         <span style={{ flex: 1 }}>{activeDs ? activeDs.filename : 'Choose an existing dataset'}</span>
+                        {activeDs && !datasetExplicit && <span style={{ fontSize: '0.60rem', fontWeight: '600', color: '#d97706', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.30)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>confirm</span>}
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, flexShrink: 0 }}><path d="m6 9 6 6 6-6"/></svg>
                       </button>
 
                       {dsPicker && (
-                        <div style={{ position: 'absolute', top: 'calc(100% + 8px)', left: 0, zIndex: 999, width: '100%', minWidth: '280px', background: C.surface, border: `1px solid ${C.borderAlt}`, borderRadius: '14px', boxShadow: '0 16px 48px rgba(0,0,0,0.26)', overflow: 'hidden', animation: 'ws-fadeup 0.18s ease' }}>
-                          <div style={{ padding: '10px 16px', borderBottom: `1px solid ${C.border}`, fontSize: '0.67rem', fontWeight: '700', color: C.textSec, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                            {datasetList?.length || 0} datasets available
+                        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 999, width: '100%', minWidth: '260px', background: C.surface, border: `1px solid ${C.borderAlt}`, borderRadius: '12px', boxShadow: '0 8px 28px rgba(0,0,0,0.16)', overflow: 'hidden', animation: 'ws-fadeup 0.15s ease' }}>
+                          {/* Search */}
+                          <div style={{ padding: '8px 10px', borderBottom: `1px solid ${C.border}` }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '5px 9px' }}>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                              <input
+                                autoFocus
+                                type="text"
+                                placeholder="Search…"
+                                value={dsSearch}
+                                onChange={e => setDsSearch(e.target.value)}
+                                style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: '0.74rem', color: C.text, fontFamily: FONT, caretColor: '#7c3aed' }}
+                              />
+                              {dsSearch && (
+                                <button onClick={() => setDsSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', color: C.textMuted }}>
+                                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                </button>
+                              )}
+                            </div>
                           </div>
-                          <div style={{ maxHeight: '230px', overflowY: 'auto' }}>
-                            {!datasetList?.length ? (
-                              <div style={{ padding: '24px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>No datasets uploaded.</div>
-                            ) : datasetList.map(ds => {
-                              const isSel = ds.id === selectedDatasetId
-                              const type  = getFileType(ds.filename)
-                              const tc    = DS_COLOR[type] || C.textSec
-                              const tbg   = DS_BG[type] || C.borderAlt
-                              return (
-                                <div key={ds.id} onClick={() => { setSelectedDatasetId(ds.id); setDsPicker(false) }}
-                                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '11px 16px', cursor: 'pointer', background: isSel ? 'rgba(124,58,237,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
-                                  onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = C.borderAlt }}
-                                  onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent' }}>
-                                  <div style={{ width: '30px', height: '24px', borderRadius: '6px', background: tbg, border: `1px solid ${tc}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.55rem', fontWeight: '700', color: tc, flexShrink: 0 }}>{type.slice(0, 3)}</div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: '0.82rem', fontWeight: '500', color: isSel ? '#7c3aed' : C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ds.filename}</div>
-                                    <div style={{ fontSize: '0.66rem', color: C.textMuted }}>{(ds.row_count || 0).toLocaleString()} rows · {ds.column_count} cols</div>
-                                  </div>
-                                  {isSel && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
-                                </div>
+                          {/* List */}
+                          <div style={{ maxHeight: '240px', overflowY: 'auto', overscrollBehavior: 'contain' }}>
+                            {(() => {
+                              const q = dsSearch.toLowerCase().trim()
+                              const filtered = (datasetList || []).filter(ds => ds.filename.toLowerCase().includes(q))
+                              if (!datasetList?.length) return (
+                                <div style={{ padding: '18px', textAlign: 'center', color: C.textMuted, fontSize: '0.76rem' }}>No datasets uploaded.</div>
                               )
-                            })}
+                              if (!filtered.length) return (
+                                <div style={{ padding: '18px', textAlign: 'center', color: C.textMuted, fontSize: '0.76rem' }}>No matches for "{dsSearch}"</div>
+                              )
+                              return filtered.map(ds => {
+                                const isSel = ds.id === selectedDatasetId
+                                const type  = getFileType(ds.filename)
+                                const tc    = DS_COLOR[type] || C.textSec
+                                const tbg   = DS_BG[type] || C.borderAlt
+                                return (
+                                  <div key={ds.id} onClick={() => { setSelectedDatasetId(ds.id); setDatasetExplicit(true); setDsPendingRun(null); setNoDsWarning(false); setDsPicker(false) }}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: isSel ? 'rgba(124,58,237,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
+                                    onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = C.borderAlt }}
+                                    onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent' }}>
+                                    <div style={{ width: '22px', height: '15px', borderRadius: '3px', background: tbg, border: `1px solid ${tc}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.48rem', fontWeight: '700', color: tc, flexShrink: 0 }}>{type.slice(0, 3)}</div>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                      <div style={{ fontSize: '0.75rem', fontWeight: '500', color: isSel ? '#7c3aed' : C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{ds.filename}</div>
+                                      <div style={{ fontSize: '0.60rem', color: C.textMuted, lineHeight: 1.2 }}>{(ds.row_count || 0).toLocaleString()} rows · {ds.column_count} cols</div>
+                                    </div>
+                                    {isSel && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                                  </div>
+                                )
+                              })
+                            })()}
                           </div>
+                          {/* Footer */}
                           <div onClick={() => { setDsPicker(false); setActiveNav('datasets') }}
-                            style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#7c3aed', fontSize: '0.78rem', fontWeight: '500', borderTop: `1px solid ${C.border}`, transition: 'background 0.12s' }}
+                            style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#7c3aed', fontSize: '0.74rem', fontWeight: '500', borderTop: `1px solid ${C.border}`, transition: 'background 0.12s' }}
                             onMouseEnter={e => e.currentTarget.style.background = 'rgba(124,58,237,0.07)'}
                             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                             Manage datasets
                           </div>
                         </div>
@@ -3292,6 +4055,38 @@ export default function AIWorkspace({
                     </button>
                   </div>
                 </div>
+
+                {/* ── No-dataset inline warning ── */}
+                {noDsWarning && !activeDs && (
+                  <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <span style={{ fontSize: '0.78rem', color: '#dc2626', lineHeight: 1.5 }}>
+                      Select a dataset before running this analysis.
+                    </span>
+                  </div>
+                )}
+
+                {/* ── Dataset confirmation banner ── */}
+                {dsPendingRun && activeDs && (
+                  <div style={{ marginBottom: '16px', padding: '12px 16px', background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.35)', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <span style={{ flex: 1, fontSize: '0.78rem', color: C.text, lineHeight: 1.5 }}>
+                      This will analyze <strong>{activeDs.filename}</strong>{' '}
+                      <span style={{ color: C.textMuted }}>({(activeDs.row_count || 0).toLocaleString()} rows)</span>.
+                      {' '}Is this the right dataset?
+                    </span>
+                    <button
+                      onClick={() => { setDsPendingRun(null); setDsPicker(true) }}
+                      style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 13px', fontSize: '0.74rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
+                      Change
+                    </button>
+                    <button
+                      onClick={handleConfirmDataset}
+                      style={{ background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.40)', borderRadius: '7px', padding: '6px 14px', fontSize: '0.74rem', fontWeight: '600', color: '#d97706', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
+                      Use this dataset
+                    </button>
+                  </div>
+                )}
 
                 {/* ── QUICK START EXAMPLES section ── */}
                 <div style={{ marginBottom: '4px' }}>
@@ -3364,11 +4159,21 @@ export default function AIWorkspace({
             />
           )}
 
-          {/* ── Loading ── */}
-          {activeLoading && <AIExecutionFlow C={C} />}
+          {/* ── Execution Console — loading and completion (single persistent instance) ── */}
+          {(activeLoading || (hasResult && !backToComposer)) && (
+            <ExecutionConsole
+              result={wsResult}
+              wsInput={wsInput}
+              enginePlan={enginePlan}
+              datasetName={activeDs?.filename ?? null}
+              C={C}
+              onOpenReport={onOpenReport}
+              setActiveNav={setActiveNav}
+            />
+          )}
 
           {/* ── Execution error ── */}
-          {activeError && !activeLoading && !hasResult && (
+          {activeError && !activeLoading && !hasResult && !noDsWarning && (
             <div style={{ background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '18px', padding: '40px 36px', textAlign: 'center', animation: 'ws-fadein 0.25s ease' }}>
               <div style={{ fontSize: '0.85rem', color: C.danger, marginBottom: '10px', fontWeight: '700' }}>Execution Error</div>
               <p style={{ margin: '0 0 20px', fontSize: '0.84rem', color: C.danger, lineHeight: 1.7 }}>{activeError}</p>
@@ -3388,11 +4193,6 @@ export default function AIWorkspace({
                 style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '8px 14px', fontSize: '0.74rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 Run Again
-              </button>
-              <button className="ws-ghost-btn" onClick={() => setBackToComposer(true)}
-                style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '8px 14px', fontSize: '0.74rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                Edit Request
               </button>
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 {wsRunSource && (
@@ -3416,17 +4216,16 @@ export default function AIWorkspace({
             </div>
           )}
 
-          {/* ── Intelligence Canvas ── */}
+
+          {/* ── Delivery Status ── */}
           {hasResult && !backToComposer && (
-            <IntelligenceCanvas intel={intel} C={C} onOpenReport={onOpenReport} onExportReport={onExportReport} setActiveNav={setActiveNav} onSaveWorkflow={handleSaveWorkflow} workflowAlreadySaved={workflowAlreadySaved} workflowSaving={workflowSaving} />
+            <ReportDeliveryCard result={wsResult} wsInput={wsInput} C={C} />
           )}
         </div>
 
         {/* ── Right column — always visible ── */}
         <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-          {hasResult && !backToComposer && intel ? (
-            <CopilotPanel reportId={intel.kind === 'report' ? intel.reportId : null} aiMeta={intel.aiMeta} intel={intel} user={user} token={token} onSessionExpired={onSessionExpired} C={C} />
-          ) : (
+          {!activeLoading && (!hasResult || backToComposer) && (
             <EmptyAssistantPanel proposal={wsProposal} C={C} />
           )}
         </div>

@@ -2186,13 +2186,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const C = resolvedTheme === 'light' ? C_LIGHT : C_DARK
   const S = makeS(C)
 
-  const [taskInput, setTaskInput] = useState('')
-  const [recipientEmail, setRecipientEmail] = useState('')
-  const [loading, setLoading]     = useState(false)
-  const [result, setResult]           = useState(null)
-  const [error, setError]             = useState(null)
-  const [validationError, setValidationError] = useState(null)
-  const [resultPanelOpen, setResultPanelOpen] = useState(false)
   const [activeNav,       setActiveNav]       = useState('ai-workspace')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [usage,        setUsage]        = useState(null)
@@ -2207,6 +2200,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [datasetList,         setDatasetList]         = useState([])
   const [datasetListLoading,  setDatasetListLoading]  = useState(false)
   const [selectedDatasetId,   setSelectedDatasetId]   = useState(null)
+  const [datasetExplicit,     setDatasetExplicit]     = useState(false)
   const [scheduledList,       setScheduledList]       = useState([])
   const [scheduledLoading,    setScheduledLoading]    = useState(false)
   const [scheduleInput,       setScheduleInput]       = useState('')
@@ -2254,9 +2248,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [builderError,        setBuilderError]        = useState(null)
   const [builderSuccess,      setBuilderSuccess]      = useState(null)
   const [composerMode,        setComposerMode]        = useState('workflow')
-  const [composerProposal,        setComposerProposal]        = useState(null)
-  const [composerProposalLoading, setComposerProposalLoading] = useState(false)
-  const [composerProposalError,   setComposerProposalError]   = useState(null)
   const [activeWorkspaceId,    setActiveWorkspaceId]    = useState(null)
   const [workspaceList,        setWorkspaceList]        = useState([])
   const [workspaceListLoading, setWorkspaceListLoading] = useState(false)
@@ -2287,7 +2278,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [notifError,     setNotifError]     = useState(null)
   const prevSummaryIdRef = useRef(null)
   const dsFileInputRef        = useRef(null)
-  const composerFileInputRef  = useRef(null)
 
   const is401 = err => err?.message?.startsWith('401:')
 
@@ -2417,11 +2407,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     try {
       const data = await runWorkflowById(wf.id, token)
       setWfRunResult(data.data)
-      if (!isMultiStep) {
-        setResult(data.data)
-        setTaskInput(intent)
-        setActiveNav('ai-workspace')
-      }
       getUsage(token).then(d => setUsage(d)).catch(() => {})
       getMyData(token).then(d => setHistory(d?.data?.execution_history ?? [])).catch(() => {})
     } catch (err) {
@@ -2482,8 +2467,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
   useEffect(() => { refreshTemplates() }, [token])
 
-  function handleUseTemplate(t) {
-    setTaskInput(t.intent)
+  function handleUseTemplate() {
     setActiveNav('ai-workspace')
   }
 
@@ -2660,11 +2644,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     }
   }
 
-  function handleRecRunAgain(rec) {
-    setTaskInput(rec.intent)
-    setActiveNav('overview')
-  }
-
   function handleRecSchedule(rec) {
     setScheduleInput(rec.intent)
     setActiveNav('scheduled')
@@ -2792,151 +2771,10 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     }
   }
 
-  async function handleRunTask(selectedSections = null, approvedProposal = null, suppressPanel = false) {
-    setError(null)
-    setValidationError(null)
-    setResult(null)
-    setResultPanelOpen(false)
-    const trimmed = taskInput.trim()
-    if (!trimmed) {
-      setValidationError('Please enter a task description.')
-      return
-    }
-    if (trimmed.length < 5) {
-      setValidationError('Task description must be at least 5 characters.')
-      return
-    }
-    const DATASET_KEYWORDS = ['report', 'summary', 'dataset', 'spreadsheet', 'csv', 'excel', 'analysis', 'analyze']
-    const needsDataset = DATASET_KEYWORDS.some(kw => trimmed.toLowerCase().includes(kw))
-    if (needsDataset && !selectedDatasetId) {
-      setValidationError('This task needs a dataset. Please choose or upload a dataset first.')
-      return
-    }
-    const EMAIL_KEYWORDS = ['email', 'send', 'mail']
-    const isEmailIntent = EMAIL_KEYWORDS.some(kw => trimmed.toLowerCase().includes(kw))
-    if (isEmailIntent && !recipientEmail.trim()) {
-      setValidationError('Please enter a recipient email address.')
-      return
-    }
-    const isMultiStepWorkspace = activeWorkspaceId != null
-      && approvedProposal?.proposal_type === 'workflow'
-      && (approvedProposal?.primitives_or_steps || []).length > 1
-    setLoading(true)
-    if (!suppressPanel) setResultPanelOpen(true)
-    if (isMultiStepWorkspace) setWorkspaceRunning(true)
-    try {
-      let data
-      if (isMultiStepWorkspace) {
-        const draft = await createWorkflowDraftFromWorkspace(activeWorkspaceId, token)
-        const draftData = draft?.data ?? draft
-        if (!draftData?.workflow_id) throw new Error('Workflow draft created but no workflow ID was returned.')
-        data = await runWorkflowById(draftData.workflow_id, token)
-      } else {
-        // Check if the user's input matches a saved workflow by name or intent.
-        // If so, run it by ID (canonical path). Otherwise interpret as a new task.
-        const matchedWf = workflowList.find(wf =>
-          (wf.name && wf.name.toLowerCase() === trimmed.toLowerCase()) ||
-          (wf.definition?.intent && wf.definition.intent.toLowerCase() === trimmed.toLowerCase())
-        )
-        if (matchedWf) {
-          if (!matchedWf.id) {
-            console.error('[handleRunTask] matched workflow has no ID', matchedWf)
-            throw new Error('Matched workflow is missing an ID — cannot execute.')
-          }
-          console.log('[handleRunTask] running saved workflow', matchedWf.id, matchedWf.name)
-          data = await runWorkflowById(matchedWf.id, token)
-        } else {
-          data = await interpretTask(trimmed, token, selectedDatasetId, recipientEmail.trim() || null, selectedSections)
-        }
-      }
-
-      const executionResult = data?.data ?? null
-
-      // For multi-step runs, report_id lives inside step_results[n].result.report_id.
-      // Hoist it so refreshReports, attachWorkspaceExecution, and ActionCenter all see it.
-      let resolvedReportId = executionResult?.report_id ?? null
-      if (resolvedReportId == null && isMultiStepWorkspace) {
-        const stepWithReport = (executionResult?.step_results ?? []).find(
-          s => s?.result?.report_id != null
-        )
-        resolvedReportId = stepWithReport?.result?.report_id ?? null
-      }
-
-      // Augment result with AI metadata from the approved proposal so WorkflowResult
-      // can surface reasoning, confidence, and AI status without a separate prop.
-      const resultWithAI = executionResult == null ? null : {
-        ...executionResult,
-        _ai_meta: approvedProposal ? {
-          reasoning_summary:  approvedProposal.reasoning_summary  ?? null,
-          confidence:         approvedProposal.confidence         ?? null,
-          ai_enrichment_used: approvedProposal.ai_enrichment_used ?? false,
-          ai_enabled:         approvedProposal.ai_enabled         ?? false,
-          ai_model_used:      approvedProposal.ai_model_used      ?? null,
-        } : null,
-      }
-      // Store result in the same state used by single-step executions, then
-      // re-assert the panel open so a backdrop-dismiss during loading doesn't
-      // swallow the completed result.
-      setResult(resultWithAI)
-      if (!suppressPanel) setResultPanelOpen(true)
-
-      if (resolvedReportId != null) refreshReports()
-      getUsage(token).then(d => setUsage(d)).catch(() => {})
-      getMyData(token).then(d => setHistory(d?.data?.execution_history ?? [])).catch(() => {})
-      if (activeWorkspaceId != null) {
-        const execSummary = { task_type: executionResult?.task_type, status: executionResult?.status }
-        attachWorkspaceExecution(activeWorkspaceId, {
-          execution_summary: execSummary,
-          report_id: resolvedReportId,
-          selected_sections: selectedSections ?? null,
-        }, token)
-          .then(() => refreshWorkspaces())
-          .catch(() => {})
-      }
-    } catch (err) {
-      if (is401(err)) { onSessionExpired(); return }
-      setError(err.message)
-    } finally {
-      setLoading(false)
-      if (isMultiStepWorkspace) setWorkspaceRunning(false)
-    }
-  }
-
-  async function handleComposePlan() {
-    setComposerProposalError(null)
-    setComposerProposal(null)
-    setValidationError(null)
-    const trimmed = taskInput.trim()
-    if (!trimmed) { setValidationError('Please enter a task description.'); return }
-    if (trimmed.length < 5) { setValidationError('Task description must be at least 5 characters.'); return }
-    setComposerProposalLoading(true)
-    try {
-      const data = await composeIntent(trimmed, selectedDatasetId || null, token, true)
-      const proposal = data?.data ?? null
-      setComposerProposal(proposal)
-      if (proposal?.workspace_id != null) setActiveWorkspaceId(proposal.workspace_id)
-    } catch (err) {
-      if (is401(err)) { onSessionExpired(); return }
-      setComposerProposalError(err.message)
-    } finally {
-      setComposerProposalLoading(false)
-    }
-  }
-
-  async function handleReopenWorkspace(ws) {
+  function handleReopenWorkspace(ws) {
     setActiveWorkspaceId(ws.id)
-    setTaskInput(ws.intent_text || '')
-    setResult(null)
-    setResultPanelOpen(false)
-    setError(null)
-    setValidationError(null)
-    if (ws.dataset_id != null) setSelectedDatasetId(ws.dataset_id)
-    if (ws.proposal) {
-      setComposerProposal({ ...ws.proposal, workspace_id: ws.id })
-    } else {
-      setComposerProposal(null)
-    }
-    setActiveNav('overview')
+    if (ws.dataset_id != null) { setSelectedDatasetId(ws.dataset_id); setDatasetExplicit(false) }
+    setActiveNav('ai-workspace')
   }
 
   async function handleDatasetUpload() {
@@ -2948,6 +2786,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       const data = await uploadDataset(datasetFile, token)
       setDatasetSummary(data.data)
       setSelectedDatasetId(data.data.dataset_id)
+      setDatasetExplicit(false)
       refreshDatasets()
     } catch (err) {
       if (is401(err)) { onSessionExpired(); return }
@@ -2965,6 +2804,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       const data = await uploadDataset(file, token)
       setDatasetSummary(data.data)
       setSelectedDatasetId(data.data.dataset_id)
+      setDatasetExplicit(false)
       refreshDatasets()
     } catch (err) {
       if (is401(err)) { onSessionExpired(); return }
@@ -2988,7 +2828,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       setDatasetList(remaining)
       if (wasActive) {
         const nextId = remaining.length > 0 ? remaining[0].id : null
-        setSelectedDatasetId(nextId)  // triggers summary useEffect
+        setSelectedDatasetId(nextId)
+        setDatasetExplicit(false)
         setReport(null)
         if (!nextId) setDatasetSummary(null)
       }
@@ -3028,15 +2869,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
         .ts-composer-input::placeholder { font-size: 0.72rem; opacity: 0.6; }
       `}</style>
 
-      {/* Hidden file input for composer "Attach Dataset" — always mounted */}
-      <input
-        ref={composerFileInputRef}
-        type="file"
-        accept=".csv,.xlsx,.xls"
-        style={{ display: 'none' }}
-        onChange={e => { const f = e.target.files[0]; if (f) handleComposerAttach(f); e.target.value = '' }}
-      />
-
       {dsModal && (
         <ConfirmModal
           C={C} S={S}
@@ -3059,125 +2891,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
         }}>
           <span style={{ fontWeight: '700' }}>{dsToast.ok ? '✓' : '✕'}</span>
           {dsToast.msg}
-        </div>
-      )}
-
-      {/* ═══ EXECUTION WORKSPACE MODAL ═══ */}
-      {/* Backdrop */}
-      {resultPanelOpen && (
-        <div
-          onClick={() => setResultPanelOpen(false)}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 210,
-            background: 'rgba(0,0,0,0.55)',
-            backdropFilter: 'blur(4px)',
-            WebkitBackdropFilter: 'blur(4px)',
-            animation: 'panelFadeIn 0.18s ease',
-          }}
-        />
-      )}
-      {/* Modal — stays in DOM when there is data; fades+scales in/out */}
-      {(result || error || loading) && (
-        <div style={{
-          position: 'fixed',
-          top: '50%', left: '50%',
-          zIndex: 211,
-          width: 'min(880px, 94vw)',
-          maxHeight: '92vh',
-          background: C.surface,
-          border: `1px solid ${C.borderAlt}`,
-          borderRadius: '16px',
-          boxShadow: '0 40px 120px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.03)',
-          display: 'flex', flexDirection: 'column',
-          overflow: 'hidden',
-          opacity: resultPanelOpen ? 1 : 0,
-          transform: resultPanelOpen
-            ? 'translate(-50%, -50%) scale(1)'
-            : 'translate(-50%, -50%) scale(0.96)',
-          transition: 'opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-          pointerEvents: resultPanelOpen ? 'auto' : 'none',
-        }}>
-          {/* Workspace header */}
-          <div style={{
-            padding: '16px 22px', borderBottom: `1px solid ${C.border}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            flexShrink: 0, background: C.surface,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ width: '34px', height: '34px', borderRadius: '9px', background: C.accentSoft, border: `1px solid ${C.accent}25`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
-              </div>
-              <div>
-                <div style={{ fontSize: '0.88rem', fontWeight: '700', color: C.text, letterSpacing: '-0.1px', lineHeight: 1.2 }}>Execution Workspace</div>
-                <div style={{ fontSize: '0.68rem', color: C.textMuted, marginTop: '2px' }}>
-                  {loading ? 'Workflow executing…' : error ? 'Execution failed — see details below' : 'Execution complete'}
-                </div>
-              </div>
-              {loading ? (
-                <span style={{ background: C.warnSoft, color: C.warn, border: `1px solid ${C.warn}40`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.67rem', fontWeight: '700' }}>Running…</span>
-              ) : error ? (
-                <span style={{ background: C.dangerSoft, color: C.danger, border: `1px solid ${C.danger}40`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.67rem', fontWeight: '700' }}>Failed</span>
-              ) : result ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: C.successSoft, color: C.success, border: `1px solid ${C.success}40`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.67rem', fontWeight: '700' }}>
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: C.success, boxShadow: `0 0 5px ${C.success}`, display: 'inline-block' }}/>Completed
-                </span>
-              ) : null}
-            </div>
-            <button
-              onClick={() => setResultPanelOpen(false)}
-              style={{ background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '8px', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: C.textSec, flexShrink: 0 }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-            </button>
-          </div>
-
-          {/* Workspace body — scrollable */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '22px 24px' }}>
-            {loading ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '280px', gap: '18px' }}>
-                <div style={{ width: '42px', height: '42px', borderRadius: '50%', border: `3px solid ${C.accent}25`, borderTopColor: C.accent, animation: 'spin 0.75s linear infinite' }} />
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '0.9rem', color: C.textSec, marginBottom: '5px', fontWeight: '500' }}>Executing workflow…</div>
-                  <div style={{ fontSize: '0.75rem', color: C.textMuted }}>This may take a few seconds</div>
-                </div>
-              </div>
-            ) : error ? (
-              <div>
-                <div style={{ background: C.dangerSoft, border: `1px solid ${C.danger}40`, borderRadius: '12px', padding: '18px 20px', marginBottom: '16px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.danger} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                    <div style={{ fontSize: '0.65rem', color: C.danger, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Execution Error</div>
-                  </div>
-                  <p style={{ color: C.danger, fontSize: '0.85rem', margin: 0, lineHeight: 1.65 }}>{error}</p>
-                </div>
-                <div style={{ fontSize: '0.78rem', color: C.textMuted, lineHeight: 1.6 }}>
-                  Check the task description and try again. Common causes: unsupported workflow type, missing dataset, or network error.
-                </div>
-              </div>
-            ) : result ? (
-              <ErrorBoundary C={C}>
-                <Suspense fallback={<LazyFallback />}>
-                  <WorkflowResult result={result} C={C} S={S} onOpenReport={handleOpenSavedReport} onExportReport={(id, fmt) => exportReport(id, token, fmt).catch(() => {})} SectionRenderer={ReportSection} />
-                </Suspense>
-              </ErrorBoundary>
-            ) : null}
-          </div>
-
-          {/* Workspace footer */}
-          {!loading && (
-            <div style={{ padding: '14px 22px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: '10px', flexShrink: 0, background: C.surface }}>
-              <button
-                onClick={() => { setActiveNav('history'); setResultPanelOpen(false) }}
-                style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '8px 18px', fontSize: '0.8rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '500', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                View History
-              </button>
-              <button
-                onClick={() => setResultPanelOpen(false)}
-                style={{ marginLeft: 'auto', ...S.btnPrimary, background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', padding: '8px 22px', fontSize: '0.8rem' }}>
-                Close
-              </button>
-            </div>
-          )}
         </div>
       )}
 
@@ -3249,20 +2962,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '0 28px', zIndex: 50, flexShrink: 0,
         }}>
-          {/* Greeting */}
-          {(() => {
-            const h = new Date().getHours()
-            const salutation = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'
-            const firstName = user?.name?.split(' ')[0] || user?.email?.split('@')[0] || null
-            return (
-              <div style={{ paddingLeft: '8px', display: 'flex', alignItems: 'center', gap: '6px', alignSelf: 'flex-end', paddingBottom: '2px' }}>
-                <span style={{ fontSize: '0.9rem', fontWeight: '600', color: C.text, letterSpacing: '-0.1px' }}>
-                  {salutation}{firstName ? `, ${firstName}` : ''}
-                </span>
-                <span role="img" aria-label="wave" style={{ fontSize: '0.9rem' }}>👋</span>
-              </div>
-            )
-          })()}
+          <div />
           {/* Right icon cluster */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
             {/* Bell */}
@@ -3445,13 +3145,18 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                     datasetList={datasetList}
                     selectedDatasetId={selectedDatasetId}
                     setSelectedDatasetId={setSelectedDatasetId}
-                    externalResult={result}
-                    externalLoading={loading}
-                    externalError={error}
+                    datasetExplicit={datasetExplicit}
+                    setDatasetExplicit={setDatasetExplicit}
                     setActiveNav={setActiveNav}
                     onOpenReport={handleOpenSavedReport}
                     onExportReport={(id, fmt) => exportReport(id, token, fmt).catch(() => {})}
                     onUploadDataset={handleComposerAttach}
+                    onExecutionComplete={() => {
+                      refreshNotifications()
+                      refreshScheduled()
+                      refreshHistory()
+                      refreshReports()
+                    }}
                     contextStats={{
                       workflowCount: workflowList.length,
                       nextScheduledAt: scheduledList
@@ -3477,11 +3182,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
             {/* ── Overview ─────────────────────────────────────────── */}
             {activeNav === 'overview' && (() => {
-              const hour = new Date().getHours()
-              const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
-              const raw = user?.name || user?.email || ''
-              const firstName = raw.split(' ')[0].split('@')[0] || 'there'
-
               const activeWfCount    = workflowList.length
               const schedActiveCount = scheduledList.filter(s => s.enabled).length
               const unreadAlerts     = notifications.filter(n => !n.read)
@@ -3519,20 +3219,6 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               ]
 
               return <>
-                {/* ── Greeting + System Status ── */}
-                <div style={{ marginBottom: '16px' }}>
-                  <h2 style={{ margin: '0 0 5px', fontSize: '1.6rem', fontWeight: '600', letterSpacing: '-0.5px', color: C.text, lineHeight: 1.1 }}>
-                    {greeting}, <span style={{ color: C.accent }}>{firstName}</span>
-                  </h2>
-                  <p style={{ margin: 0, color: C.textSec, fontSize: '0.75rem', lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                    <span>Enterprise Operations Dashboard</span>
-                    {activeWfCount > 0 && <span style={{ color: '#a78bfa' }}>· {activeWfCount} workflow{activeWfCount !== 1 ? 's' : ''}</span>}
-                    {schedActiveCount > 0 && <span style={{ color: '#38bdf8' }}>· {schedActiveCount} scheduled</span>}
-                    {unreadAlerts.length > 0 && <span style={{ color: '#f59e0b' }}>· {unreadAlerts.length} alert{unreadAlerts.length !== 1 ? 's' : ''}</span>}
-                    {nextScheduled && <span style={{ color: C.textMuted }}>· Next run {fmtNextRun(nextScheduled.next_run_at)}</span>}
-                  </p>
-                </div>
-
                 {/* ── KPI Strip ── */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '8px', marginBottom: '14px' }}>
                   {KPI_CARDS.map(card => (
@@ -3673,7 +3359,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                 <div style={{ fontSize: '0.74rem', color: C.textSec, fontWeight: '500', marginBottom: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{rec.intent}</div>
                                 <div style={{ fontSize: '0.63rem', color: C.textMuted, lineHeight: 1.4 }}>{rec.suggestion}</div>
                               </div>
-                              <button onClick={() => { setTaskInput(rec.intent); setActiveNav('ai-workspace') }}
+                              <button onClick={() => setActiveNav('ai-workspace')}
                                 style={{ flexShrink: 0, background: pal + '18', border: `1px solid ${pal}30`, borderRadius: '6px', padding: '4px 9px', fontSize: '0.65rem', color: pal, cursor: 'pointer', fontFamily: FONT, fontWeight: '600', whiteSpace: 'nowrap' }}>
                                 Run
                               </button>
@@ -4627,9 +4313,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                   {sw.run_count > 0 && <div style={{ fontSize: '0.64rem', color: C.textMuted, marginTop: '1px' }}>{sw.run_count} run{sw.run_count !== 1 ? 's' : ''}</div>}
                                 </div>
                               </div>
-                              {/* Frequency */}
-                              <div style={{ padding: '0 12px', fontSize: '0.72rem', color: C.textMuted, textTransform: 'capitalize' }}>
-                                {sw.frequency}{sw.day_of_week ? ` on ${sw.day_of_week}` : ''}
+                              {/* Frequency — prefer human_label when available */}
+                              <div style={{ padding: '0 12px', fontSize: '0.72rem', color: C.textMuted, textTransform: sw.human_label ? 'none' : 'capitalize' }}>
+                                {sw.human_label || ((sw.frequency || '') + (sw.day_of_week ? ` on ${sw.day_of_week}` : ''))}
                               </div>
                               {/* Next Run */}
                               <div style={{ padding: '0 12px', fontSize: '0.7rem', color: C.textMuted, whiteSpace: 'nowrap' }}>

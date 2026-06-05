@@ -30,6 +30,7 @@ from data.scheduled_workflow_service import (
     resume_scheduled_workflow,
     get_schedule_health,
     get_scheduled_workflow_by_id,
+    get_scheduled_workflow_by_engine_tool_id,
     update_scheduled_workflow_outcome,
     _classify_result as classify_schedule_result,
 )
@@ -1096,12 +1097,84 @@ def save_tool_route(
                 tool_def.id, _auto_err,
             )
 
+    # ── Scheduler bridge: create a scheduled_workflows row when schedule.enabled ──
+    #
+    # Maps ScheduleSpec.schedule_type to APScheduler frequency values.
+    # Skips row creation if a row already exists for this engine_tool_id (dedup).
+    # Non-fatal — a bridge failure must not block the save response.
+    if tool_def.schedule.enabled:
+        _SCHED_TYPE_MAP = {
+            "daily":     "daily",
+            "weekly":    "weekly",
+            "monthly":   "monthly",
+            "recurring": "daily",
+            "automated": "daily",
+        }
+        try:
+            from core.engine.schedule_parser import parse_schedule_intent as _parse_sched
+            _stype = (tool_def.schedule.schedule_type or "").lower()
+            _frequency = _SCHED_TYPE_MAP.get(_stype, "daily")
+
+            # Derive cron + human_label: prefer explicit schedule fields, then
+            # parse the schedule_type string, then use tool name as last resort.
+            _cron        = tool_def.schedule.cron or None
+            _human_label = tool_def.schedule.human_label or None
+            if not _cron:
+                # Parse schedule_type ("weekly" → "0 9 * * 1") or tool name
+                _parse_src = _stype or tool_def.name
+                try:
+                    _sm       = _parse_sched(_parse_src)
+                    _cron        = _sm["cron"]
+                    _human_label = _human_label or _sm["human_label"]
+                    _frequency   = _sm["frequency"]
+                except ValueError:
+                    pass  # leave cron/human_label as None
+
+            if get_scheduled_workflow_by_engine_tool_id(tool_def.id) is None:
+                create_scheduled_workflow(
+                    user_id=str(user.user_id),
+                    dataset_id=None,
+                    input_text=tool_def.name,
+                    task_type="engine_tool",
+                    frequency=_frequency,
+                    day_of_week=None,
+                    engine_tool_id=tool_def.id,
+                    cron=_cron,
+                    human_label=_human_label,
+                )
+                _log.info(
+                    "Scheduler bridge: scheduled_workflow created for engine tool '%s' (frequency=%s, cron=%s)",
+                    tool_def.id, _frequency, _cron,
+                )
+            else:
+                _log.debug(
+                    "Scheduler bridge: scheduled_workflow already exists for engine tool '%s' — skipped",
+                    tool_def.id,
+                )
+        except Exception as _bridge_err:
+            _log.warning(
+                "Scheduler bridge failed for engine tool '%s': %s — continuing without schedule",
+                tool_def.id, _bridge_err,
+            )
+
+    # Derive human_label for the response (best-effort — non-fatal)
+    _save_human_label: str | None = tool_def.schedule.human_label or None
+    if tool_def.schedule.enabled and not _save_human_label:
+        try:
+            from core.engine.schedule_parser import parse_schedule_intent as _p_sched
+            _src = (tool_def.schedule.schedule_type or "").lower()
+            if _src:
+                _save_human_label = _p_sched(_src)["human_label"]
+        except Exception:
+            pass
+
     return {
         "status": "success",
         "data": {
-            "tool_id": tool_def.id,
-            "name":    tool_def.name,
-            "status":  final_status,
+            "tool_id":     tool_def.id,
+            "name":        tool_def.name,
+            "status":      final_status,
+            "human_label": _save_human_label,
         },
     }
 
@@ -1211,13 +1284,15 @@ def list_engine_tools_route(
     tools = list_tools()
     data = [
         {
-            "id":           t.id,
-            "name":         t.name,
-            "description":  t.description,
-            "status":       t.status.value,
-            "trigger_type": t.trigger.type.value,
-            "created_at":   t.metadata.created_at.isoformat(),
-            "updated_at":   t.metadata.updated_at.isoformat(),
+            "id":               t.id,
+            "name":             t.name,
+            "description":      t.description,
+            "status":           t.status.value,
+            "trigger_type":     t.trigger.type.value,
+            "schedule_enabled": t.schedule.enabled,
+            "schedule_type":    t.schedule.schedule_type,
+            "created_at":       t.metadata.created_at.isoformat(),
+            "updated_at":       t.metadata.updated_at.isoformat(),
         }
         for t in tools
     ]
@@ -1757,26 +1832,52 @@ def create_scheduled_workflow_route(
     if not request.input_text.strip():
         return JSONResponse(status_code=400, content=build_error_response("input_text cannot be empty"))
     try:
-        plan = interpret_task(request.input_text)
-        schedule = plan.get("schedule")
-        if not schedule or not schedule.get("frequency"):
-            return JSONResponse(
-                status_code=400,
-                content=build_error_response(
-                    "No recurring schedule detected. "
-                    "Include a frequency such as 'daily', 'weekly', or 'monthly'."
-                ),
-            )
-        frequency = schedule["frequency"]
-        day_of_week = plan.get("metadata", {}).get("entities", {}).get("day_of_week")
-        task_type = plan.get("task_type", "unknown")
+        from core.engine.schedule_parser import parse_schedule_intent
+
+        # ── Try natural-language parser first ────────────────────────────────
+        parsed_cron: str | None = None
+        parsed_label: str | None = None
+        parsed_frequency: str | None = None
+        day_of_week: str | None = None
+        task_type: str = "unknown"
+
+        try:
+            sched_meta = parse_schedule_intent(request.input_text)
+            parsed_cron      = sched_meta["cron"]
+            parsed_label     = sched_meta["human_label"]
+            parsed_frequency = sched_meta["frequency"]
+        except ValueError:
+            # NL parser didn't recognise the phrase — fall back to interpret_task
+            pass
+
+        if parsed_frequency is None:
+            # Fallback: use the existing task interpreter
+            plan = interpret_task(request.input_text)
+            schedule = plan.get("schedule")
+            if not schedule or not schedule.get("frequency"):
+                return JSONResponse(
+                    status_code=400,
+                    content=build_error_response(
+                        "No recurring schedule detected. "
+                        "Try phrases like 'every Friday at 9 AM', 'daily at 6 AM', or 'every 2 hours'."
+                    ),
+                )
+            parsed_frequency = schedule["frequency"]
+            day_of_week = plan.get("metadata", {}).get("entities", {}).get("day_of_week")
+            task_type = plan.get("task_type", "unknown")
+        else:
+            plan = interpret_task(request.input_text)
+            task_type = plan.get("task_type", "unknown")
+
         entry = create_scheduled_workflow(
             user_id=str(user.user_id),
             dataset_id=request.dataset_id,
             input_text=request.input_text,
             task_type=task_type,
-            frequency=frequency,
+            frequency=parsed_frequency,
             day_of_week=day_of_week,
+            cron=parsed_cron,
+            human_label=parsed_label,
         )
         return {"status": "success", "data": entry}
     except Exception as e:

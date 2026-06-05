@@ -327,17 +327,40 @@ def _build_notification_message(ctx: dict, plan_intent: str) -> str:
 def run_send_notification_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None) -> dict:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     message = _build_notification_message(ctx or {}, plan.get("intent", ""))
+
+    notification_id = None
+    notification_status = "failed"
+    notification_error = None
+
+    if user_id is not None:
+        try:
+            from data.notification_service import create_notification
+            notification_id = create_notification(
+                user_id=user_id,
+                title="Workflow notification",
+                message=message,
+                type="workflow",
+                status="info",
+            )
+            notification_status = "created"
+        except Exception as exc:
+            notification_error = str(exc)
+
+    sent = notification_id is not None
+
     return {
-        "plan_id": plan["plan_id"],
-        "status": "completed",
-        "task_type": "send_notification",
-        "started_at": now,
-        "finished_at": now,
-        "step_results": [],
-        "notification_sent": True,
-        "channel": "in_app",
-        "message": message,
-        "error": None,
+        "plan_id":             plan["plan_id"],
+        "status":              "completed",
+        "task_type":           "send_notification",
+        "started_at":          now,
+        "finished_at":         now,
+        "step_results":        [],
+        "notification_sent":   sent,
+        "notification_id":     notification_id,
+        "notification_status": notification_status,
+        "channel":             "in_app",
+        "message":             message,
+        "error":               notification_error if not sent else None,
     }
 
 
@@ -580,29 +603,65 @@ def run_multi_step_workflow(
 
     skipped_count = sum(1 for s in step_statuses if s["status"] == "skipped")
 
-    if final_status == "failed" and user_id is not None:
+    # Orchestration-layer notification — one per execution, created only after
+    # final_status is known.  Success notification fires only when all required
+    # steps completed; failure notification fires only on failure.
+    # The ID is captured so the frontend can confirm delivery without relying
+    # solely on explicit send_notification step results.
+    # Skipped when an explicit send_notification step already ran (avoid duplicate).
+    _has_send_notif_step = any(
+        s.get("tool") == "send_notification" for s in step_results_list
+    )
+    _orchestration_notif_id: int | None = None
+    if user_id is not None and not _has_send_notif_step:
         try:
             from data.notification_service import create_notification
-            create_notification(
-                user_id=user_id,
-                title="Workflow failed",
-                message=error_msg or "A workflow step did not complete successfully.",
-                type="workflow",
-                status="error",
-            )
+            if final_status == "failed":
+                _orchestration_notif_id = create_notification(
+                    user_id=user_id,
+                    title="Workflow failed",
+                    message=error_msg or "A workflow step did not complete successfully.",
+                    type="workflow",
+                    status="error",
+                )
+            else:
+                _orchestration_notif_id = create_notification(
+                    user_id=user_id,
+                    title="Workflow completed",
+                    message="Your workflow completed successfully.",
+                    type="workflow",
+                    status="success",
+                )
         except Exception:
             pass
 
+    # Hoist notification confirmation from send_notification step to top level
+    # so the frontend can confirm delivery without traversing step_results.
+    # Explicit send_notification step takes precedence; fall back to the
+    # orchestration-layer notification created above.
+    _notif_result = next(
+        (
+            s["result"] for s in step_results_list
+            if s.get("tool") == "send_notification" and isinstance(s.get("result"), dict)
+        ),
+        None,
+    )
+
+    _notif_sent = _notif_result.get("notification_sent") if _notif_result else (_orchestration_notif_id is not None)
+    _notif_id   = _notif_result.get("notification_id")   if _notif_result else _orchestration_notif_id
+
     return {
-        "plan_id":        plan_id,
-        "status":         final_status,
-        "task_type":      "multi_step",
-        "started_at":     started_at,
-        "finished_at":    finished_at,
-        "workflow_steps": step_statuses,
-        "step_results":   step_results_list,
-        "error":          error_msg,
-        "skipped_steps":  skipped_count,
+        "plan_id":           plan_id,
+        "status":            final_status,
+        "task_type":         "multi_step",
+        "started_at":        started_at,
+        "finished_at":       finished_at,
+        "workflow_steps":    step_statuses,
+        "step_results":      step_results_list,
+        "error":             error_msg,
+        "skipped_steps":     skipped_count,
+        "notification_sent": _notif_sent,
+        "notification_id":   _notif_id,
     }
 
 

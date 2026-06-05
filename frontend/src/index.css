@@ -55,6 +55,25 @@ body {
   overflow-y: scroll;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2e303a transparent;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2e303a;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d4054;
+}
+
 #root {
   width: 100vw;
   min-height: 100vh;

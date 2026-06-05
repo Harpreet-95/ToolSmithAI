@@ -52,6 +52,16 @@ _MULTI_STEP_SIGNALS: frozenset = frozenset({
     "notify", "notification", "notif", "alert", "ping",
 })
 
+# Words that signal a recurring schedule request. Used as a first-pass hint;
+# detect_frequency() must also find a valid frequency before a row is created.
+_SCHEDULE_HINT_WORDS: frozenset = frozenset({
+    "schedule", "scheduled", "every", "recurring", "recur",
+    "automate", "automated", "regularly", "repeat",
+    "daily", "weekly", "monthly",
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+})
+
 # These signals intentionally bias business intelligence requests toward dataset
 # reporting paths (Path 2 composer bridge) instead of generic workflow execution.
 # Pure notification/email/reminder intents are NOT included — they stay on the
@@ -130,6 +140,63 @@ def _log_result(plan: dict, result: dict, user_id: str | None, dataset_id: int |
         log_usage_event(user_id, "interpret", "api", reference_id=result.get("plan_id"))
 
 
+def _maybe_create_schedule(
+    user_input: str,
+    lowered: str,
+    result: dict,
+    user_id: str | None,
+    dataset_id: int | None,
+) -> None:
+    """Detect recurring schedule intent and create a scheduled_workflow row.
+
+    Mutates result in-place. Always sets schedule_requested. Only sets
+    schedule_created / schedule_id / schedule_status when a valid frequency
+    is detected and the DB insert succeeds. Never raises.
+    """
+    if not any(w in lowered for w in _SCHEDULE_HINT_WORDS):
+        result["schedule_requested"] = False
+        return
+
+    from core.interpreter.task_interpreter import detect_frequency, detect_weekday
+    frequency = detect_frequency(lowered)
+    day_of_week = detect_weekday(lowered)
+    if day_of_week and frequency is None:
+        frequency = "weekly"
+
+    if not frequency:
+        result["schedule_requested"] = False
+        return
+
+    result["schedule_requested"] = True
+
+    if user_id is None:
+        result["schedule_created"] = False
+        result["schedule_id"] = None
+        result["schedule_status"] = "failed"
+        result["schedule_error"] = "Authentication required to create a schedule."
+        return
+
+    task_type = result.get("task_type") or "generate_dataset_report"
+    try:
+        from data.scheduled_workflow_service import create_scheduled_workflow
+        entry = create_scheduled_workflow(
+            user_id=user_id,
+            dataset_id=dataset_id,
+            input_text=user_input,
+            task_type=task_type,
+            frequency=frequency,
+            day_of_week=day_of_week,
+        )
+        result["schedule_created"] = True
+        result["schedule_id"] = entry["id"]
+        result["schedule_status"] = "created"
+    except Exception as exc:
+        result["schedule_created"] = False
+        result["schedule_id"] = None
+        result["schedule_status"] = "failed"
+        result["schedule_error"] = str(exc)
+
+
 def handle_input(
     user_input: str,
     user_id: str | None = None,
@@ -164,6 +231,7 @@ def handle_input(
         result["planner_source"]  = "legacy_interpreter"
         result["fallback_used"]   = False
         _log_result(plan, result, user_id=user_id, dataset_id=dataset_id)
+        _maybe_create_schedule(user_input, lowered, result, user_id, dataset_id)
         return format_output(result)
 
     # ── Path 2: composer bridge ───────────────────────────────────────────────
@@ -207,6 +275,7 @@ def handle_input(
                 "steps":     [],
             }
             _log_result(composed_plan, result, user_id=user_id, dataset_id=dataset_id)
+            _maybe_create_schedule(user_input, lowered, result, user_id, dataset_id)
             return format_output(result)
 
     # ── Path 3: legacy interpreter (fallback) ─────────────────────────────────
@@ -238,4 +307,5 @@ def handle_input(
     result["planner_source"]  = "legacy_interpreter"
     result["fallback_used"]   = True
     _log_result(plan, result, user_id=user_id, dataset_id=dataset_id)
+    _maybe_create_schedule(user_input, lowered, result, user_id, dataset_id)
     return format_output(result)

@@ -80,21 +80,24 @@ def init_db() -> None:
         );
 
         CREATE TABLE IF NOT EXISTS scheduled_workflows (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     TEXT    NOT NULL,
-            dataset_id  INTEGER,
-            input_text  TEXT    NOT NULL,
-            task_type   TEXT    NOT NULL,
-            frequency   TEXT    NOT NULL,
-            day_of_week TEXT,
-            next_run_at TEXT    NOT NULL,
-            enabled     INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT    NOT NULL,
-            updated_at  TEXT    NOT NULL,
-            last_run_at TEXT,
-            last_status TEXT,
-            last_error  TEXT,
-            run_count   INTEGER NOT NULL DEFAULT 0
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        TEXT    NOT NULL,
+            dataset_id     INTEGER,
+            input_text     TEXT    NOT NULL,
+            task_type      TEXT    NOT NULL,
+            frequency      TEXT    NOT NULL,
+            day_of_week    TEXT,
+            next_run_at    TEXT    NOT NULL,
+            enabled        INTEGER NOT NULL DEFAULT 1,
+            created_at     TEXT    NOT NULL,
+            updated_at     TEXT    NOT NULL,
+            last_run_at    TEXT,
+            last_status    TEXT,
+            last_error     TEXT,
+            run_count      INTEGER NOT NULL DEFAULT 0,
+            engine_tool_id TEXT,
+            cron           TEXT,
+            human_label    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS usage_events (
@@ -249,10 +252,13 @@ def init_db() -> None:
         for row in cursor.execute("PRAGMA table_info(scheduled_workflows)").fetchall()
     }
     sw_migrations = [
-        ("last_run_at", "ALTER TABLE scheduled_workflows ADD COLUMN last_run_at TEXT"),
-        ("last_status",  "ALTER TABLE scheduled_workflows ADD COLUMN last_status TEXT"),
-        ("last_error",   "ALTER TABLE scheduled_workflows ADD COLUMN last_error TEXT"),
-        ("run_count",    "ALTER TABLE scheduled_workflows ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0"),
+        ("last_run_at",    "ALTER TABLE scheduled_workflows ADD COLUMN last_run_at TEXT"),
+        ("last_status",    "ALTER TABLE scheduled_workflows ADD COLUMN last_status TEXT"),
+        ("last_error",     "ALTER TABLE scheduled_workflows ADD COLUMN last_error TEXT"),
+        ("run_count",      "ALTER TABLE scheduled_workflows ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0"),
+        ("engine_tool_id", "ALTER TABLE scheduled_workflows ADD COLUMN engine_tool_id TEXT"),
+        ("cron",           "ALTER TABLE scheduled_workflows ADD COLUMN cron TEXT"),
+        ("human_label",    "ALTER TABLE scheduled_workflows ADD COLUMN human_label TEXT"),
     ]
     for col, stmt in sw_migrations:
         if col not in sw_existing:

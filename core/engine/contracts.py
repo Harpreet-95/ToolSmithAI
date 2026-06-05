@@ -161,10 +161,12 @@ class RBACSpec:
 
 @dataclass
 class ScheduleSpec:
-    """Future: recurring execution configuration."""
+    """Recurring execution configuration."""
     enabled: bool = False
     cron: str = ""
     timezone: str = "UTC"
+    schedule_type: Optional[str] = None   # "weekly" | "daily" | "monthly" | "recurring" | "automated"
+    human_label: str = ""                 # e.g. "Every Friday at 9 AM"
 
 
 @dataclass

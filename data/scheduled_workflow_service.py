@@ -11,7 +11,23 @@ _WEEKDAY_MAP = {
 }
 
 
-def _compute_next_run_at(frequency: str, day_of_week: str | None = None) -> str:
+def _compute_next_run_at(
+    frequency: str,
+    day_of_week: str | None = None,
+    cron: str | None = None,
+) -> str:
+    """Return ISO-8601 UTC string for the next run time.
+
+    When a cron expression is provided it takes precedence over frequency/day_of_week.
+    Legacy daily/weekly/monthly paths are unchanged.
+    """
+    if cron:
+        try:
+            from core.engine.schedule_parser import compute_next_run_from_cron
+            return compute_next_run_from_cron(cron).isoformat()
+        except Exception as exc:
+            logger.warning("cron next-run computation failed (%s); falling back to frequency", exc)
+
     now = datetime.datetime.now(datetime.timezone.utc)
     if frequency == "daily":
         delta = datetime.timedelta(days=1)
@@ -36,20 +52,25 @@ def create_scheduled_workflow(
     task_type: str,
     frequency: str,
     day_of_week: str | None,
+    engine_tool_id: str | None = None,
+    cron: str | None = None,
+    human_label: str | None = None,
 ) -> dict:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    next_run_at = _compute_next_run_at(frequency, day_of_week)
+    next_run_at = _compute_next_run_at(frequency, day_of_week, cron=cron)
     conn = get_connection()
     try:
         cursor = conn.execute(
             """
             INSERT INTO scheduled_workflows
               (user_id, dataset_id, input_text, task_type, frequency,
-               day_of_week, next_run_at, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+               day_of_week, next_run_at, enabled, created_at, updated_at,
+               engine_tool_id, cron, human_label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
             """,
             (user_id, dataset_id, input_text, task_type, frequency,
-             day_of_week, next_run_at, now, now),
+             day_of_week, next_run_at, now, now, engine_tool_id,
+             cron or None, human_label or None),
         )
         conn.commit()
         row_id = cursor.lastrowid
@@ -63,6 +84,18 @@ def get_scheduled_workflow_by_id(workflow_id: int) -> dict | None:
     try:
         row = conn.execute(
             "SELECT * FROM scheduled_workflows WHERE id = ?", (workflow_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_scheduled_workflow_by_engine_tool_id(engine_tool_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM scheduled_workflows WHERE engine_tool_id = ?",
+            (engine_tool_id,),
         ).fetchone()
         return dict(row) if row else None
     finally:
@@ -255,6 +288,8 @@ def get_schedule_health(user_id: str) -> list:
             "input_text":      sw["input_text"],
             "frequency":       frequency,
             "day_of_week":     sw.get("day_of_week"),
+            "cron":            sw.get("cron"),
+            "human_label":     sw.get("human_label"),
             "enabled":         enabled,
             "health":          health,
             "next_run_at":     next_run_str,
@@ -304,7 +339,7 @@ def run_due_workflows() -> None:
     for wf in due:
         wid     = wf["id"]
         user_id = wf["user_id"]
-        next_run = _compute_next_run_at(wf["frequency"], wf.get("day_of_week"))
+        next_run = _compute_next_run_at(wf["frequency"], wf.get("day_of_week"), cron=wf.get("cron"))
         # Advance next_run_at BEFORE executing to prevent duplicate runs
         mark_scheduled_workflow_run(wid, next_run)
 
@@ -316,12 +351,28 @@ def run_due_workflows() -> None:
             pass
 
         try:
-            result = handle_input(
-                wf["input_text"],
-                user_id=user_id,
-                dataset_id=wf.get("dataset_id"),
-            )
-            status, warn_msg = _classify_result(result)
+            if wf.get("engine_tool_id"):
+                from data.engine.tool_store import get_tool
+                from core.engine.runtime import execute_tool
+                from core.engine.contracts import RunStatus
+                _tool_def = get_tool(wf["engine_tool_id"])
+                if _tool_def is None:
+                    raise Exception(f"Engine tool '{wf['engine_tool_id']}' not found")
+                _record = execute_tool(_tool_def, {}, user_id=user_id)
+                if _record.status == RunStatus.COMPLETED:
+                    status, warn_msg = "completed", None
+                else:
+                    status = "warning"
+                    warn_msg = f"Engine tool ended with status: {_record.status.value}"
+                result = {"data": {}}
+            else:
+                result = handle_input(
+                    wf["input_text"],
+                    user_id=user_id,
+                    dataset_id=wf.get("dataset_id"),
+                )
+                status, warn_msg = _classify_result(result)
+
             update_scheduled_workflow_outcome(wid, status=status, error=warn_msg)
             logger.info("Scheduled workflow %s %s. Next run: %s", wid, status, next_run)
 

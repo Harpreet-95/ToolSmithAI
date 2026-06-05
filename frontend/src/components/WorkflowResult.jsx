@@ -43,7 +43,7 @@ function MultiStepResult({ result, C, S }) {
             }}>{statusIcon(step.status)}</span>
             <span style={{ fontSize: '0.83rem', fontWeight: '600', color: C.text }}>{step.label}</span>
             <div style={{ marginLeft: 'auto', ...S.badge(statusColor(step.status), statusBg(step.status)) }}>
-              {step.status}
+              {{ completed: 'Done', failed: 'Could Not Complete', running: 'Running', skipped: 'Not Needed' }[step.status] ?? step.status}
             </div>
           </div>
           {step.status === 'failed' && result.error && (
@@ -189,14 +189,14 @@ function ActionCenter({ result, C, onOpenReport, onExportReport }) {
         </Card>
       )}
 
-      {/* Execution metadata */}
+      {/* Run details */}
       <Card C={C}>
-        <SecLabel text="Execution" />
+        <SecLabel text="Run Details" />
         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
           {result.status && (
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem' }}>
               <span style={{ color: C.textMuted }}>Status</span>
-              <span style={{ color: C.text, fontWeight: '500' }}>{result.status}</span>
+              <span style={{ color: C.text, fontWeight: '500' }}>{{ success: 'Done', completed: 'Done', ok: 'Done', failed: 'Could Not Complete' }[result.status] ?? 'Done'}</span>
             </div>
           )}
           {result.started_at && result.finished_at && (
@@ -246,7 +246,7 @@ function ActionCenter({ result, C, onOpenReport, onExportReport }) {
         if (evs.length === 0) return null
         return (
           <Card C={C}>
-            <SecLabel text="Timeline" />
+            <SecLabel text="Activity" />
             <div style={{ position: 'relative', paddingLeft: '18px' }}>
               <div style={{ position: 'absolute', left: '5px', top: '8px', bottom: '8px', width: '1px', background: C.border }} />
               {evs.map((ev, i) => (
@@ -312,8 +312,8 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: '0.96rem', fontWeight: '700', color: C.text, letterSpacing: '-0.15px', marginBottom: '6px' }}>
             {hasReport
-              ? 'Report generated successfully'
-              : isSuccess ? 'Workflow completed' : 'Workflow failed'}
+              ? 'Report Generated'
+              : isSuccess ? 'Analysis Complete' : 'Request Failed'}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
             {hasReport && (
@@ -338,7 +338,7 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
         </div>
         <div style={{ ...S.badge(statusColor, statusBg), flexShrink: 0 }}>
           <div style={S.dot(statusColor)} />
-          {result.status || 'unknown'}
+          {{ success: 'Done', completed: 'Done', ok: 'Done', failed: 'Could Not Complete' }[result.status] ?? 'Done'}
         </div>
       </div>
     </div>
@@ -367,16 +367,13 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
               <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                 <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: hasAIReport || hasAIReasoning ? '#10b981' : '#9ca3af', flexShrink: 0, display: 'inline-block' }} />
                 <span style={{ fontSize: '0.7rem', fontWeight: '700', color: hasAIReport || hasAIReasoning ? '#10b981' : '#9ca3af', letterSpacing: '0.04em' }}>
-                  {hasAIReport || hasAIReasoning ? 'AI Intelligence Active' : aiMeta?.ai_enabled ? 'Deterministic Report' : 'Standard Report'}
+                  {hasAIReport || hasAIReasoning ? 'AI Intelligence Active' : 'Standard Report'}
                 </span>
               </div>
               {aiMeta?.ai_model_used && (
                 <span style={{ fontSize: '0.62rem', color: '#9ca3af', background: '#6b728012', border: '1px solid #6b728020', borderRadius: '4px', padding: '1px 6px' }}>
                   {aiMeta.ai_model_used.replace('gpt-4o-mini','GPT-4o mini').replace('gpt-4o','GPT-4o')}
                 </span>
-              )}
-              {!hasAIReport && !hasAIReasoning && aiMeta?.ai_enabled && (
-                <span style={{ fontSize: '0.62rem', color: '#9ca3af' }}>AI reasoning unavailable — smart plan used</span>
               )}
             </div>
             {hasAIReasoning && (
@@ -443,11 +440,11 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
 
       {/* AI Status + Reasoning Panel */}
       {aiMeta && infoCard(<>
-        {sectionLabel('AI Status')}
+        {sectionLabel('Analysis')}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: aiMeta.reasoning_summary ? '8px' : 0, flexWrap: 'wrap' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '0.7rem', fontWeight: '700', padding: '2px 8px', borderRadius: '4px', background: aiMeta.ai_enrichment_used ? '#10b9811a' : '#6b72800d', color: aiMeta.ai_enrichment_used ? '#10b981' : '#9ca3af', border: `1px solid ${aiMeta.ai_enrichment_used ? '#10b98128' : '#6b728020'}` }}>
             <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: aiMeta.ai_enrichment_used ? '#10b981' : '#9ca3af', display: 'inline-block', flexShrink: 0 }} />
-            {aiMeta.ai_enrichment_used ? 'AI Active' : aiMeta.ai_enabled ? 'Deterministic Fallback' : 'Smart Plan'}
+            {aiMeta.ai_enrichment_used ? 'AI Active' : 'Standard Analysis'}
           </span>
           {aiMeta.ai_model_used && (
             <span style={{ fontSize: '0.62rem', color: '#9ca3af', background: '#6b728012', border: '1px solid #6b728018', borderRadius: '4px', padding: '1px 6px' }}>
@@ -463,70 +460,20 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
         {aiMeta.reasoning_summary && (
           <p style={{ margin: 0, fontSize: '0.76rem', color: C.textSec, lineHeight: 1.6 }}>{aiMeta.reasoning_summary}</p>
         )}
-        {!aiMeta.ai_enrichment_used && aiMeta.ai_enabled && (
-          <p style={{ margin: aiMeta.reasoning_summary ? '6px 0 0' : 0, fontSize: '0.7rem', color: C.textMuted, lineHeight: 1.5, fontStyle: 'italic' }}>
-            Smart Plan generated using deterministic rules — AI reasoning unavailable for this request.
-          </p>
-        )}
       </>)}
 
       {/* Detected intent — hero text */}
       {result.original_input && infoCard(<>
-        {sectionLabel('Detected Intent')}
+        {sectionLabel('Your Request')}
         <p style={{ margin: 0, fontSize: '0.84rem', color: C.text, lineHeight: 1.65 }}>{result.original_input}</p>
       </>)}
 
       {/* Output */}
-      {(result.output || result.tool || result.operation) && infoCard(<>
+      {result.output && infoCard(<>
         {sectionLabel('Output')}
-        {result.tool      && <div style={{ fontSize: '0.77rem', color: C.textSec, marginBottom: '4px' }}>Tool: <span style={{ color: C.text, fontWeight: '500' }}>{result.tool}</span></div>}
-        {result.operation && <div style={{ fontSize: '0.77rem', color: C.textSec, marginBottom: '4px' }}>Operation: <span style={{ color: C.text, fontWeight: '500' }}>{result.operation}</span></div>}
-        {result.output    && <p style={{ margin: '6px 0 0', fontSize: '0.82rem', color: C.text, lineHeight: 1.6 }}>{typeof result.output === 'string' ? result.output : JSON.stringify(result.output)}</p>}
+        <p style={{ margin: 0, fontSize: '0.82rem', color: C.text, lineHeight: 1.6 }}>{typeof result.output === 'string' ? result.output : JSON.stringify(result.output)}</p>
       </>)}
 
-      {/* Plan Preview */}
-      {(result.task_type || result.schedule || result.metadata || result.step_results?.length > 0) && infoCard(<>
-        {sectionLabel('Plan Preview')}
-        {result.task_type && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.77rem', color: C.textSec }}>Type:</span>
-            <div style={S.badge(C.accent, C.accentSoft)}>
-              {TASK_TYPE_LABELS[result.task_type] || result.task_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-            </div>
-          </div>
-        )}
-        {result.schedule && (
-          <div style={{ fontSize: '0.77rem', color: C.textSec, marginBottom: '8px' }}>
-            Schedule: <span style={{ color: C.text, fontWeight: '500' }}>{result.schedule.frequency}{result.metadata?.entities?.day_of_week ? ` · ${result.metadata.entities.day_of_week}` : ''}</span>
-          </div>
-        )}
-        {(result.metadata?.entities?.recipient_hint || result.metadata?.entities?.report_hint || result.metadata?.entities?.action_hint) && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
-            {result.metadata.entities.recipient_hint && <span style={S.badge(C.textSec, C.bg)}>To: {result.metadata.entities.recipient_hint}</span>}
-            {result.metadata.entities.report_hint    && <span style={S.badge(C.textSec, C.bg)}>Topic: {result.metadata.entities.report_hint}</span>}
-            {result.metadata.entities.action_hint    && <span style={S.badge(C.textSec, C.bg)}>Action: {result.metadata.entities.action_hint}</span>}
-          </div>
-        )}
-        {result.metadata?.warnings?.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
-            {result.metadata.warnings.map((w, i) => (
-              <div key={i} style={{ fontSize: '0.77rem', color: C.warn, lineHeight: 1.5 }}>⚠ {w}</div>
-            ))}
-          </div>
-        )}
-        {result.step_results?.length > 0 && <>
-          <div style={{ fontSize: '0.66rem', color: C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '7px' }}>Planned Steps</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-            {result.step_results.map((step, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.77rem' }}>
-                <span style={{ color: C.textMuted, fontWeight: '600', minWidth: '16px' }}>{i + 1}.</span>
-                <span style={{ color: C.text, fontWeight: '500' }}>{step.tool || `step_${i + 1}`}</span>
-                {step.operation && <span style={{ color: C.textMuted }}>· {step.operation}</span>}
-              </div>
-            ))}
-          </div>
-        </>}
-      </>)}
 
       {/* Unsupported intent notice */}
       {result.metadata?.unsupported_reason && infoCard(<>
@@ -536,10 +483,10 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
         </p>
       </>, { background: C.warnSoft, border: `1px solid ${C.warn}40` })}
 
-      {/* Execution steps */}
+      {/* Steps */}
       {Array.isArray(result.step_results) && result.step_results.length > 0 && (
         <div>
-          {sectionLabel('Execution Steps')}
+          {sectionLabel('Steps')}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
             {result.step_results.map((step, i) => {
               const ok      = step.success !== false && step.status !== 'failed' && step.status !== 'error'
@@ -557,7 +504,7 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {stepDur && <span style={{ fontSize: '0.67rem', color: C.textMuted }}>{stepDur}</span>}
-                      <div style={S.badge(sc, sc + '1a')}><div style={S.dot(sc)} />{ok ? 'Success' : 'Failed'}</div>
+                      <div style={S.badge(sc, sc + '1a')}><div style={S.dot(sc)} />{ok ? 'Done' : 'Could Not Complete'}</div>
                     </div>
                   </div>
                   {outText && (
@@ -576,7 +523,7 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
       {infoCard(<>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
           <div>
-            {sectionLabel('Workflow Summary')}
+            {sectionLabel('Run Summary')}
             {duration && <span style={{ fontSize: '0.77rem', color: C.textSec }}>Duration: {duration}</span>}
           </div>
           <div style={S.badge(statusColor, statusBg)}>
@@ -601,7 +548,7 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
             ? 'Open the saved workspace to explore AI insights, export the report, or schedule it for future runs.'
             : result.task_type === 'send_notification' || result.task_type === 'set_reminder'
             ? 'Your notification has been dispatched. View delivery status in the Timeline above.'
-            : 'Review the execution steps above. Run another task or schedule this workflow for automation.'}
+            : 'Review the activity above. Run another request or schedule this for automation.'}
         </div>
       </>)}
 
@@ -628,12 +575,12 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
       {/* Execution Timeline */}
       {(() => {
         const evs = []
-        if (result.started_at) evs.push({ ts: result.started_at, label: 'Workflow Started', color: C.accent, badge: 'start', detail: null })
+        if (result.started_at) evs.push({ ts: result.started_at, label: 'Started', color: C.accent, badge: 'Start', detail: null })
         if (Array.isArray(result.step_results)) {
           result.step_results.forEach((step, i) => {
             const ok  = step.success !== false && step.status !== 'failed' && step.status !== 'error'
             const dur = step.duration_ms ? `${step.duration_ms}ms` : step.duration ? `${step.duration}s` : null
-            evs.push({ ts: null, label: step.tool || `Step ${i + 1}`, color: ok ? C.success : C.danger, badge: ok ? 'ok' : 'failed', detail: [step.operation, dur].filter(Boolean).join(' · ') || null })
+            evs.push({ ts: null, label: `Step ${i + 1}`, color: ok ? C.success : C.danger, badge: ok ? 'Done' : 'Could Not Complete', detail: dur || null })
           })
         }
         if (result.email_delivery) {
@@ -644,14 +591,11 @@ export default function WorkflowResult({ result, C, S, onOpenReport, onExportRep
           }
         }
         if (result.finished_at) {
-          evs.push({ ts: result.finished_at, label: isSuccess ? 'Workflow Completed' : 'Workflow Failed', color: isSuccess ? C.success : C.danger, badge: isSuccess ? 'done' : 'failed', detail: !isSuccess && result.error ? result.error : null })
+          evs.push({ ts: result.finished_at, label: isSuccess ? 'Completed' : 'Request Failed', color: isSuccess ? C.success : C.danger, badge: isSuccess ? 'Done' : 'Could Not Complete', detail: !isSuccess && result.error ? result.error : null })
         }
         if (evs.length === 0) return null
         return infoCard(<>
-          {sectionLabel('Execution Timeline')}
-          <div style={{ fontSize: '0.66rem', color: C.textMuted, marginBottom: '12px', fontStyle: 'italic' }}>
-            Step order is sequential. Per-step timestamps are not yet available from the backend.
-          </div>
+          {sectionLabel('Activity Timeline')}
           <div style={{ position: 'relative', paddingLeft: '22px' }}>
             <div style={{ position: 'absolute', left: '7px', top: '10px', bottom: '10px', width: '1px', background: C.border }} />
             {evs.map((ev, i) => (
