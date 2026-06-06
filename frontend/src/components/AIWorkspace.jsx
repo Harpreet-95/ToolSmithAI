@@ -60,7 +60,7 @@ const COPILOT_SUGGESTIONS = [
 
 // ── Report style display metadata (maps backend style name → badge label/colors) ──
 const STYLE_LABELS = {
-  executive_brief:    { label: 'Executive Brief',    color: '#7c3aed', bg: 'rgba(124,58,237,0.12)', border: 'rgba(124,58,237,0.28)' },
+  executive_brief:    { label: 'Executive Brief',    color: '#6366f1', bg: 'rgba(99,102,241,0.12)', border: 'rgba(99,102,241,0.28)' },
   visual_dashboard:   { label: 'Visual Dashboard',   color: '#38bdf8', bg: 'rgba(56,189,248,0.12)',  border: 'rgba(56,189,248,0.28)'  },
   analyst_deep_dive:  null, // default — no badge shown
   table_heavy_report: { label: 'Table-Heavy',        color: '#f59e0b', bg: 'rgba(245,158,11,0.12)',  border: 'rgba(245,158,11,0.28)'  },
@@ -423,8 +423,8 @@ const WS_STYLES = `
   100% { transform: scale(4.2); opacity: 0;    }
 }
 @keyframes ws-phase-active {
-  0%,100% { box-shadow: 0 0 0 0 rgba(124,58,237,0.5); }
-  50%     { box-shadow: 0 0 0 6px rgba(124,58,237,0);  }
+  0%,100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.5); }
+  50%     { box-shadow: 0 0 0 6px rgba(99,102,241,0);  }
 }
 @keyframes ws-progress-shimmer {
   0%   { background-position: 200% center; }
@@ -453,7 +453,7 @@ const WS_STYLES = `
 }
 .ws-kpi-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 12px 32px rgba(124,58,237,0.14), 0 2px 8px rgba(0,0,0,0.10);
+  box-shadow: 0 12px 32px rgba(99,102,241,0.14), 0 2px 8px rgba(0,0,0,0.10);
 }
 .ws-insight-card {
   transition: transform 0.18s ease, box-shadow 0.18s ease;
@@ -463,22 +463,22 @@ const WS_STYLES = `
 .ws-chart-panel:hover { transform: translateY(-2px); box-shadow: 0 16px 48px rgba(0,0,0,0.14); }
 
 .ws-qs-card { transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease; cursor: pointer; }
-.ws-qs-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(124,58,237,0.16); border-color: rgba(124,58,237,0.4) !important; }
+.ws-qs-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99,102,241,0.16); border-color: rgba(99,102,241,0.4) !important; }
 
 .ws-upload-btn { transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease; }
-.ws-upload-btn:hover { border-color: #7c3aed !important; color: #7c3aed !important; background: rgba(124,58,237,0.07) !important; }
+.ws-upload-btn:hover { border-color: #6366f1 !important; color: #6366f1 !important; background: rgba(99,102,241,0.07) !important; }
 
 .ws-suggest-row { transition: background 0.14s ease; cursor: default; }
-.ws-suggest-row:hover { background: rgba(124,58,237,0.07) !important; }
+.ws-suggest-row:hover { background: rgba(99,102,241,0.07) !important; }
 
 .ws-copilot-q { transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; }
-.ws-copilot-q:hover { border-color: #7c3aed !important; color: #7c3aed !important; background: rgba(124,58,237,0.06) !important; }
+.ws-copilot-q:hover { border-color: #6366f1 !important; color: #6366f1 !important; background: rgba(99,102,241,0.06) !important; }
 
 .ws-action-btn { transition: opacity 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease; }
-.ws-action-btn:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(124,58,237,0.35); }
+.ws-action-btn:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99,102,241,0.35); }
 
 .ws-ghost-btn { transition: border-color 0.14s ease, color 0.14s ease, background 0.14s ease; }
-.ws-ghost-btn:hover { border-color: #7c3aed !important; color: #7c3aed !important; }
+.ws-ghost-btn:hover { border-color: #6366f1 !important; color: #6366f1 !important; }
 `
 
 // ─── Execution phase definitions ─────────────────────────────────────────────
@@ -490,6 +490,14 @@ const EXEC_PHASES = [
   { label: 'Executing analysis',        icon: 'scan',     dur: 900  },
   { label: 'Generating report',         icon: 'bar',      dur: 850  },
   { label: 'Delivering results',        icon: 'done',     dur: 500  },
+]
+
+const SCHEDULE_PHASES = [
+  { label: 'Request understood',  icon: 'star',     dur: 400 },
+  { label: 'Dataset confirmed',   icon: 'database', dur: 500 },
+  { label: 'Schedule created',    icon: 'layout',   dur: 700 },
+  { label: 'Delivery configured', icon: 'done',     dur: 500 },
+  { label: 'Automation saved',    icon: 'bar',      dur: 400 },
 ]
 
 function ExecPhaseIcon({ type, color, size = 13 }) {
@@ -529,7 +537,7 @@ function AIExecutionFlow({ C }) {
       animation: 'ws-fadein 0.35s ease',
     }}>
       {/* Ambient glow blobs */}
-      <div style={{ position: 'absolute', top: '-80px', right: '-60px', width: '320px', height: '320px', background: 'radial-gradient(circle, rgba(124,58,237,0.11) 0%, transparent 65%)', pointerEvents: 'none', zIndex: 0 }} />
+      <div style={{ position: 'absolute', top: '-80px', right: '-60px', width: '320px', height: '320px', background: 'radial-gradient(circle, rgba(99,102,241,0.11) 0%, transparent 65%)', pointerEvents: 'none', zIndex: 0 }} />
       <div style={{ position: 'absolute', bottom: '-50px', left: '-30px', width: '220px', height: '220px', background: 'radial-gradient(circle, rgba(59,130,246,0.07) 0%, transparent 65%)', pointerEvents: 'none', zIndex: 0 }} />
 
       <div style={{ position: 'relative', zIndex: 1 }}>
@@ -537,25 +545,25 @@ function AIExecutionFlow({ C }) {
         <div style={{ padding: '28px 32px 22px', display: 'flex', alignItems: 'center', gap: '20px', borderBottom: `1px solid ${C.border}` }}>
           {/* Compact orbital */}
           <div style={{ width: '52px', height: '52px', position: 'relative', flexShrink: 0 }}>
-            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid rgba(124,58,237,0.28)', animation: 'ws-arc-cw 3.5s linear infinite' }}>
-              <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', boxShadow: '0 0 8px #7c3aed' }} />
+            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid rgba(99,102,241,0.28)', animation: 'ws-arc-cw 3.5s linear infinite' }}>
+              <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '5px', height: '5px', borderRadius: '50%', background: '#6366f1', boxShadow: '0 0 8px #6366f1' }} />
             </div>
             <div style={{ position: 'absolute', inset: '11px', borderRadius: '50%', border: '1.5px solid rgba(59,130,246,0.28)', animation: 'ws-arc-ccw 2.4s linear infinite' }}>
               <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '4px', height: '4px', borderRadius: '50%', background: '#3b82f6', boxShadow: '0 0 6px #3b82f6' }} />
             </div>
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'radial-gradient(circle, #a78bfa 0%, #7c3aed 100%)', boxShadow: '0 0 14px rgba(124,58,237,0.55)', animation: 'ws-core-breathe 2s ease-in-out infinite' }} />
+              <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'radial-gradient(circle, #a5b4fc 0%, #6366f1 100%)', boxShadow: '0 0 14px rgba(99,102,241,0.55)', animation: 'ws-core-breathe 2s ease-in-out infinite' }} />
             </div>
           </div>
 
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '0.56rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '5px' }}>Analyzing</div>
+            <div style={{ fontSize: '0.56rem', fontWeight: '800', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '5px' }}>Analyzing</div>
             <div style={{ fontSize: '1.05rem', fontWeight: '700', color: C.text, letterSpacing: '-0.3px', marginBottom: '4px' }}>Preparing Your Report</div>
             <div style={{ fontSize: '0.74rem', color: C.textSec }}>Building your intelligence report…</div>
           </div>
 
           <div style={{ flexShrink: 0, textAlign: 'right' }}>
-            <div style={{ fontSize: '2rem', fontWeight: '800', color: '#7c3aed', lineHeight: 1, fontFamily: MONO, letterSpacing: '-1px' }}>{progress}%</div>
+            <div style={{ fontSize: '2rem', fontWeight: '800', color: '#6366f1', lineHeight: 1, fontFamily: MONO, letterSpacing: '-1px' }}>{progress}%</div>
             <div style={{ fontSize: '0.6rem', color: C.textMuted, marginTop: '3px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>estimated</div>
           </div>
         </div>
@@ -564,7 +572,7 @@ function AIExecutionFlow({ C }) {
         <div style={{ height: '3px', background: C.border, overflow: 'hidden' }}>
           <div style={{
             height: '100%', width: `${progress}%`,
-            background: 'linear-gradient(90deg, #6d28d9, #7c3aed, #a78bfa, #7c3aed, #6d28d9)',
+            background: 'linear-gradient(90deg, #4f46e5, #6366f1, #a5b4fc, #6366f1, #4f46e5)',
             backgroundSize: '300% 100%',
             animation: 'ws-progress-shimmer 2.2s linear infinite',
             transition: 'width 0.7s ease',
@@ -582,30 +590,30 @@ function AIExecutionFlow({ C }) {
               <div key={i} style={{
                 display: 'flex', alignItems: 'center', gap: '11px',
                 padding: '11px 14px', borderRadius: '12px',
-                background: isActive ? 'rgba(124,58,237,0.08)' : isDone ? 'rgba(16,185,129,0.05)' : 'transparent',
-                border: `1px solid ${isActive ? 'rgba(124,58,237,0.25)' : isDone ? 'rgba(16,185,129,0.15)' : C.border}`,
+                background: isActive ? 'rgba(99,102,241,0.08)' : isDone ? 'rgba(16,185,129,0.05)' : 'transparent',
+                border: `1px solid ${isActive ? 'rgba(99,102,241,0.25)' : isDone ? 'rgba(16,185,129,0.15)' : C.border}`,
                 opacity: isPending ? 0.38 : 1,
                 transition: 'opacity 0.4s ease, background 0.4s ease, border-color 0.4s ease',
               }}>
                 {/* Status node */}
                 <div style={{
                   width: '30px', height: '30px', borderRadius: '50%', flexShrink: 0,
-                  background: isActive ? 'rgba(124,58,237,0.14)' : isDone ? 'rgba(16,185,129,0.12)' : C.bg,
-                  border: `2px solid ${isActive ? '#7c3aed' : isDone ? '#10b981' : C.borderAlt}`,
+                  background: isActive ? 'rgba(99,102,241,0.14)' : isDone ? 'rgba(16,185,129,0.12)' : C.bg,
+                  border: `2px solid ${isActive ? '#6366f1' : isDone ? '#10b981' : C.borderAlt}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   animation: isActive ? 'ws-phase-active 1.6s ease-in-out infinite' : 'none',
                 }}>
                   {isDone
                     ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                     : isActive
-                      ? <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1s ease-in-out infinite' }} />
+                      ? <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#6366f1', animation: 'ws-core-breathe 1s ease-in-out infinite' }} />
                       : <ExecPhaseIcon type={phase.icon} color={C.borderAlt} size={12} />
                   }
                 </div>
                 {/* Label */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '0.73rem', fontWeight: isActive ? '700' : '500', color: isActive ? '#a78bfa' : isDone ? '#10b981' : C.textMuted, lineHeight: 1.3 }}>{phase.label}</div>
-                  {isActive  && <div style={{ fontSize: '0.59rem', color: '#7c3aed', marginTop: '2px', opacity: 0.8 }}>processing…</div>}
+                  <div style={{ fontSize: '0.73rem', fontWeight: isActive ? '700' : '500', color: isActive ? '#a5b4fc' : isDone ? '#10b981' : C.textMuted, lineHeight: 1.3 }}>{phase.label}</div>
+                  {isActive  && <div style={{ fontSize: '0.59rem', color: '#6366f1', marginTop: '2px', opacity: 0.8 }}>processing…</div>}
                   {isDone    && <div style={{ fontSize: '0.59rem', color: '#10b981', marginTop: '2px', opacity: 0.7 }}>complete</div>}
                 </div>
               </div>
@@ -618,6 +626,21 @@ function AIExecutionFlow({ C }) {
 }
 
 // ─── Execution Console ────────────────────────────────────────────────────────
+
+function OutcomeEvent({ label, active, failed }) {
+  const color = failed ? '#ef4444' : active ? '#10b981' : '#6b7280'
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        {failed
+          ? <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>
+          : <polyline points="20 6 9 17 4 12"/>
+        }
+      </svg>
+      <span style={{ fontSize: '0.70rem', fontWeight: '500', color: active || failed ? color : '#6b7280' }}>{label}</span>
+    </div>
+  )
+}
 
 const EC_STATUS = {
   pending:   { dotBg: 'transparent', dotBorder: '#6b7280', labelColor: '#6b7280', rowBg: 'transparent',              rowBorder: null },
@@ -666,16 +689,15 @@ function ecDisplayLabel(step) {
 }
 
 const EC_PHASE_COLORS = [
-  { bg: 'rgba(124,58,237,0.15)', border: 'rgba(124,58,237,0.28)', fg: '#a78bfa' },
+  { bg: 'rgba(99,102,241,0.15)', border: 'rgba(99,102,241,0.28)', fg: '#a5b4fc' },
   { bg: 'rgba(59,130,246,0.15)',  border: 'rgba(59,130,246,0.28)',  fg: '#60a5fa' },
   { bg: 'rgba(20,184,166,0.15)', border: 'rgba(20,184,166,0.28)', fg: '#2dd4bf' },
   { bg: 'rgba(16,185,129,0.15)', border: 'rgba(16,185,129,0.28)', fg: '#34d399' },
-  { bg: 'rgba(124,58,237,0.15)', border: 'rgba(124,58,237,0.28)', fg: '#a78bfa' },
+  { bg: 'rgba(99,102,241,0.15)', border: 'rgba(99,102,241,0.28)', fg: '#a5b4fc' },
   { bg: 'rgba(16,185,129,0.15)', border: 'rgba(16,185,129,0.28)', fg: '#34d399' },
 ]
 
-function ExecutionConsole({ result, wsInput, enginePlan, datasetName, C, onOpenReport, setActiveNav }) {
-  const [expanded,    setExpanded]    = useState(() => !!result)
+function ActivityTimeline({ result, wsInput, datasetName, C }) {
   const [activePhase, setActivePhase] = useState(0)
 
   useEffect(() => {
@@ -690,353 +712,452 @@ function ExecutionConsole({ result, wsInput, enginePlan, datasetName, C, onOpenR
     return () => timers.forEach(clearTimeout)
   }, [result])
 
-  useEffect(() => { if (result) setExpanded(true) }, [result])
+  const isComplete = !!result
+  const reportOut  = isComplete && !!(result.report_id || result.dataset_report)
+  const notifOut   = isComplete && !!(result.notification_sent || result.notification_id)
+
+  const loadingEvents = [
+    { label: 'Request Received',   minPhase: -1 },
+    { label: 'Intent Parsed',      minPhase: 0  },
+    ...(datasetName ? [{ label: 'Dataset Loaded',    minPhase: 0 }] : []),
+    { label: 'Validation Passed',  minPhase: 1  },
+    { label: 'Analysis Started',   minPhase: 2  },
+    { label: 'KPI Generation',     minPhase: 3  },
+    { label: 'Report Generated',   minPhase: 4  },
+    { label: 'Delivering Results', minPhase: 5  },
+  ]
+
+  const completedEvents = [
+    { label: 'Request Received'    },
+    { label: 'Intent Parsed'       },
+    ...(datasetName ? [{ label: 'Dataset Loaded' }] : []),
+    { label: 'Validation Passed'   },
+    { label: 'Analysis Started'    },
+    { label: 'KPI Generation'      },
+    ...(reportOut ? [{ label: 'Report Generated' }] : []),
+    ...(notifOut  ? [{ label: 'Notification Sent' }] : []),
+    { label: 'Execution Completed' },
+  ]
+
+  const events = isComplete ? completedEvents : loadingEvents
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '14px 16px 12px', borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: '0.50rem', fontWeight: '800', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '4px' }}>Activity Timeline</div>
+        <div style={{ fontSize: '0.72rem', fontWeight: '600', color: C.text }}>
+          {isComplete ? 'Execution complete' : 'Execution in progress…'}
+        </div>
+      </div>
+      <div style={{ padding: '14px 16px', overflowY: 'auto' }}>
+        {events.map((ev, i) => {
+          const isLast = i === events.length - 1
+          const done   = isComplete ? true : activePhase > ev.minPhase
+          const active = !isComplete && activePhase === ev.minPhase
+          return (
+            <div key={i} style={{ display: 'flex', gap: '10px', animation: `ws-fadeup 0.25s ease both`, animationDelay: `${i * 0.05}s` }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '16px', flexShrink: 0 }}>
+                <div style={{ width: '12px', height: '12px', borderRadius: '50%', flexShrink: 0, marginTop: '3px', background: done ? '#10b981' : active ? '#6366f1' : 'transparent', border: `2px solid ${done ? '#10b981' : active ? '#6366f1' : C.borderAlt}`, animation: active ? 'ws-core-breathe 1.2s ease infinite' : 'none', transition: 'background 0.3s ease, border-color 0.3s ease', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {done && <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                </div>
+                {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '16px', background: done ? 'rgba(16,185,129,0.30)' : 'rgba(107,114,128,0.15)', borderRadius: '1px', margin: '3px 0' }} />}
+              </div>
+              <div style={{ flex: 1, paddingBottom: isLast ? '0' : '12px' }}>
+                <div style={{ fontSize: '0.71rem', fontWeight: done ? '600' : active ? '700' : '400', color: done ? C.text : active ? '#a5b4fc' : C.textMuted, lineHeight: 1.4, transition: 'color 0.3s ease' }}>
+                  {ev.label}
+                </div>
+                {active && (
+                  <div style={{ fontSize: '0.57rem', color: '#6366f1', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#6366f1', animation: 'ws-core-breathe 1s ease infinite' }} />
+                    In progress
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ExecutionConsole({ result, wsInput, enginePlan, datasetName, activeDs, intel, C, onOpenReport, setActiveNav, onBack, onRunAgain, execDurationMs, user }) {
+  const [activePhase, setActivePhase] = useState(0)
+
+  useEffect(() => {
+    if (result) return
+    setActivePhase(0)
+    let elapsed = 0
+    const timers = EXEC_PHASES.map((phase, i) => {
+      const t = setTimeout(() => setActivePhase(i), elapsed)
+      elapsed += phase.dur
+      return t
+    })
+    return () => timers.forEach(clearTimeout)
+  }, [result])
+
+  const isComplete = !!result
+  const isSuccess  = !result || result.status !== 'failed'
+  const sColor     = isSuccess ? '#10b981' : '#ef4444'
 
   const totalPhaseDur   = EXEC_PHASES.reduce((s, p) => s + p.dur, 0)
   const elapsedPhaseDur = EXEC_PHASES.slice(0, activePhase + 1).reduce((s, p) => s + p.dur, 0)
-  const phaseProgress   = !result ? Math.min(95, Math.round((elapsedPhaseDur / totalPhaseDur) * 100)) : 0
-
-  const steps = result
-    ? buildStepsFromResult(result, wsInput, enginePlan)
-    : null
-
-  const completedCount = steps ? steps.filter(s => s.status === 'completed').length : 0
-  const totalCount     = steps ? steps.length : 0
-
-  const rows = steps ?? [{
-    id: '__waiting', label: 'Preparing your analysis…',
-    status: 'pending', action_type: '', human_label: null,
-  }]
+  const phaseProgress   = !isComplete ? Math.min(95, Math.round((elapsedPhaseDur / totalPhaseDur) * 100)) : 100
 
   const taskType = result?.task_type ?? null
   const execType = taskType
     ? taskType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
     : enginePlan?.name ? 'Engine Workflow' : 'Analysis'
 
-  const durSec = result?.started_at && result?.finished_at
-    ? (new Date(result.finished_at) - new Date(result.started_at)) / 1000
-    : null
-  const durDisplay = durSec != null ? (durSec < 0.5 ? 'Completed' : `${durSec.toFixed(1)}s`) : null
+  const backendDurMs = result?.started_at && result?.finished_at
+    ? new Date(result.finished_at) - new Date(result.started_at) : null
+  const durMs = execDurationMs ?? backendDurMs
+  const fmtTotal = (() => {
+    if (durMs == null || durMs <= 0) return null
+    const s = durMs / 1000
+    if (s < 60) return `${s.toFixed(1)}s`
+    const totalM = Math.floor(s / 60)
+    if (totalM < 60) return `${totalM}m ${String(Math.floor(s % 60)).padStart(2, '0')}s`
+    return `${Math.floor(totalM / 60)}h ${String(totalM % 60).padStart(2, '0')}m`
+  })()
 
-  const resultType = (result?.dataset_report || result?.report_id)
-    ? 'Intelligence Report'
-    : taskType?.includes('email') ? 'Email Delivery'
-    : taskType ? execType
-    : null
+  const reportGenerated   = !!(result?.report_id || result?.dataset_report)
+  const scheduleCreated   = result?.schedule_created === true || result?.schedule_id != null
+  const emailSent         = !!(result?.email_delivery?.sent)
+  const notifSent         = result?.notification_sent === true || result?.notification_id != null
+  const emailConfigured   = result?.email_delivery_configured === true && !emailSent
+  const notifConfigured   = result?.notification_configured === true && !notifSent
+  const title           = wsInput.trim() || 'Analysis in progress'
 
-  const reportGenerated = !!(result?.report_id || result?.dataset_report)
-  const scheduleCreated = result?.schedule_created === true || result?.schedule_id != null
-  const notifSent       = result?.notification_sent === true || result?.notification_id != null
-  const completionItems = [
-    reportGenerated && { label: 'Report Generated', color: '#10b981' },
-    scheduleCreated && { label: 'Schedule Created',  color: '#a78bfa' },
-    notifSent       && { label: 'Notification Sent', color: '#38bdf8' },
-  ].filter(Boolean)
+  // Use schedule-focused phases when the result is a future-schedule-only configuration
+  // (no report generated, schedule created). Fall back to the standard execution journey.
+  const isScheduleOnly  = isComplete && scheduleCreated && !reportGenerated
+  const stepsToRender   = isScheduleOnly ? SCHEDULE_PHASES : EXEC_PHASES
+  const backendSteps    = isComplete ? (buildStepsFromResult(result, wsInput, enginePlan) ?? []) : []
+  const hasBackendStepDurations = backendSteps.some(s => /^(\d+)ms$/.test(s?.human_label ?? ''))
 
-  // ── LOADING: enterprise ops console ──────────────────────────────────────────
-  if (!result) {
-    const title = wsInput.trim() || 'Analysis in progress'
-    return (
-      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '20px', overflow: 'hidden', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', animation: 'ws-fadein 0.35s ease' }}>
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${isComplete ? (isSuccess ? 'rgba(16,185,129,0.18)' : 'rgba(239,68,68,0.18)') : C.border}`, borderRadius: '20px', overflow: 'hidden', boxShadow: '0 8px 48px rgba(0,0,0,0.14)', animation: 'ws-fadein 0.35s ease', transition: 'border-color 0.5s ease' }}>
 
-        {/* Animated top progress bar */}
-        <div style={{ height: '3px', background: C.border }}>
-          <div style={{ height: '100%', width: `${phaseProgress}%`, background: 'linear-gradient(90deg,#6d28d9,#7c3aed,#a78bfa,#7c3aed,#6d28d9)', backgroundSize: '300% 100%', animation: 'ws-progress-shimmer 2.2s linear infinite', transition: 'width 0.7s ease', borderRadius: '0 2px 2px 0' }} />
+      {/* ── Progress bar ── */}
+      <div style={{ height: '3px', background: isComplete ? 'transparent' : C.border, position: 'relative' }}>
+        <div style={{
+          position: 'absolute', inset: 0,
+          width: `${phaseProgress}%`,
+          background: isComplete
+            ? (isSuccess ? 'linear-gradient(90deg,#10b981,#34d399)' : 'linear-gradient(90deg,#ef4444,#f87171)')
+            : 'linear-gradient(90deg,#4f46e5,#6366f1,#a5b4fc,#6366f1,#4f46e5)',
+          backgroundSize: isComplete ? '100%' : '300% 100%',
+          animation: isComplete ? 'none' : 'ws-progress-shimmer 2.2s linear infinite',
+          transition: 'width 0.7s ease, background 0.5s ease',
+          borderRadius: '0 2px 2px 0',
+        }} />
+      </div>
+
+      {/* ── Back to AI Workspace ── */}
+      {isComplete && onBack && (
+        <div style={{ padding: '8px 16px' }}>
+          <button onClick={onBack} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: 'none', border: 'none', padding: '0', fontSize: '0.68rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            Back to AI Workspace
+          </button>
         </div>
+      )}
 
-        {/* Header */}
-        <div style={{ padding: '20px 24px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '16px' }}>
-          {/* Orbital animation */}
-          <div style={{ width: '44px', height: '44px', position: 'relative', flexShrink: 0 }}>
-            <div style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid rgba(124,58,237,0.30)', animation: 'ws-arc-cw 3.5s linear infinite' }}>
-              <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', boxShadow: '0 0 8px #7c3aed' }} />
-            </div>
-            <div style={{ position: 'absolute', inset: '10px', borderRadius: '50%', border: '1.5px solid rgba(59,130,246,0.25)', animation: 'ws-arc-ccw 2.4s linear infinite' }}>
-              <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translate(-50%,-50%)', width: '4px', height: '4px', borderRadius: '50%', background: '#3b82f6', boxShadow: '0 0 6px #3b82f6' }} />
-            </div>
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: 'radial-gradient(circle,#a78bfa 0%,#7c3aed 100%)', boxShadow: '0 0 12px rgba(124,58,237,0.55)', animation: 'ws-core-breathe 2s ease-in-out infinite' }} />
-            </div>
-          </div>
+      {/* ── Header ── */}
+      <div style={{ padding: '10px 24px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '16px' }}>
 
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px' }}>
-              <span style={{ fontSize: '0.50rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Execution Console</span>
-              <span style={{ fontSize: '0.58rem', fontWeight: '700', color: '#7c3aed', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '20px', padding: '2px 9px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-                <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1.2s ease infinite' }} />
+        {/* Title + status badge */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '5px' }}>
+            <span style={{ fontSize: '0.85rem', fontWeight: '800', color: '#ffffff', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Execution Console</span>
+            {!isComplete ? (
+              <span style={{ fontSize: '0.58rem', fontWeight: '700', color: '#6366f1', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '20px', padding: '2px 9px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#6366f1', animation: 'ws-core-breathe 1.2s ease infinite' }} />
                 Running
               </span>
-            </div>
-            <div style={{ fontSize: '1.0rem', fontWeight: '700', color: C.text, letterSpacing: '-0.2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {title.length > 80 ? title.slice(0, 80) + '…' : title}
-            </div>
+            ) : (
+              <span style={{ fontSize: '0.58rem', fontWeight: '700', color: sColor, background: `${sColor}12`, border: `1px solid ${sColor}30`, borderRadius: '20px', padding: '2px 9px', animation: 'ws-fadein 0.4s ease' }}>
+                {isSuccess ? 'Completed' : 'Failed'}
+              </span>
+            )}
           </div>
+        </div>
 
+        {/* Right: % progress while running → action buttons when done */}
+        {!isComplete ? (
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <div style={{ fontSize: '2.2rem', fontWeight: '800', color: '#7c3aed', lineHeight: 1, fontFamily: MONO, letterSpacing: '-2px' }}>{phaseProgress}%</div>
+            <div style={{ fontSize: '2.2rem', fontWeight: '800', color: '#6366f1', lineHeight: 1, fontFamily: MONO, letterSpacing: '-2px' }}>{phaseProgress}%</div>
             <div style={{ fontSize: '0.53rem', color: C.textMuted, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Overall Progress</div>
           </div>
-        </div>
-
-        {/* Summary chips */}
-        <div style={{ display: 'flex', gap: '10px', padding: '11px 24px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'rgba(124,58,237,0.07)', border: '1px solid rgba(124,58,237,0.20)', borderRadius: '10px' }}>
-            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1.5s ease infinite', flexShrink: 0 }} />
-            <div>
-              <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Status</div>
-              <div style={{ fontSize: '0.69rem', fontWeight: '600', color: '#a78bfa' }}>In Progress</div>
-            </div>
+        ) : (
+          <div style={{ display: 'flex', gap: '7px', flexShrink: 0, animation: 'ws-fadein 0.4s ease' }}>
+            {onRunAgain && (
+              <button onClick={onRunAgain} style={{ display: 'flex', alignItems: 'center', gap: '5px', background: 'none', border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px 12px', fontSize: '0.71rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Run Again
+              </button>
+            )}
+            {result?.report_id && onOpenReport && (
+              <button onClick={() => onOpenReport(result.report_id)} style={{ display: 'flex', alignItems: 'center', gap: '5px', background: '#6366f1', border: '1px solid #6366f1', borderRadius: '8px', padding: '6px 14px', fontSize: '0.71rem', fontWeight: '600', color: '#fff', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                View Report
+              </button>
+            )}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px' }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
-            <div>
-              <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Type</div>
-              <div style={{ fontSize: '0.69rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
-            </div>
-          </div>
-          {datasetName && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px' }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-              <div>
-                <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Dataset</div>
-                <div style={{ fontSize: '0.69rem', fontWeight: '600', color: C.textSec, maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{datasetName}</div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Two-column body */}
-        <div style={{ display: 'flex' }}>
-          {/* Left: Execution steps */}
-          <div style={{ flex: 1, minWidth: 0, borderRight: `1px solid ${C.border}` }}>
-            <div style={{ padding: '12px 20px 10px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '0.78rem', fontWeight: '700', color: C.text }}>Execution Steps</span>
-              <span style={{ fontSize: '0.59rem', fontWeight: '700', color: C.textMuted, background: C.borderAlt, border: `1px solid ${C.border}`, borderRadius: '20px', padding: '2px 8px' }}>{EXEC_PHASES.length} Steps</span>
-            </div>
-
-            <div style={{ padding: '10px 16px 14px' }}>
-              {EXEC_PHASES.map((phase, i) => {
-                const isActive  = i === activePhase
-                const isDone    = i < activePhase
-                const isPending = i > activePhase
-                const isLast    = i === EXEC_PHASES.length - 1
-                const pc        = EC_PHASE_COLORS[i] ?? EC_PHASE_COLORS[0]
-                return (
-                  <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', animation: `ws-fadeup 0.3s ease both`, animationDelay: `${i * 0.05}s` }}>
-                    {/* Number + connector */}
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '28px', flexShrink: 0 }}>
-                      <div style={{ width: '26px', height: '26px', borderRadius: '50%', flexShrink: 0, background: isDone ? '#10b981' : isActive ? '#7c3aed' : 'transparent', border: `2px solid ${isDone ? '#10b981' : isActive ? '#7c3aed' : C.borderAlt}`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '7px', animation: isActive ? 'ws-phase-active 1.6s ease-in-out infinite' : 'none', transition: 'background 0.4s ease, border-color 0.4s ease' }}>
-                        {isDone
-                          ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                          : <span style={{ fontSize: '0.57rem', fontWeight: '800', color: isActive ? '#fff' : C.textMuted }}>{i + 1}</span>
-                        }
-                      </div>
-                      {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '10px', background: isDone ? 'rgba(16,185,129,0.35)' : 'rgba(107,114,128,0.18)', borderRadius: '1px', margin: '3px 0' }} />}
-                    </div>
-                    {/* Step row */}
-                    <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', borderRadius: '10px', background: isActive ? 'rgba(124,58,237,0.06)' : 'transparent', border: `1px solid ${isActive ? 'rgba(124,58,237,0.18)' : 'transparent'}`, marginBottom: isLast ? '0' : '4px', opacity: isPending ? 0.5 : 1, transition: 'background 0.3s ease, opacity 0.3s ease' }}>
-                      {/* Colored icon square */}
-                      <div style={{ width: '30px', height: '30px', borderRadius: '8px', flexShrink: 0, background: isDone ? 'rgba(16,185,129,0.15)' : isActive ? pc.bg : C.bg, border: `1px solid ${isDone ? 'rgba(16,185,129,0.30)' : isActive ? pc.border : C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.3s ease' }}>
-                        <ExecPhaseIcon type={phase.icon} color={isDone ? '#10b981' : isActive ? pc.fg : C.textMuted} size={13} />
-                      </div>
-                      {/* Label */}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '0.76rem', fontWeight: isActive ? '700' : '500', color: isDone ? C.text : isActive ? C.text : C.textMuted, lineHeight: 1.3, transition: 'color 0.3s ease' }}>{phase.label}</div>
-                      </div>
-                      {/* Status badge */}
-                      {isDone && <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#10b981', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '20px', padding: '3px 9px', flexShrink: 0 }}>Completed</div>}
-                      {isActive && <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#a78bfa', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '20px', padding: '3px 9px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-core-breathe 1s ease infinite' }} />In Progress</div>}
-                      {isPending && <div style={{ fontSize: '0.57rem', color: C.textMuted, flexShrink: 0 }}>Pending</div>}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* Right: Execution details — real data only, no fake sections */}
-          <div style={{ width: '220px', flexShrink: 0, padding: '14px 18px', borderTop: 'none' }}>
-            <div style={{ fontSize: '0.54rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '14px' }}>Execution Details</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div>
-                <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Request</div>
-                <div style={{ fontSize: '0.70rem', color: C.textSec, lineHeight: 1.5, wordBreak: 'break-word' }}>{wsInput.trim().length > 100 ? wsInput.trim().slice(0, 100) + '…' : wsInput.trim() || '—'}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Type</div>
-                <div style={{ fontSize: '0.70rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
-              </div>
-              {datasetName && (
-                <div>
-                  <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Dataset</div>
-                  <div style={{ fontSize: '0.70rem', fontWeight: '600', color: C.textSec, wordBreak: 'break-all' }}>{datasetName}</div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        )}
       </div>
-    )
-  }
 
-  // ── COMPLETED: persistent panel, user controls collapse ─────────────────────
-  if (result) {
-    const isSuccess   = result.status !== 'failed'
-    const sColor      = isSuccess ? '#10b981' : '#ef4444'
-    const accentGrad  = isSuccess ? 'linear-gradient(90deg,#10b981,#34d399,#10b981)' : 'linear-gradient(90deg,#ef4444,#f87171,#ef4444)'
-    const statusLabel = isSuccess ? 'Analysis Complete' : 'Request Failed'
-    const statusBadge = isSuccess ? 'Complete' : 'Failed'
-    return (
-      <div style={{ background: C.surface, border: `1px solid ${expanded ? (isSuccess ? 'rgba(16,185,129,0.22)' : 'rgba(239,68,68,0.22)') : C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 4px 24px rgba(0,0,0,0.10)', animation: 'ws-fadein 0.25s ease' }}>
-
-        {/* ── Expanded details (collapsible) ── */}
-        {expanded && (
-          <>
-            <div style={{ height: '3px', background: accentGrad }} />
-
-            {/* Header */}
-            <div style={{ padding: '16px 20px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: `${sColor}14`, border: `2px solid ${sColor}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                {isSuccess
-                  ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                  : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={sColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                }
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '3px' }}>
-                  <span style={{ fontSize: '0.49rem', fontWeight: '800', color: sColor, textTransform: 'uppercase', letterSpacing: '0.16em' }}>Execution Console</span>
-                  <span style={{ fontSize: '0.57rem', fontWeight: '700', color: sColor, background: `${sColor}14`, border: `1px solid ${sColor}35`, borderRadius: '20px', padding: '2px 8px' }}>{statusBadge}</span>
+      {/* ── Execution metadata bar ── */}
+      {(() => {
+        const runDate        = result?.started_at ? new Date(result.started_at).toISOString().slice(0,10).replace(/-/g,'') : null
+        const runSeq         = result?.report_id  ? String(result.report_id).padStart(3,'0') : '001'
+        const runId          = result?.run_id != null ? String(result.run_id) : (runDate ? `RUN-${runDate}-${runSeq}` : null)
+        const execLabel      = runId ? `Execution #${runId}` : 'Execution'
+        const fmtDT          = iso => {
+          if (!iso) return null
+          const d = new Date(iso)
+          return [
+            d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            d.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' }),
+          ]
+        }
+        const [startTime, startDate] = fmtDT(result?.started_at)  || []
+        const [endTime,   endDate  ] = fmtDT(result?.finished_at) || []
+        const rowCount = activeDs?.row_count != null ? Number(activeDs.row_count).toLocaleString() + ' rows' : null
+        const cols = [
+          { label: 'Started',        primary: startTime ?? null, secondary: startDate ?? null },
+          { label: 'Finished',       primary: endTime   ?? null, secondary: endDate   ?? null },
+          { label: 'Total Duration', primary: fmtTotal  ?? null, secondary: null, mono: true  },
+          datasetName ? { label: 'Dataset',    primary: datasetName,      secondary: rowCount,   ellipsis: true } : null,
+          user?.name  ? { label: 'Started By', primary: user.name,        secondary: null, avatar: true         } : null,
+        ].filter(Boolean)
+        return (
+          <div style={{ borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ display: 'flex' }}>
+              {cols.map((col, idx) => (
+                <div key={col.label} style={{ flex: 1, minWidth: 0, padding: '5px 12px', borderRight: idx < cols.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+                  <div style={{ fontSize: '0.43rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '2px' }}>{col.label}</div>
+                  {col.avatar && col.primary ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.55rem', fontWeight: '700', color: '#fff', flexShrink: 0 }}>
+                        {col.primary[0].toUpperCase()}
+                      </div>
+                      <div style={{ fontSize: '0.62rem', fontWeight: '700', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.primary}</div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.62rem', fontWeight: '700', color: col.primary ? C.text : C.textMuted, fontFamily: col.mono ? MONO : 'inherit', overflow: col.ellipsis ? 'hidden' : 'visible', textOverflow: col.ellipsis ? 'ellipsis' : 'clip', whiteSpace: col.ellipsis ? 'nowrap' : 'normal' }}>{col.primary ?? '—'}</div>
+                  )}
+                  {col.secondary && <div style={{ fontSize: '0.53rem', color: C.textMuted, marginTop: '1px' }}>{col.secondary}</div>}
                 </div>
-                <div style={{ fontSize: '0.92rem', fontWeight: '700', color: C.text, letterSpacing: '-0.2px' }}>{statusLabel}</div>
-              </div>
-              {durDisplay && (
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <div style={{ fontSize: '1.3rem', fontWeight: '800', color: sColor, lineHeight: 1, fontFamily: MONO }}>{durDisplay}</div>
-                  <div style={{ fontSize: '0.50rem', color: C.textMuted, marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Duration</div>
-                </div>
-              )}
+              ))}
             </div>
+          </div>
+        )
+      })()}
 
-            {/* Summary chips */}
-            <div style={{ display: 'flex', gap: '8px', padding: '10px 20px', borderBottom: `1px solid ${C.border}`, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', background: `${sColor}0d`, border: `1px solid ${sColor}28`, borderRadius: '8px' }}>
-                <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: sColor, flexShrink: 0 }} />
-                <div>
-                  <div style={{ fontSize: '0.46rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Status</div>
-                  <div style={{ fontSize: '0.67rem', fontWeight: '600', color: sColor }}>{statusBadge}</div>
-                </div>
-              </div>
-              {execType && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px' }}>
-                  <div>
-                    <div style={{ fontSize: '0.46rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Type</div>
-                    <div style={{ fontSize: '0.67rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
-                  </div>
-                </div>
-              )}
-              {datasetName && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '5px 10px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px' }}>
-                  <div>
-                    <div style={{ fontSize: '0.46rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em' }}>Dataset</div>
-                    <div style={{ fontSize: '0.67rem', fontWeight: '600', color: C.textSec, maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{datasetName}</div>
-                  </div>
-                </div>
-              )}
-            </div>
+      {/* ── Two-column body ── */}
+      <div style={{ display: 'flex' }}>
 
-            {/* Run details — steps + delivery */}
-            {steps && steps.length > 0 && (
-              <div style={{ display: 'flex' }}>
-                <div style={{ flex: 1, minWidth: 0, borderRight: completionItems.length > 0 ? `1px solid ${C.border}` : 'none' }}>
-                  <div style={{ padding: '11px 18px 9px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '0.76rem', fontWeight: '700', color: C.text }}>Run Details</span>
-                    <span style={{ fontSize: '0.58rem', fontWeight: '700', color: '#10b981', background: 'rgba(16,185,129,0.09)', border: '1px solid rgba(16,185,129,0.22)', borderRadius: '20px', padding: '2px 8px' }}>{completedCount}/{totalCount} steps</span>
+        {/* Left: Execution steps (same visual structure throughout; state of each step updates) */}
+        <div style={{ flex: 1, minWidth: 0, borderRight: `1px solid ${C.border}` }}>
+          <div style={{ padding: '12px 20px 10px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: '700', color: C.text }}>Execution Steps</span>
+            <span style={{ fontSize: '0.59rem', fontWeight: '700', color: C.textMuted, background: C.borderAlt, border: `1px solid ${C.border}`, borderRadius: '20px', padding: '2px 8px' }}>{stepsToRender.length} Steps</span>
+          </div>
+
+          <div style={{ padding: '10px 16px 14px' }}>
+            {stepsToRender.map((phase, i) => {
+              // Status is always driven by the running animation or the overall result —
+              // never by individual backend step objects (preserves the 6-phase visual journey).
+              const isFailed  = isComplete && !isSuccess
+              const isDone    = isComplete ? isSuccess : i < activePhase
+              const isActive  = !isComplete && i === activePhase
+              const isPending = !isComplete && i > activePhase
+              const isLast    = i === stepsToRender.length - 1
+              const pc        = EC_PHASE_COLORS[i % EC_PHASE_COLORS.length]
+              const iconType  = phase.icon
+              const label     = phase.label
+              const dotBg     = isFailed ? '#ef4444' : isDone ? '#10b981' : isActive ? '#6366f1' : 'transparent'
+              const dotBorder = isFailed ? '#ef4444' : isDone ? '#10b981' : isActive ? '#6366f1' : C.borderAlt
+              const iconColor = isFailed ? '#ef4444' : isDone ? pc.fg : isActive ? pc.fg : C.textMuted
+              const iconBg    = isFailed ? 'rgba(239,68,68,0.14)' : isDone ? pc.bg : isActive ? pc.bg : C.bg
+              const iconBdr   = isFailed ? 'rgba(239,68,68,0.28)' : isDone ? pc.border : isActive ? pc.border : C.border
+              const rowBg     = isFailed ? 'rgba(239,68,68,0.04)' : (isComplete && isDone) ? 'rgba(16,185,129,0.04)' : isActive ? 'rgba(99,102,241,0.06)' : 'transparent'
+              const rowBdr    = isFailed ? 'rgba(239,68,68,0.14)' : (isComplete && isDone) ? 'rgba(16,185,129,0.12)' : isActive ? 'rgba(99,102,241,0.18)' : 'transparent'
+              const connBg    = isDone ? 'rgba(16,185,129,0.35)' : 'rgba(107,114,128,0.18)'
+
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', animation: `ws-fadeup 0.3s ease both`, animationDelay: `${i * 0.05}s` }}>
+                  {/* Number circle + connector */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '28px', flexShrink: 0 }}>
+                    <div style={{ width: '26px', height: '26px', borderRadius: '50%', flexShrink: 0, background: dotBg, border: `2px solid ${dotBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '7px', animation: isActive ? 'ws-phase-active 1.6s ease-in-out infinite' : 'none', transition: 'background 0.4s ease, border-color 0.4s ease' }}>
+                      {(isDone || isFailed)
+                        ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            {isFailed ? <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></> : <polyline points="20 6 9 17 4 12"/>}
+                          </svg>
+                        : <span style={{ fontSize: '0.57rem', fontWeight: '800', color: isActive ? '#fff' : C.textMuted }}>{i + 1}</span>
+                      }
+                    </div>
+                    {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '10px', background: connBg, borderRadius: '1px', margin: '3px 0', transition: 'background 0.4s ease' }} />}
                   </div>
-                  <div style={{ padding: '10px 16px 12px' }}>
-                    {rows.map((step, i) => {
-                      const ec     = EC_STATUS[step.status] ?? EC_STATUS.pending
-                      const isLast = i === rows.length - 1
+                  {/* Step row */}
+                  <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', borderRadius: '10px', background: rowBg, border: `1px solid ${rowBdr}`, marginBottom: isLast ? '0' : '4px', opacity: isPending ? 0.5 : 1, transition: 'background 0.3s ease, opacity 0.3s ease, border-color 0.3s ease' }}>
+                    <div style={{ width: '30px', height: '30px', borderRadius: '8px', flexShrink: 0, background: iconBg, border: `1px solid ${iconBdr}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background 0.3s ease' }}>
+                      <ExecPhaseIcon type={iconType} color={iconColor} size={13} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '0.76rem', fontWeight: isActive ? '700' : '500', color: (isDone || isFailed) ? C.text : isActive ? C.text : C.textMuted, lineHeight: 1.3, transition: 'color 0.3s ease' }}>{label}</div>
+                    </div>
+                    {isFailed   && <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#ef4444', background: 'rgba(239,68,68,0.12)',  border: '1px solid rgba(239,68,68,0.25)',  borderRadius: '20px', padding: '3px 9px', flexShrink: 0 }}>Failed</div>}
+                    {!isFailed && isDone && (() => {
+                      const hlMatch   = backendSteps[i]?.human_label?.match(/^(\d+)ms$/)
+                      const backendMs = hlMatch ? parseInt(hlMatch[1]) : null
+                      const estMs     = (!hasBackendStepDurations && execDurationMs != null && execDurationMs > 0)
+                        ? Math.round(EXEC_PHASES[i].dur / totalPhaseDur * execDurationMs)
+                        : null
+                      const ms  = backendMs ?? estMs
+                      const dur = (ms != null && ms > 0) ? `${(ms / 1000).toFixed(1)}s` : null
                       return (
-                        <div key={step.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', animation: `ws-fadeup 0.25s ease both`, animationDelay: `${i * 0.04}s` }}>
-                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '26px', flexShrink: 0 }}>
-                            <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: ec.dotBg, border: `2px solid ${ec.dotBorder}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '6px' }}>
-                              <ECStatusIcon status={step.status} />
-                            </div>
-                            {!isLast && <div style={{ width: '2px', flex: 1, minHeight: '8px', background: `linear-gradient(180deg,${ec.dotBorder}40,${ec.dotBorder}10)`, borderRadius: '1px', margin: '2px 0' }} />}
-                          </div>
-                          <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 9px', borderRadius: '8px', background: ec.rowBg || 'transparent', border: `1px solid ${ec.rowBorder || 'transparent'}`, marginBottom: isLast ? '0' : '3px' }}>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: '0.74rem', fontWeight: '600', color: ec.labelColor, lineHeight: 1.3 }}>{ecDisplayLabel(step)}</div>
-                              {step.human_label && <div style={{ fontSize: '0.59rem', color: C.textMuted, marginTop: '1px', fontFamily: MONO }}>{step.human_label}</div>}
-                            </div>
-                            <div style={{ fontSize: '0.56rem', fontWeight: '700', color: ec.labelColor, textTransform: 'uppercase', letterSpacing: '0.07em', flexShrink: 0 }}>{STATUS_DISPLAY_LABELS[step.status] ?? step.status}</div>
-                          </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                          <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#10b981', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)', borderRadius: '20px', padding: '3px 9px' }}>Completed</div>
+                          {dur && <span style={{ fontSize: '0.60rem', color: C.textMuted, fontFamily: MONO }}>{dur}</span>}
                         </div>
                       )
-                    })}
+                    })()}
+                    {isActive   && <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#a5b4fc', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '20px', padding: '3px 9px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}><div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#6366f1', animation: 'ws-core-breathe 1s ease infinite' }} />In Progress</div>}
+                    {isPending  && <div style={{ fontSize: '0.57rem', color: C.textMuted, flexShrink: 0 }}>Pending</div>}
                   </div>
                 </div>
-                {/* Delivery Status */}
-                {completionItems.length > 0 && (
-                  <div style={{ width: '190px', flexShrink: 0, padding: '12px 16px' }}>
-                    <div style={{ fontSize: '0.52rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '10px' }}>Delivery Status</div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                      {completionItems.map((item, i) => (
-                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 9px', background: `${item.color}0d`, border: `1px solid ${item.color}25`, borderRadius: '8px', animation: `ws-fadeup 0.25s ease both`, animationDelay: `${i * 0.06}s` }}>
-                          <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: `${item.color}18`, border: `1.5px solid ${item.color}55`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                            <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={item.color} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                          </div>
-                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: item.color }}>{item.label}</span>
-                        </div>
-                      ))}
-                    </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Right: context panel — request details while running, outcome events when complete */}
+        <div style={{ width: '220px', flexShrink: 0, padding: '14px 18px' }}>
+          {!isComplete ? (
+            <>
+              <div style={{ fontSize: '0.54rem', fontWeight: '800', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '14px' }}>Execution Details</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div>
+                  <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Request</div>
+                  <div style={{ fontSize: '0.70rem', color: C.textSec, lineHeight: 1.5, wordBreak: 'break-word' }}>{wsInput.trim().length > 100 ? wsInput.trim().slice(0, 100) + '…' : wsInput.trim() || '—'}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Type</div>
+                  <div style={{ fontSize: '0.70rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
+                </div>
+                {datasetName && (
+                  <div>
+                    <div style={{ fontSize: '0.50rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '3px' }}>Dataset</div>
+                    <div style={{ fontSize: '0.70rem', fontWeight: '600', color: C.textSec, wordBreak: 'break-all' }}>{datasetName}</div>
                   </div>
                 )}
               </div>
-            )}
-          </>
-        )}
-
-        {/* ── Run Complete footer bar — always visible ── */}
-        <div style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '10px', borderTop: expanded ? `1px solid ${C.border}` : 'none' }}>
-          <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: sColor, flexShrink: 0 }} />
-          <span style={{ fontSize: '0.75rem', fontWeight: '600', color: C.text }}>Run Complete</span>
-          <span style={{ fontSize: '0.63rem', color: C.textMuted }}>·</span>
-          <span style={{ fontSize: '0.63rem', color: C.textMuted }}>{completedCount}/{totalCount} steps</span>
-          {durDisplay && (
-            <>
-              <span style={{ fontSize: '0.63rem', color: C.textMuted }}>·</span>
-              <span style={{ fontSize: '0.63rem', color: C.textMuted }}>{durDisplay}</span>
             </>
+          ) : (
+            <div style={{ animation: 'ws-fadein 0.4s ease' }}>
+              {/* Execution Summary */}
+              <div style={{ fontSize: '0.52rem', fontWeight: '800', color: isSuccess ? '#10b981' : '#ef4444', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '8px' }}>Execution Summary</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
+                {(() => {
+                  const rd  = result?.started_at ? new Date(result.started_at).toISOString().slice(0,10).replace(/-/g,'') : null
+                  const seq = result?.report_id  ? String(result.report_id).padStart(3,'0') : '001'
+                  const rid = result?.run_id != null ? String(result.run_id) : (rd ? `RUN-${rd}-${seq}` : null)
+                  return rid ? (
+                    <div>
+                      <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '1px' }}>Execution ID</div>
+                      <div style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec, fontFamily: MONO, wordBreak: 'break-all' }}>{rid}</div>
+                    </div>
+                  ) : null
+                })()}
+                {datasetName && (
+                  <div>
+                    <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '1px' }}>Dataset</div>
+                    <div style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec, wordBreak: 'break-all' }}>{datasetName}</div>
+                  </div>
+                )}
+                <div>
+                  <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '1px' }}>Completed</div>
+                  <div style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>{execType}</div>
+                </div>
+                {(reportGenerated || scheduleCreated || notifSent || emailSent || emailConfigured || notifConfigured) && (
+                  <div>
+                    <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '4px' }}>Outputs</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      {reportGenerated && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>Intelligence Report</span>
+                        </div>
+                      )}
+                      {scheduleCreated && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>Schedule Created</span>
+                        </div>
+                      )}
+                      {emailConfigured && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>Email Delivery Configured</span>
+                        </div>
+                      )}
+                      {notifConfigured && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>In-App Notification Configured</span>
+                        </div>
+                      )}
+                      {notifSent && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>In-App Notification Created</span>
+                        </div>
+                      )}
+                      {emailSent && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>Email Delivered</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {fmtTotal && (
+                  <div>
+                    <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '1px' }}>Duration</div>
+                    <div style={{ fontSize: '0.68rem', fontWeight: '700', color: C.text, fontFamily: MONO }}>{fmtTotal}</div>
+                  </div>
+                )}
+                {!isSuccess && (
+                  <div style={{ fontSize: '0.65rem', color: '#ef4444', marginTop: '2px' }}>Review execution steps for details</div>
+                )}
+              </div>
+              {/* Execution Outcome */}
+              <div style={{ paddingTop: '12px', borderTop: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: '0.54rem', fontWeight: '800', color: isSuccess ? '#10b981' : '#ef4444', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '10px' }}>Execution Outcome</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <OutcomeEvent label="Intent parsed" active={isSuccess} />
+                  {datasetName && <OutcomeEvent label="Dataset validated" active={isSuccess} />}
+                  <OutcomeEvent label="Analysis completed" active={isSuccess} failed={!isSuccess} />
+                  {reportGenerated   && <OutcomeEvent label="Report generated" active />}
+                  {scheduleCreated  && <OutcomeEvent label="Schedule created" active />}
+                  {emailConfigured  && <OutcomeEvent label="Email delivery configured" active />}
+                  {notifConfigured  && <OutcomeEvent label="In-App notification configured" active />}
+                  {notifSent        && <OutcomeEvent label="In-App Notification Created" active />}
+                  {emailSent        && <OutcomeEvent label="Email delivered" active />}
+                  {!isSuccess      && <OutcomeEvent label="Execution failed" active={false} failed />}
+                </div>
+              </div>
+            </div>
           )}
-          <div style={{ flex: 1 }} />
-          {result?.report_id && onOpenReport && (
-            <button onClick={() => onOpenReport(result.report_id)} style={{ background: 'rgba(16,185,129,0.10)', border: '1px solid rgba(16,185,129,0.30)', borderRadius: '7px', padding: '5px 14px', fontSize: '0.70rem', fontWeight: '600', color: '#10b981', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              View Report
-            </button>
-          )}
-          {scheduleCreated && setActiveNav && (
-            <button onClick={() => setActiveNav('scheduled')} style={{ background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.30)', borderRadius: '7px', padding: '5px 14px', fontSize: '0.70rem', fontWeight: '600', color: '#a78bfa', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-              View Schedule
-            </button>
-          )}
-          {result?.email_delivery?.sent && setActiveNav && (
-            <button onClick={() => setActiveNav('reports')} style={{ background: 'rgba(56,189,248,0.10)', border: '1px solid rgba(56,189,248,0.30)', borderRadius: '7px', padding: '5px 14px', fontSize: '0.70rem', fontWeight: '600', color: '#38bdf8', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-              View Delivery
-            </button>
-          )}
-          <button
-            onClick={() => setExpanded(v => !v)}
-            style={{ background: 'none', border: `1px solid ${C.border}`, borderRadius: '7px', padding: '4px 10px', fontSize: '0.70rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', flexShrink: 0 }}>
-            {expanded ? 'Hide Details' : 'Show Details'}
-          </button>
         </div>
       </div>
-    )
-  }
+
+    </div>
+  )
 }
 
 // ─── Result canvas subcomponents (unchanged) ──────────────────────────────────
@@ -1207,9 +1328,9 @@ function CopilotPanel({ reportId, aiMeta, intel, user, token, onSessionExpired, 
     }}>
 
       {/* ── Header ── */}
-      <div style={{ padding: '13px 16px', borderBottom: `1px solid ${C.borderAlt}`, display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(124,58,237,0.04)', flexShrink: 0, position: 'sticky', top: 0, zIndex: 2 }}>
+      <div style={{ padding: '13px 16px', borderBottom: `1px solid ${C.borderAlt}`, display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(99,102,241,0.04)', flexShrink: 0, position: 'sticky', top: 0, zIndex: 2 }}>
         <div style={{ width: '26px', height: '26px', borderRadius: '8px', background: 'rgba(167,139,250,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="#a78bfa"><path d="M12 2 L14 10 L22 12 L14 14 L12 22 L10 14 L2 12 L10 10 Z"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2 L14 10 L22 12 L14 14 L12 22 L10 14 L2 12 L10 10 Z"/></svg>
         </div>
         <span style={{ fontSize: '0.65rem', fontWeight: '800', color: C.text, letterSpacing: '0.08em', textTransform: 'uppercase' }}>AI Assistant</span>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '5px' }}>
@@ -1238,8 +1359,8 @@ function CopilotPanel({ reportId, aiMeta, intel, user, token, onSessionExpired, 
         <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.borderAlt}` }}>
           <div style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', padding: '10px 12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="#a78bfa"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-              <span style={{ fontSize: '0.57rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Reasoning</span>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+              <span style={{ fontSize: '0.57rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Reasoning</span>
             </div>
             <p style={{ margin: 0, fontSize: '0.72rem', color: C.textSec, lineHeight: 1.6 }}>{aiMeta.reasoning_summary}</p>
             {conf != null && (
@@ -1261,10 +1382,10 @@ function CopilotPanel({ reportId, aiMeta, intel, user, token, onSessionExpired, 
             onChange={e => setQuestion(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) handleAsk() }}
             disabled={!hasReport}
             style={{ flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '7px 11px', fontSize: '0.74rem', color: C.text, outline: 'none', fontFamily: FONT, transition: 'border-color 0.14s', opacity: hasReport ? 1 : 0.5 }}
-            onFocus={e => { e.target.style.borderColor = '#7c3aed' }} onBlur={e => { e.target.style.borderColor = C.border }}
+            onFocus={e => { e.target.style.borderColor = '#6366f1' }} onBlur={e => { e.target.style.borderColor = C.border }}
           />
           <button onClick={() => handleAsk()} disabled={loading || !question.trim() || !hasReport}
-            style={{ background: 'linear-gradient(135deg,#7c3aed,#8b5cf6)', border: 'none', borderRadius: '8px', padding: '7px 11px', color: '#fff', cursor: (loading || !question.trim() || !hasReport) ? 'not-allowed' : 'pointer', opacity: (loading || !question.trim() || !hasReport) ? 0.45 : 1, flexShrink: 0 }}>
+            style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', border: 'none', borderRadius: '8px', padding: '7px 11px', color: '#fff', cursor: (loading || !question.trim() || !hasReport) ? 'not-allowed' : 'pointer', opacity: (loading || !question.trim() || !hasReport) ? 0.45 : 1, flexShrink: 0 }}>
             {loading
               ? <div style={{ width: '10px', height: '10px', borderRadius: '50%', border: '2px solid #ffffff40', borderTopColor: '#fff', animation: 'ws-spin 0.7s linear infinite' }} />
               : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>}
@@ -1272,17 +1393,17 @@ function CopilotPanel({ reportId, aiMeta, intel, user, token, onSessionExpired, 
         </div>
         {error && <div style={{ fontSize: '0.71rem', color: C.danger, padding: '8px 10px', background: C.dangerSoft, borderRadius: '8px', marginTop: '8px' }}>{error}</div>}
         {answer && !loading && (
-          <div style={{ background: 'rgba(124,58,237,0.06)', border: '1px solid rgba(124,58,237,0.18)', borderRadius: '10px', padding: '10px 12px', marginTop: '8px', animation: 'ws-fadein 0.3s ease' }}>
+          <div style={{ background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '10px', padding: '10px 12px', marginTop: '8px', animation: 'ws-fadein 0.3s ease' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '5px' }}>
-              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#7c3aed', animation: 'ws-dot-blink 1.6s ease infinite' }} />
-              <span style={{ fontSize: '0.58rem', color: '#a78bfa', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Answer</span>
+              <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#6366f1', animation: 'ws-dot-blink 1.6s ease infinite' }} />
+              <span style={{ fontSize: '0.58rem', color: '#a5b4fc', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Answer</span>
             </div>
             <p style={{ margin: 0, fontSize: '0.77rem', color: C.text, lineHeight: 1.65 }}>{answer}</p>
           </div>
         )}
         {loading && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '6px 0', marginTop: '4px' }}>
-            {[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#7c3aed', opacity: 0.5, animation: `ws-dot-blink 1.2s ease ${d}s infinite` }} />)}
+            {[0, 0.2, 0.4].map((d, i) => <div key={i} style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#6366f1', opacity: 0.5, animation: `ws-dot-blink 1.2s ease ${d}s infinite` }} />)}
             <span style={{ fontSize: '0.7rem', color: C.textMuted }}>Thinking…</span>
           </div>
         )}
@@ -1338,19 +1459,19 @@ function PremiumExecutiveHero({ intel, C, onOpenReport, setActiveNav }) {
   const { topInsight, highestRisk, topAction, topOpportunity } = intel
 
   const miniCards = [
-    topInsight    && { label: 'Top Insight',        text: topInsight,    accent: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.20)', icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> },
+    topInsight    && { label: 'Top Insight',        text: topInsight,    accent: '#a5b4fc', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.20)', icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg> },
     highestRisk   && { label: 'Highest Risk',       text: highestRisk,   accent: '#f87171', bg: 'rgba(248,113,113,0.06)', border: 'rgba(248,113,113,0.18)', icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> },
     topAction     && { label: 'Recommended Action', text: topAction,     accent: '#10b981', bg: 'rgba(16,185,129,0.06)',  border: 'rgba(16,185,129,0.18)',  icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> },
     topOpportunity && { label: 'Key Opportunity',   text: topOpportunity, accent: '#38bdf8', bg: 'rgba(56,189,248,0.06)', border: 'rgba(56,189,248,0.18)',  icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg> },
   ].filter(Boolean)
 
   return (
-    <div className="ws-section ws-s1" style={{ position: 'relative', overflow: 'hidden', borderRadius: '20px', background: C.surface, border: '1px solid rgba(124,58,237,0.22)', boxShadow: '0 8px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.08)' }}>
+    <div className="ws-section ws-s1" style={{ position: 'relative', overflow: 'hidden', borderRadius: '20px', background: C.surface, border: '1px solid rgba(99,102,241,0.22)', boxShadow: '0 8px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.08)' }}>
       {/* Accent gradient strip */}
-      <div style={{ height: '3px', background: 'linear-gradient(90deg, #4f46e5 0%, #7c3aed 40%, #a78bfa 70%, #60a5fa 100%)' }} />
+      <div style={{ height: '3px', background: 'linear-gradient(90deg, #4f46e5 0%, #6366f1 40%, #a5b4fc 70%, #60a5fa 100%)' }} />
 
       {/* Ambient glows */}
-      <div style={{ position: 'absolute', top: 0, right: 0, width: '420px', height: '280px', background: 'radial-gradient(ellipse at 90% 0%, rgba(124,58,237,0.10) 0%, rgba(59,130,246,0.04) 50%, transparent 70%)', pointerEvents: 'none', zIndex: 0, animation: 'ws-hero-ambient 5s ease-in-out infinite' }} />
+      <div style={{ position: 'absolute', top: 0, right: 0, width: '420px', height: '280px', background: 'radial-gradient(ellipse at 90% 0%, rgba(99,102,241,0.10) 0%, rgba(59,130,246,0.04) 50%, transparent 70%)', pointerEvents: 'none', zIndex: 0, animation: 'ws-hero-ambient 5s ease-in-out infinite' }} />
       <div style={{ position: 'absolute', bottom: 0, left: 0, width: '240px', height: '180px', background: 'radial-gradient(ellipse at 0% 100%, rgba(16,185,129,0.05) 0%, transparent 70%)', pointerEvents: 'none', zIndex: 0 }} />
 
       <div style={{ position: 'relative', zIndex: 1 }}>
@@ -1358,9 +1479,9 @@ function PremiumExecutiveHero({ intel, C, onOpenReport, setActiveNav }) {
         <div style={{ padding: '30px 38px 26px' }}>
           {/* Meta row */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(124,58,237,0.1)', border: '1px solid rgba(124,58,237,0.22)', borderRadius: '20px', padding: '4px 11px 4px 8px' }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="#a78bfa"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-              <span style={{ fontSize: '0.56rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Executive Briefing</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.22)', borderRadius: '20px', padding: '4px 11px 4px 8px' }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+              <span style={{ fontSize: '0.56rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Executive Briefing</span>
             </div>
             <ReportStyleBadge style={intel.reportPlan?.report_style} />
             {aiMeta && <AiLiveBadge aiMeta={aiMeta} />}
@@ -1376,7 +1497,7 @@ function PremiumExecutiveHero({ intel, C, onOpenReport, setActiveNav }) {
               {aiMeta?.confidence != null && <ConfidenceRing confidence={aiMeta.confidence} />}
               {intel.reportId && onOpenReport && (
                 <button className="ws-action-btn" onClick={() => onOpenReport(intel.reportId)}
-                  style={{ background: 'linear-gradient(135deg, #6d28d9 0%, #7c3aed 100%)', border: 'none', borderRadius: '10px', padding: '9px 18px', fontSize: '0.8rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', boxShadow: '0 4px 16px rgba(124,58,237,0.35)' }}>
+                  style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', border: 'none', borderRadius: '10px', padding: '9px 18px', fontSize: '0.8rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap', boxShadow: '0 4px 16px rgba(99,102,241,0.35)' }}>
                   Open Full Workspace
                 </button>
               )}
@@ -1420,7 +1541,7 @@ function PremiumExecutiveHero({ intel, C, onOpenReport, setActiveNav }) {
 
 function WatchlistPanel({ watchlist, C }) {
   if (!watchlist?.length) return null
-  const sevMap = { high: { color: '#f87171', bg: 'rgba(248,113,113,0.1)', label: 'HIGH' }, medium: { color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', label: 'MED' }, low: { color: '#7c3aed', bg: 'rgba(124,58,237,0.1)', label: 'LOW' } }
+  const sevMap = { high: { color: '#f87171', bg: 'rgba(248,113,113,0.1)', label: 'HIGH' }, medium: { color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', label: 'MED' }, low: { color: '#6366f1', bg: 'rgba(99,102,241,0.1)', label: 'LOW' } }
   return (
     <div className="ws-section ws-s4" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(245,158,11,0.04)' }}>
@@ -1454,11 +1575,11 @@ function PriorityInsights({ recommendations, C }) {
   const pMap = { high: { color: '#f87171', bg: 'rgba(248,113,113,0.1)', label: 'HIGH' }, medium: { color: '#f59e0b', bg: 'rgba(245,158,11,0.1)', label: 'MEDIUM' }, low: { color: '#10b981', bg: 'rgba(16,185,129,0.1)', label: 'LOW' } }
   return (
     <div className="ws-section ws-s5" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(124,58,237,0.04)' }}>
-        <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(124,58,237,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a78bfa' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(99,102,241,0.04)' }}>
+        <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a5b4fc' }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         </div>
-        <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Priority Insights</span>
+        <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Priority Insights</span>
         <span style={{ marginLeft: 'auto', fontSize: '0.65rem', color: C.textMuted, background: C.bg, borderRadius: '10px', padding: '1px 8px', border: `1px solid ${C.border}` }}>{Math.min(recommendations.length, 5)} items</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1486,7 +1607,7 @@ function ChartPanel({ sec, C, delay = 0 }) {
     <div className="ws-chart-panel" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)', animation: `ws-fadeup 0.38s ease both`, animationDelay: `${delay}s` }}>
       {sec.heading && (
         <div style={{ padding: '14px 22px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div style={{ width: '4px', height: '16px', background: 'linear-gradient(180deg,#7c3aed,#8b5cf6)', borderRadius: '2px', flexShrink: 0 }} />
+          <div style={{ width: '4px', height: '16px', background: 'linear-gradient(180deg,#6366f1,#8b5cf6)', borderRadius: '2px', flexShrink: 0 }} />
           <span style={{ fontSize: '0.7rem', fontWeight: '700', color: C.textSec }}>{sec.heading}</span>
         </div>
       )}
@@ -1521,7 +1642,7 @@ function WorkflowTimeline({ intel, C }) {
       label: 'Request understood',
       desc:  'Intent parsed · capabilities selected · workflow planned',
       dur:   mkDur(0.08) || '0.3s',
-      icon:  'star',   accent: '#a78bfa',
+      icon:  'star',   accent: '#a5b4fc',
     },
     {
       label: 'Dataset loaded',
@@ -1543,7 +1664,7 @@ function WorkflowTimeline({ intel, C }) {
       label: 'Report generated',
       desc:  intel.title ? `"${intel.title}" compiled with executive summary` : 'Intelligence report compiled',
       dur:   mkDur(0.22) || '1.0s',
-      icon:  'document', accent: '#7c3aed',
+      icon:  'document', accent: '#6366f1',
     },
     {
       label: hasEmail ? 'Notification sent' : 'Notification prepared',
@@ -1567,11 +1688,11 @@ function WorkflowTimeline({ intel, C }) {
 
   return (
     <div className="ws-section ws-s6" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(124,58,237,0.03)' }}>
-        <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(124,58,237,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(99,102,241,0.03)' }}>
+        <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(99,102,241,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         </div>
-        <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Execution Timeline</span>
+        <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Execution Timeline</span>
         {totalSec && (
           <span style={{ marginLeft: 'auto', fontSize: '0.67rem', color: C.textMuted, background: C.bg, borderRadius: '10px', padding: '2px 10px', border: `1px solid ${C.border}`, fontFamily: MONO }}>
             {totalSec}s total
@@ -1627,7 +1748,7 @@ function GeneratedOutputs({ intel, C, onOpenReport, setActiveNav }) {
 
   const outputs = [
     hasReport && {
-      key: 'report', icon: 'document', accent: '#7c3aed',
+      key: 'report', icon: 'document', accent: '#6366f1',
       title:  intel.title || 'Intelligence Report',
       desc:   intel.execSummary
         ? (intel.execSummary.length > 110 ? intel.execSummary.slice(0, 110) + '…' : intel.execSummary)
@@ -1737,7 +1858,7 @@ function ActionsCompleted({ intel, C }) {
       detail: intel.kpis?.length > 0
         ? `Processed data · extracted ${intel.kpis.length} KPI${intel.kpis.length !== 1 ? 's' : ''}`
         : 'Data patterns extracted and ranked by significance',
-      color:  '#7c3aed',
+      color:  '#6366f1',
     },
     intel.kind === 'report' && {
       label:  'Generated intelligence report',
@@ -1797,13 +1918,13 @@ function ActionsCompleted({ intel, C }) {
 
 function SaveWorkflowCTA({ C, onSave, alreadySaved, saving }) {
   return (
-    <div className="ws-section ws-s6" style={{ position: 'relative', overflow: 'hidden', borderRadius: '16px', background: C.surface, border: '1px solid rgba(124,58,237,0.20)', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
-      <div style={{ position: 'absolute', top: '-50px', right: '-50px', width: '220px', height: '220px', background: 'radial-gradient(circle, rgba(124,58,237,0.10) 0%, transparent 65%)', pointerEvents: 'none' }} />
+    <div className="ws-section ws-s6" style={{ position: 'relative', overflow: 'hidden', borderRadius: '16px', background: C.surface, border: '1px solid rgba(99,102,241,0.20)', boxShadow: '0 4px 24px rgba(0,0,0,0.08)' }}>
+      <div style={{ position: 'absolute', top: '-50px', right: '-50px', width: '220px', height: '220px', background: 'radial-gradient(circle, rgba(99,102,241,0.10) 0%, transparent 65%)', pointerEvents: 'none' }} />
       <div style={{ position: 'absolute', bottom: '-30px', left: '-20px', width: '140px', height: '140px', background: 'radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 65%)', pointerEvents: 'none' }} />
 
       <div style={{ position: 'relative', padding: '22px 28px', display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
-        <div style={{ width: '44px', height: '44px', borderRadius: '13px', background: 'rgba(124,58,237,0.14)', border: '1px solid rgba(124,58,237,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <div style={{ width: '44px', height: '44px', borderRadius: '13px', background: 'rgba(99,102,241,0.14)', border: '1px solid rgba(99,102,241,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
             <polyline points="17 21 17 13 7 13 7 21"/>
             <polyline points="7 3 7 8 15 8"/>
@@ -1824,13 +1945,13 @@ function SaveWorkflowCTA({ C, onSave, alreadySaved, saving }) {
               Saved to Tools Library
             </div>
           ) : saving ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '9px 18px', background: 'rgba(124,58,237,0.10)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '10px', fontSize: '0.78rem', fontWeight: '600', color: '#a78bfa' }}>
-              <div style={{ width: '13px', height: '13px', borderRadius: '50%', border: '2px solid rgba(167,139,250,0.35)', borderTopColor: '#a78bfa', animation: 'ws-spin 0.75s linear infinite', flexShrink: 0 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '9px 18px', background: 'rgba(99,102,241,0.10)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '10px', fontSize: '0.78rem', fontWeight: '600', color: '#a5b4fc' }}>
+              <div style={{ width: '13px', height: '13px', borderRadius: '50%', border: '2px solid rgba(167,139,250,0.35)', borderTopColor: '#a5b4fc', animation: 'ws-spin 0.75s linear infinite', flexShrink: 0 }} />
               Saving to library…
             </div>
           ) : (
             <button onClick={onSave}
-              style={{ display: 'flex', alignItems: 'center', gap: '7px', background: 'linear-gradient(135deg,#6d28d9,#7c3aed)', border: 'none', borderRadius: '10px', padding: '9px 18px', fontSize: '0.78rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, boxShadow: '0 4px 16px rgba(124,58,237,0.35)', transition: 'opacity 0.14s, transform 0.14s' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '7px', background: 'linear-gradient(135deg,#4f46e5,#6366f1)', border: 'none', borderRadius: '10px', padding: '9px 18px', fontSize: '0.78rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, boxShadow: '0 4px 16px rgba(99,102,241,0.35)', transition: 'opacity 0.14s, transform 0.14s' }}
               onMouseEnter={e => { e.currentTarget.style.opacity = '0.9'; e.currentTarget.style.transform = 'translateY(-1px)' }}
               onMouseLeave={e => { e.currentTarget.style.opacity = '1';   e.currentTarget.style.transform = 'translateY(0)' }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
@@ -1858,11 +1979,11 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', animation: 'ws-fadein 0.3s ease' }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(124,58,237,0.03)' }}>
-        <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(124,58,237,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '14px 22px', borderBottom: `1px solid ${C.border}`, background: 'rgba(99,102,241,0.03)' }}>
+        <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(99,102,241,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </div>
-        <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Reusable Workflows</span>
+        <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Reusable Workflows</span>
         {!empty && (
           <span style={{ marginLeft: 'auto', fontSize: '0.65rem', color: C.textMuted, background: C.bg, borderRadius: '10px', padding: '1px 8px', border: `1px solid ${C.border}` }}>
             {workflows.length} saved
@@ -1873,8 +1994,8 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
       {empty ? (
         /* ── Empty state ── */
         <div style={{ padding: '36px 24px', textAlign: 'center' }}>
-          <div style={{ width: '48px', height: '48px', borderRadius: '14px', background: 'rgba(124,58,237,0.08)', border: `1px solid rgba(124,58,237,0.18)`, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          <div style={{ width: '48px', height: '48px', borderRadius: '14px', background: 'rgba(99,102,241,0.08)', border: `1px solid rgba(99,102,241,0.18)`, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           </div>
           <div style={{ fontSize: '0.88rem', fontWeight: '700', color: C.textSec, marginBottom: '6px' }}>No reusable workflows yet</div>
           <p style={{ margin: 0, fontSize: '0.74rem', color: C.textMuted, lineHeight: 1.6, maxWidth: '280px', marginLeft: 'auto', marginRight: 'auto' }}>
@@ -1887,13 +2008,13 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
           {workflows.map((wf, i) => (
             <div key={wf.id}
               style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '10px', animation: `ws-fadeup 0.3s ease both`, animationDelay: `${i * 0.05}s`, transition: 'border-color 0.14s, box-shadow 0.14s' }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(124,58,237,0.35)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(124,58,237,0.10)' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(99,102,241,0.35)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(99,102,241,0.10)' }}
               onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = 'none' }}>
 
               {/* Icon + title row */}
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                <div style={{ width: '32px', height: '32px', borderRadius: '9px', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.22)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '1px' }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <div style={{ width: '32px', height: '32px', borderRadius: '9px', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.22)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '1px' }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: '0.83rem', fontWeight: '700', color: C.text, lineHeight: 1.3, marginBottom: '3px', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
@@ -1911,8 +2032,8 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
               {/* Schedule badge */}
               {wf.scheduleType && { weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[wf.scheduleType] && (
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', alignSelf: 'flex-start' }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                  <span style={{ fontSize: '0.62rem', fontWeight: '700', color: '#a78bfa', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.22)', borderRadius: '5px', padding: '1px 7px', letterSpacing: '0.02em' }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  <span style={{ fontSize: '0.62rem', fontWeight: '700', color: '#a5b4fc', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.22)', borderRadius: '5px', padding: '1px 7px', letterSpacing: '0.02em' }}>
                     {{ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' }[wf.scheduleType]}
                   </span>
                 </div>
@@ -1928,7 +2049,7 @@ function ReusableWorkflows({ workflows, onRunWorkflow, C }) {
 
               {/* Run Again button */}
               <button onClick={() => onRunWorkflow(wf)}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'linear-gradient(135deg,#6d28d9,#7c3aed)', border: 'none', borderRadius: '9px', padding: '7px 14px', fontSize: '0.72rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, boxShadow: '0 3px 10px rgba(124,58,237,0.30)', transition: 'opacity 0.14s, transform 0.14s', alignSelf: 'flex-start', marginTop: 'auto' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'linear-gradient(135deg,#4f46e5,#6366f1)', border: 'none', borderRadius: '9px', padding: '7px 14px', fontSize: '0.72rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, boxShadow: '0 3px 10px rgba(99,102,241,0.30)', transition: 'opacity 0.14s, transform 0.14s', alignSelf: 'flex-start', marginTop: 'auto' }}
                 onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; e.currentTarget.style.transform = 'translateY(-1px)' }}
                 onMouseLeave={e => { e.currentTarget.style.opacity = '1';    e.currentTarget.style.transform = 'translateY(0)' }}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -1955,19 +2076,19 @@ function InsightPriorityPanel({ sec, C }) {
     low:    { color: '#10b981', bg: 'rgba(16,185,129,0.10)',  label: 'LOW'  },
   }
   return (
-    <div style={{ background: 'rgba(124,58,237,0.04)', border: '1px solid rgba(124,58,237,0.18)', borderRadius: '14px', overflow: 'hidden', animation: 'ws-fadein 0.25s ease' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderBottom: '1px solid rgba(124,58,237,0.12)' }}>
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="#a78bfa"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Top Insights</span>
-        <span style={{ marginLeft: 'auto', fontSize: '0.61rem', color: '#a78bfa', opacity: 0.7 }}>{insights.length} ranked</span>
+    <div style={{ background: 'rgba(99,102,241,0.04)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '14px', overflow: 'hidden', animation: 'ws-fadein 0.25s ease' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderBottom: '1px solid rgba(99,102,241,0.12)' }}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Top Insights</span>
+        <span style={{ marginLeft: 'auto', fontSize: '0.61rem', color: '#a5b4fc', opacity: 0.7 }}>{insights.length} ranked</span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {insights.slice(0, 5).map((ins, i) => {
           const sv = sevMeta[ins.severity] || sevMeta.low
           return (
             <div key={i}
-              style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 16px', borderBottom: i < Math.min(insights.length, 5) - 1 ? '1px solid rgba(124,58,237,0.10)' : 'none', transition: 'background 0.12s' }}
-              onMouseEnter={e => e.currentTarget.style.background = 'rgba(124,58,237,0.06)'}
+              style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 16px', borderBottom: i < Math.min(insights.length, 5) - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none', transition: 'background 0.12s' }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(99,102,241,0.06)'}
               onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
               <span style={{ fontSize: '0.55rem', fontWeight: '800', color: sv.color, background: sv.bg, borderRadius: '4px', padding: '2px 6px', textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0, marginTop: '2px' }}>{sv.label}</span>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1998,7 +2119,7 @@ function AnomalyPanel({ sec, C }) {
   const sevMeta = {
     high:   { color: '#f87171', bg: 'rgba(248,113,113,0.10)', label: 'HIGH' },
     medium: { color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  label: 'MED'  },
-    low:    { color: '#7c3aed', bg: 'rgba(124,58,237,0.08)',  label: 'LOW'  },
+    low:    { color: '#6366f1', bg: 'rgba(99,102,241,0.08)',  label: 'LOW'  },
   }
   return (
     <div style={{ background: C.surface, border: '1px solid rgba(248,113,113,0.22)', borderRadius: '14px', overflow: 'hidden', animation: 'ws-fadein 0.25s ease' }}>
@@ -2070,8 +2191,8 @@ function ForecastPanel({ sec, C }) {
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', overflow: 'hidden', animation: 'ws-fadein 0.25s ease' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', borderBottom: `1px solid ${C.border}`, background: 'rgba(167,139,250,0.03)' }}>
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Forecast · {sec.target_column}</span>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a5b4fc" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Forecast · {sec.target_column}</span>
         {sec.horizon_periods != null && (
           <span style={{ marginLeft: 'auto', fontSize: '0.61rem', color: C.textMuted, background: C.bg, borderRadius: '8px', padding: '1px 7px', border: `1px solid ${C.border}` }}>{sec.horizon_periods} period{sec.horizon_periods !== 1 ? 's' : ''} ahead</span>
         )}
@@ -2082,7 +2203,7 @@ function ForecastPanel({ sec, C }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: sec.chart ? '12px' : 0 }}>
             {[dirLine, projLine].filter(Boolean).map((line, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '7px', fontSize: '0.71rem', color: C.textSec, lineHeight: 1.5 }}>
-                <span style={{ color: '#a78bfa', flexShrink: 0 }}>·</span>{line}
+                <span style={{ color: '#a5b4fc', flexShrink: 0 }}>·</span>{line}
               </div>
             ))}
           </div>
@@ -2227,7 +2348,7 @@ function buildAnswerSummary(intel) {
       intel.topAction && `Recommended action: ${intel.topAction}`,
     ].filter(Boolean)
     if (!parts.length) return null
-    return { accent: '#7c3aed', label: 'Executive Brief', text: parts.join(' ') }
+    return { accent: '#6366f1', label: 'Executive Brief', text: parts.join(' ') }
   }
 
   if (style === 'anomaly_report') {
@@ -2259,7 +2380,7 @@ function buildAnswerSummary(intel) {
   if (dimKpi) {
     const val  = dimKpi.value_formatted || dimKpi.value_display || String(dimKpi.value ?? '')
     const expl = dimKpi.explanation ? ` ${dimKpi.explanation}` : ''
-    return { accent: '#a78bfa', label: 'Top Finding', text: `${dimKpi.label}: ${val}.${expl}` }
+    return { accent: '#a5b4fc', label: 'Top Finding', text: `${dimKpi.label}: ${val}.${expl}` }
   }
 
   // Revenue KPI
@@ -2316,11 +2437,14 @@ function ReportDeliveryCard({ result, wsInput, C }) {
     ? ({ weekly: 'Weekly', daily: 'Daily', monthly: 'Monthly', recurring: 'Recurring', automated: 'Automated' })[schedType] ?? schedType
     : null
 
-  const reportGenerated = !!(result.report_id || result.dataset_report)
-  const savedToReports  = !!result.report_id
-  const scheduleCreated = result.schedule_created === true || result.schedule_id != null
-  const notifSent       = result.notification_sent === true || result.notification_id != null
-  const workflowCreated = !!result.workflow_id ||
+  const reportGenerated  = !!(result.report_id || result.dataset_report)
+  const savedToReports   = !!result.report_id
+  const scheduleCreated  = result.schedule_created === true || result.schedule_id != null
+  const notifSent        = result.notification_sent === true || result.notification_id != null
+  const emailSentCard    = !!(result.email_delivery?.sent)
+  const emailConfigured  = result.email_delivery_configured === true && !emailSentCard
+  const notifConfigured  = result.notification_configured === true && !notifSent
+  const workflowCreated  = !!result.workflow_id ||
     /create_tool|create_workflow|save_workflow|build_workflow/i.test(result.task_type ?? '')
 
   const items = [
@@ -2337,10 +2461,20 @@ function ReportDeliveryCard({ result, wsInput, C }) {
     scheduleCreated && {
       label:  'Schedule Created',
       detail: schedLabel ? `Schedule: ${schedLabel}` : result.schedule_id ? `ID: ${result.schedule_id}` : null,
-      color:  '#a78bfa',
+      color:  '#a5b4fc',
+    },
+    emailConfigured && {
+      label:  'Email Delivery Configured',
+      detail: 'Will deliver on schedule',
+      color:  '#a5b4fc',
+    },
+    notifConfigured && {
+      label:  'In-App Notification Configured',
+      detail: 'Will notify on schedule',
+      color:  '#a5b4fc',
     },
     notifSent && {
-      label:  'Send Notification',
+      label:  'In-App Notification Created',
       detail: 'Notification Status: Sent',
       color:  '#38bdf8',
     },
@@ -2448,13 +2582,13 @@ function WorkflowExplanationCard({ result, wsInput, enginePlan, datasetName, C }
       animation: 'ws-fadein 0.35s ease',
     }}>
       <div style={{ padding: '14px 20px 12px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'rgba(124,58,237,0.12)', border: '1.5px solid rgba(124,58,237,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <div style={{ width: '18px', height: '18px', borderRadius: '50%', background: 'rgba(99,102,241,0.12)', border: '1.5px solid rgba(99,102,241,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
             <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
           </svg>
         </div>
-        <div style={{ fontSize: '0.54rem', fontWeight: '800', color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.16em' }}>What ToolSmithAI Created</div>
+        <div style={{ fontSize: '0.54rem', fontWeight: '800', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.16em' }}>What ToolSmithAI Created</div>
       </div>
       <div style={{ padding: '14px 20px 16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '12px 20px' }}>
         {fields.map((f, i) => (
@@ -2587,17 +2721,17 @@ function IntelligenceCanvas({ intel, C, onOpenReport, onExportReport, setActiveN
               <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
                 display: 'flex', alignItems: 'center', gap: '6px',
                 background: 'none', border: 'none',
-                borderBottom: on ? '2px solid #7c3aed' : '2px solid transparent',
+                borderBottom: on ? '2px solid #6366f1' : '2px solid transparent',
                 padding: '13px 16px 11px',
                 fontSize: '0.75rem', fontWeight: on ? '700' : '500',
-                color: on ? '#a78bfa' : C.textMuted,
+                color: on ? '#a5b4fc' : C.textMuted,
                 cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap',
                 transition: 'color 0.14s, border-color 0.14s',
               }}>
                 <TabIcon type={tab.icon} />
                 {tab.label}
                 {tab.badge != null && (
-                  <span style={{ fontSize: '0.57rem', fontWeight: '800', background: on ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.06)', color: on ? '#a78bfa' : C.textMuted, borderRadius: '10px', padding: '1px 6px', minWidth: '18px', textAlign: 'center' }}>
+                  <span style={{ fontSize: '0.57rem', fontWeight: '800', background: on ? 'rgba(99,102,241,0.18)' : 'rgba(255,255,255,0.06)', color: on ? '#a5b4fc' : C.textMuted, borderRadius: '10px', padding: '1px 6px', minWidth: '18px', textAlign: 'center' }}>
                     {tab.badge}
                   </span>
                 )}
@@ -2613,21 +2747,21 @@ function IntelligenceCanvas({ intel, C, onOpenReport, onExportReport, setActiveN
                 Saved to library
               </div>
             ) : workflowSaving ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.68rem', color: '#a78bfa' }}>
-                <div style={{ width: '11px', height: '11px', borderRadius: '50%', border: '2px solid rgba(167,139,250,0.35)', borderTopColor: '#a78bfa', animation: 'ws-spin 0.75s linear infinite', flexShrink: 0 }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.68rem', color: '#a5b4fc' }}>
+                <div style={{ width: '11px', height: '11px', borderRadius: '50%', border: '2px solid rgba(167,139,250,0.35)', borderTopColor: '#a5b4fc', animation: 'ws-spin 0.75s linear infinite', flexShrink: 0 }} />
                 Saving…
               </div>
             ) : (
               <button onClick={onSaveWorkflow} style={{
                 display: 'flex', alignItems: 'center', gap: '6px',
-                background: 'rgba(124,58,237,0.10)', border: '1px solid rgba(124,58,237,0.25)',
+                background: 'rgba(99,102,241,0.10)', border: '1px solid rgba(99,102,241,0.25)',
                 borderRadius: '8px', padding: '6px 12px',
-                fontSize: '0.68rem', fontWeight: '700', color: '#a78bfa',
+                fontSize: '0.68rem', fontWeight: '700', color: '#a5b4fc',
                 cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap',
                 transition: 'background 0.14s',
               }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(124,58,237,0.18)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'rgba(124,58,237,0.10)'}>
+                onMouseEnter={e => e.currentTarget.style.background = 'rgba(99,102,241,0.18)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'rgba(99,102,241,0.10)'}>
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
                 Save Workflow
               </button>
@@ -2677,7 +2811,7 @@ function IntelligenceCanvas({ intel, C, onOpenReport, onExportReport, setActiveN
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                     Key Metrics
                     {kpis.length > 4 && (
-                      <button onClick={() => setActiveTab('kpis')} style={{ marginLeft: '4px', background: 'none', border: 'none', fontSize: '0.57rem', color: '#7c3aed', cursor: 'pointer', fontFamily: FONT, fontWeight: '700', padding: 0 }}>
+                      <button onClick={() => setActiveTab('kpis')} style={{ marginLeft: '4px', background: 'none', border: 'none', fontSize: '0.57rem', color: '#6366f1', cursor: 'pointer', fontFamily: FONT, fontWeight: '700', padding: 0 }}>
                         View all {kpis.length} →
                       </button>
                     )}
@@ -2771,7 +2905,7 @@ function EmptyAssistantPanel({ C, proposal }) {
         borderBottom: `1px solid rgba(30,43,82,0.18)`,
         display: 'flex', alignItems: 'center', gap: '8px',
       }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="#a78bfa">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="#a5b4fc">
           <path d="M12 2 L14 10 L22 12 L14 14 L12 22 L10 14 L2 12 L10 10 Z"/>
         </svg>
         <span style={{ fontSize: '0.72rem', fontWeight: '600', color: C.text }}>AI Assistant</span>
@@ -2878,8 +3012,8 @@ function EmptyAssistantPanel({ C, proposal }) {
         <div style={{ padding: '0 18px 4px' }}>
           <div style={{ background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.18)', borderRadius: '10px', padding: '12px 14px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="#a78bfa"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-              <span style={{ fontSize: '0.6rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Reasoning</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+              <span style={{ fontSize: '0.6rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.1em' }}>AI Reasoning</span>
             </div>
             <p style={{ margin: 0, fontSize: '0.75rem', color: C.textSec, lineHeight: 1.65 }}>{proposal.reasoning_summary}</p>
             {proposal.confidence != null && (
@@ -2949,7 +3083,7 @@ function EmptyAssistantPanel({ C, proposal }) {
           />
           <button disabled style={{
             width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
-            background: 'linear-gradient(135deg,#7c3aed,#6d28d9)',
+            background: 'linear-gradient(135deg,#6366f1,#4f46e5)',
             border: 'none', cursor: 'not-allowed',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
@@ -3003,7 +3137,7 @@ function inputFriendlyLabel(name) {
 
 const ACTION_TYPE_META = {
   fetch:                  { color: '#38bdf8', label: 'Load Data'       },
-  transform:              { color: '#a78bfa', label: 'Transform'       },
+  transform:              { color: '#a5b4fc', label: 'Transform'       },
   filter:                 { color: '#fbbf24', label: 'Filter'          },
   aggregate:              { color: '#10b981', label: 'Aggregate'       },
   notify:                 { color: '#f472b6', label: 'Notify'          },
@@ -3014,7 +3148,7 @@ const ACTION_TYPE_META = {
   generate_dataset_report:{ color: '#f59e0b', label: 'Generate Report' },
   validate:               { color: '#f87171', label: 'Validate'        },
   analyze:                { color: '#818cf8', label: 'Analyze'         },
-  format_output:          { color: '#a78bfa', label: 'Format Output'   },
+  format_output:          { color: '#a5b4fc', label: 'Format Output'   },
   export_results:         { color: '#10b981', label: 'Export'          },
 }
 
@@ -3101,18 +3235,18 @@ function EngineOrchestrationPlan({
       </div>
 
       {/* ── Plan header card ── */}
-      <div style={{ background: C.surface, border: '1px solid rgba(124,58,237,0.25)', borderRadius: '18px', overflow: 'hidden', boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}>
-        <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#7c3aed,#a78bfa,#60a5fa)' }} />
+      <div style={{ background: C.surface, border: '1px solid rgba(99,102,241,0.25)', borderRadius: '18px', overflow: 'hidden', boxShadow: '0 8px 40px rgba(0,0,0,0.12)' }}>
+        <div style={{ height: '3px', background: 'linear-gradient(90deg,#4f46e5,#6366f1,#a5b4fc,#60a5fa)' }} />
         <div style={{ padding: '24px 28px 22px', position: 'relative' }}>
-          <div style={{ position: 'absolute', top: 0, right: 0, width: '280px', height: '180px', background: 'radial-gradient(ellipse at 90% 0%, rgba(124,58,237,0.09) 0%, transparent 70%)', pointerEvents: 'none' }} />
+          <div style={{ position: 'absolute', top: 0, right: 0, width: '280px', height: '180px', background: 'radial-gradient(ellipse at 90% 0%, rgba(99,102,241,0.09) 0%, transparent 70%)', pointerEvents: 'none' }} />
 
           {/* Title + lifecycle buttons */}
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap', marginBottom: '20px' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.25)', borderRadius: '20px', padding: '4px 11px 4px 8px' }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="#a78bfa"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-                  <span style={{ fontSize: '0.55rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Orchestration Plan</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '20px', padding: '4px 11px 4px 8px' }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+                  <span style={{ fontSize: '0.55rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Orchestration Plan</span>
                 </div>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: `${statusMeta.color}18`, border: `1px solid ${statusMeta.color}40`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.57rem', fontWeight: '700', color: statusMeta.color, textTransform: 'uppercase', letterSpacing: '0.10em' }}>
                   <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: statusMeta.color, flexShrink: 0 }} />
@@ -3231,11 +3365,11 @@ function EngineOrchestrationPlan({
       {/* ── Workflow steps ── */}
       {nodes.length > 0 && (
         <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '18px', overflow: 'hidden', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}>
-          <div style={{ padding: '14px 24px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '9px', background: 'rgba(124,58,237,0.04)' }}>
-            <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(124,58,237,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          <div style={{ padding: '14px 24px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '9px', background: 'rgba(99,102,241,0.04)' }}>
+            <div style={{ width: '24px', height: '24px', borderRadius: '7px', background: 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
             </div>
-            <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Workflow Steps</span>
+            <span style={{ fontSize: '0.65rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.12em' }}>Workflow Steps</span>
             <span style={{ marginLeft: 'auto', fontSize: '0.65rem', color: C.textMuted, background: C.bg, borderRadius: '10px', padding: '1px 8px', border: `1px solid ${C.border}` }}>
               {nodes.length} step{nodes.length !== 1 ? 's' : ''}
             </span>
@@ -3248,16 +3382,16 @@ function EngineOrchestrationPlan({
                 <div key={node.id ?? node.node_id ?? i} style={{ display: 'flex', alignItems: 'stretch' }}>
                   {/* Step number + connector */}
                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '40px', flexShrink: 0, paddingTop: '10px' }}>
-                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(124,58,237,0.18),rgba(139,92,246,0.10))', border: '1.5px solid rgba(124,58,237,0.38)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, zIndex: 1 }}>
-                      <span style={{ fontSize: '0.67rem', fontWeight: '800', color: '#a78bfa' }}>{i + 1}</span>
+                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(99,102,241,0.18),rgba(139,92,246,0.10))', border: '1.5px solid rgba(99,102,241,0.38)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, zIndex: 1 }}>
+                      <span style={{ fontSize: '0.67rem', fontWeight: '800', color: '#a5b4fc' }}>{i + 1}</span>
                     </div>
                     {!isLast && (
-                      <div style={{ width: '2px', flex: 1, background: 'linear-gradient(180deg,rgba(124,58,237,0.28),rgba(124,58,237,0.06))', borderRadius: '1px', minHeight: '12px', marginTop: '4px' }} />
+                      <div style={{ width: '2px', flex: 1, background: 'linear-gradient(180deg,rgba(99,102,241,0.28),rgba(99,102,241,0.06))', borderRadius: '1px', minHeight: '12px', marginTop: '4px' }} />
                     )}
                   </div>
                   {/* Node card — business labels only, internals hidden */}
                   <div style={{ flex: 1, marginLeft: '12px', marginBottom: isLast ? '0' : '8px', padding: '13px 16px', borderRadius: '12px', background: C.bg, border: `1px solid ${C.border}`, transition: 'border-color 0.14s, background 0.14s' }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(124,58,237,0.28)'; e.currentTarget.style.background = 'rgba(124,58,237,0.03)' }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(99,102,241,0.28)'; e.currentTarget.style.background = 'rgba(99,102,241,0.03)' }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.background = C.bg }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: node.description ? '6px' : 0, flexWrap: 'wrap' }}>
                       <ActionTypeBadge type={node.action_type} />
@@ -3334,7 +3468,7 @@ function ContextualIntelligenceStrip({ workflowCount, nextScheduledAt, recentExe
       label: 'Active Workflows',
       value: workflowCount ?? 0,
       sub: 'saved',
-      color: '#a78bfa',
+      color: '#a5b4fc',
       nav: 'workflows',
       icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>,
     },
@@ -3426,11 +3560,13 @@ export default function AIWorkspace({
   onUploadDataset,
   contextStats,
 }) {
-  const fileInputRef = useRef(null)
+  const fileInputRef    = useRef(null)
+  const execStartedAtRef = useRef(null)
 
   const [wsInput,           setWsInput]           = useState('')
   const [wsLoading,         setWsLoading]         = useState(false)
   const [wsResult,          setWsResult]          = useState(null)
+  const [wsExecDurationMs,  setWsExecDurationMs]  = useState(null)
   const [wsError,           setWsError]           = useState(null)
   const [wsProposal,        setWsProposal]        = useState(null)
   const [wsProposalLoading, setWsProposalLoading] = useState(false)
@@ -3611,7 +3747,8 @@ export default function AIWorkspace({
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    setWsError(null); setWsLoading(true); setWsResult(null); setBackToComposer(false); setWsRunSource(null)
+    setWsError(null); setWsLoading(true); setWsResult(null); setWsExecDurationMs(null); setBackToComposer(false); setWsRunSource(null)
+    execStartedAtRef.current = Date.now()
     try {
       const data = await interpretTask(trimmed, token, dsId, wsEmail.trim() || null, sections)
       const execResult = data?.data ?? null
@@ -3622,7 +3759,9 @@ export default function AIWorkspace({
         ai_enabled:         proposal.ai_enabled         ?? false,
         ai_model_used:      proposal.ai_model_used      ?? null,
       } : null
-      setWsResult(execResult ? { ...execResult, _ai_meta: aiMeta } : null)
+      setWsExecDurationMs(execStartedAtRef.current ? Date.now() - execStartedAtRef.current : null)
+      const normalized = normalizeExecutionResult(execResult)
+      setWsResult(normalized ? { ...normalized, _ai_meta: aiMeta } : null)
     } catch (err) {
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
       setWsError(err.message?.replace(/^\d+:\s*/, '') || 'Execution failed.')
@@ -3637,7 +3776,7 @@ export default function AIWorkspace({
   }
 
   function handleReset() {
-    setWsResult(null); setWsError(null); setWsProposal(null); setWsProposalError(null); setWsInput('')
+    setWsResult(null); setWsError(null); setWsProposal(null); setWsProposalError(null); setWsInput(''); setWsExecDurationMs(null)
     setEnginePlan(null); setSavedToolId(null); setToolStatus(null)
     setEngineBusy(null); setToast(null); setShowRawJson(false); setPlanDatasetId(null); setBackToComposer(false); setWsRunSource(null)
     // savedWorkflows + engineTools intentionally preserved — they are the persistent library
@@ -3711,8 +3850,9 @@ export default function AIWorkspace({
     }
 
     // ── Engine tool execution path ─────────────────────────────────────────
-    setWsError(null); setWsLoading(true); setWsResult(null)
+    setWsError(null); setWsLoading(true); setWsResult(null); setWsExecDurationMs(null)
     setBackToComposer(false); setWsRunSource(null)
+    execStartedAtRef.current = Date.now()
 
     async function pollRun(runId) {
       const MAX = 30
@@ -3784,6 +3924,7 @@ export default function AIWorkspace({
       }
 
       const normalized = normalizeRun(runResult)
+      setWsExecDurationMs(execStartedAtRef.current ? Date.now() - execStartedAtRef.current : null)
       setWsResult(normalizeExecutionResult(normalized))
       setWsRunSource(wf.title)  // marks result as coming from a saved workflow
     } catch (err) {
@@ -3806,30 +3947,31 @@ export default function AIWorkspace({
         onChange={e => { const f = e.target.files?.[0]; if (f && onUploadDataset) onUploadDataset(f); e.target.value = '' }}
       />
 
-      {/* ── Page header ── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '12px', marginTop: '2px' }}>
-        <div>
-          {/* Workspace title line */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-            <h1 style={{ margin: 0, fontSize: '1.65rem', fontWeight: '600', letterSpacing: '-0.5px', lineHeight: 1 }}>
-              <span style={{ color: '#8b5cf6' }}>AI</span>
-              <span style={{ color: C.text }}> Intelligence Workspace</span>
-            </h1>
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="#7c3aed" style={{ flexShrink: 0 }}>
-              <path d="M12 2 L14 10 L22 12 L14 14 L12 22 L10 14 L2 12 L10 10 Z"/>
-            </svg>
+      {/* ── Page header — only on composer/workspace, hidden during execution and result ── */}
+      {!activeLoading && (!hasResult || backToComposer) && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '12px', marginTop: '2px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+              <h1 style={{ margin: 0, fontSize: '1.65rem', fontWeight: '600', letterSpacing: '-0.5px', lineHeight: 1 }}>
+                <span style={{ color: '#8b5cf6' }}>AI</span>
+                <span style={{ color: C.text }}> Intelligence Workspace</span>
+              </h1>
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="#6366f1" style={{ flexShrink: 0 }}>
+                <path d="M12 2 L14 10 L22 12 L14 14 L12 22 L10 14 L2 12 L10 10 Z"/>
+              </svg>
+            </div>
+            <p style={{ margin: 0, color: C.textMuted, fontSize: '0.7rem' }}>
+              {enginePlan ? `Orchestration plan ready · ${enginePlan?.name || 'Tool'}` : 'Orchestrate, analyze, and automate with AI.'}
+            </p>
           </div>
-          <p style={{ margin: 0, color: C.textMuted, fontSize: '0.7rem' }}>
-            {hasResult && !backToComposer ? `Analysis complete · ${intel?.title || 'Report ready'}` : enginePlan ? `Orchestration plan ready · ${enginePlan?.name || 'Tool'}` : 'Orchestrate, analyze, and automate with AI.'}
-          </p>
+          {!!enginePlan && (
+            <button className="ws-ghost-btn" onClick={handleReset} style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '11px', padding: '9px 18px', fontSize: '0.82rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '600', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              New Plan
+            </button>
+          )}
         </div>
-        {((hasResult && !backToComposer) || !!enginePlan) && (
-          <button className="ws-ghost-btn" onClick={handleReset} style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '11px', padding: '9px 18px', fontSize: '0.82rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '600', boxShadow: '0 1px 4px rgba(0,0,0,0.08)' }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            {hasResult ? 'New Analysis' : 'New Plan'}
-          </button>
-        )}
-      </div>
+      )}
 
       {/* ── Two-column layout ── */}
       <div style={{ display: 'flex', gap: '18px', alignItems: 'stretch' }}>
@@ -3867,7 +4009,7 @@ export default function AIWorkspace({
 
                 {/* ── Header: badge + buttons ── */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(124,58,237,0.12)', border: '1px solid rgba(124,58,237,0.22)', borderRadius: '20px', padding: '2px 7px 2px 5px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.22)', borderRadius: '20px', padding: '2px 7px 2px 5px' }}>
                     <svg width="8" height="8" viewBox="0 0 24 24" fill="url(#badge-grad)">
                       <defs>
                         <linearGradient id="badge-grad" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -3883,12 +4025,12 @@ export default function AIWorkspace({
                     <button className="ws-ghost-btn" onClick={handleEnginePlan} disabled={disabled}
                       style={{ display: 'flex', alignItems: 'center', gap: '6px', background: C.surface, border: `1px solid ${C.borderAlt}`, borderRadius: '10px', padding: '7px 14px', fontSize: '0.72rem', color: C.textSec, cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: FONT, fontWeight: '500', opacity: disabled ? 0.45 : 1 }}>
                       {enginePlanLoading
-                        ? <div style={{ width: '10px', height: '10px', borderRadius: '50%', border: '2px solid rgba(124,58,237,0.35)', borderTopColor: '#7c3aed', animation: 'ws-spin 0.75s linear infinite' }} />
+                        ? <div style={{ width: '10px', height: '10px', borderRadius: '50%', border: '2px solid rgba(99,102,241,0.35)', borderTopColor: '#6366f1', animation: 'ws-spin 0.75s linear infinite' }} />
                         : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textSec} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>}
                       {enginePlanLoading ? 'Planning…' : 'Compose Plan'}
                     </button>
                     <button className="ws-action-btn" onClick={() => handleRun()} disabled={disabled}
-                      style={{ display: 'flex', alignItems: 'center', gap: '7px', background: 'linear-gradient(135deg, #6d28d9 0%, #7c3aed 100%)', border: 'none', borderRadius: '10px', padding: '8px 20px', fontSize: '0.76rem', fontWeight: '700', color: '#fff', cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: FONT, boxShadow: '0 4px 16px rgba(124,58,237,0.45)', opacity: disabled ? 0.55 : 1 }}>
+                      style={{ display: 'flex', alignItems: 'center', gap: '7px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', border: 'none', borderRadius: '10px', padding: '8px 20px', fontSize: '0.76rem', fontWeight: '700', color: '#fff', cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: FONT, boxShadow: '0 4px 16px rgba(99,102,241,0.45)', opacity: disabled ? 0.55 : 1 }}>
                       {wsLoading
                         ? <div style={{ width: '11px', height: '11px', borderRadius: '50%', border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', animation: 'ws-spin 0.75s linear infinite' }} />
                         : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>}
@@ -3939,7 +4081,7 @@ export default function AIWorkspace({
                       outline: 'none', resize: 'none', lineHeight: 1.7,
                       fontFamily: FONT, transition: 'border-color 0.14s',
                     }}
-                    onFocus={e => { e.target.style.borderColor = '#7c3aed' }}
+                    onFocus={e => { e.target.style.borderColor = '#6366f1' }}
                     onBlur={e => { e.target.style.borderColor = C.border }}
                   />
                   {/* Bottom-right icons inside textarea */}
@@ -3959,7 +4101,7 @@ export default function AIWorkspace({
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
                     <input type="email" placeholder="Recipient email address" value={wsEmail} onChange={e => setWsEmail(e.target.value)}
                       style={{ flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '8px 13px', fontSize: '0.82rem', color: C.text, fontFamily: FONT, outline: 'none', transition: 'border-color 0.14s' }}
-                      onFocus={e => { e.target.style.borderColor = '#7c3aed' }} onBlur={e => { e.target.style.borderColor = C.border }}
+                      onFocus={e => { e.target.style.borderColor = '#6366f1' }} onBlur={e => { e.target.style.borderColor = C.border }}
                     />
                   </div>
                 )}
@@ -3967,7 +4109,7 @@ export default function AIWorkspace({
                 {/* ── SELECT DATASET section ── */}
                 <div style={{ marginBottom: '20px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
                     <span style={{ fontSize: '0.63rem', fontWeight: '600', color: C.text, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Select Dataset</span>
                   </div>
 
@@ -3976,7 +4118,7 @@ export default function AIWorkspace({
                     <div style={{ position: 'relative', flex: 1, minWidth: '180px' }}>
                       {dsPicker && <div style={{ position: 'fixed', inset: 0, zIndex: 998 }} onClick={() => setDsPicker(false)} />}
                       <button className="ws-ghost-btn" onClick={() => setDsPicker(o => !o)}
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', background: (activeDs && datasetExplicit) ? 'rgba(124,58,237,0.07)' : (activeDs && !datasetExplicit) ? 'rgba(245,158,11,0.07)' : C.bg, border: `1px solid ${(activeDs && datasetExplicit) ? 'rgba(124,58,237,0.35)' : (activeDs && !datasetExplicit) ? 'rgba(245,158,11,0.45)' : C.border}`, borderRadius: '10px', padding: '9px 14px', fontSize: '0.76rem', color: (activeDs && datasetExplicit) ? '#7c3aed' : (activeDs && !datasetExplicit) ? '#d97706' : C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '400', textAlign: 'left', position: 'relative', zIndex: 999 }}>
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', background: (activeDs && datasetExplicit) ? 'rgba(99,102,241,0.07)' : (activeDs && !datasetExplicit) ? 'rgba(245,158,11,0.07)' : C.bg, border: `1px solid ${(activeDs && datasetExplicit) ? 'rgba(99,102,241,0.35)' : (activeDs && !datasetExplicit) ? 'rgba(245,158,11,0.45)' : C.border}`, borderRadius: '10px', padding: '9px 14px', fontSize: '0.76rem', color: (activeDs && datasetExplicit) ? '#6366f1' : (activeDs && !datasetExplicit) ? '#d97706' : C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '400', textAlign: 'left', position: 'relative', zIndex: 999 }}>
                         <span style={{ flex: 1 }}>{activeDs ? activeDs.filename : 'Choose an existing dataset'}</span>
                         {activeDs && !datasetExplicit && <span style={{ fontSize: '0.60rem', fontWeight: '600', color: '#d97706', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.30)', borderRadius: '4px', padding: '1px 5px', flexShrink: 0 }}>confirm</span>}
                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, flexShrink: 0 }}><path d="m6 9 6 6 6-6"/></svg>
@@ -3994,7 +4136,7 @@ export default function AIWorkspace({
                                 placeholder="Search…"
                                 value={dsSearch}
                                 onChange={e => setDsSearch(e.target.value)}
-                                style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: '0.74rem', color: C.text, fontFamily: FONT, caretColor: '#7c3aed' }}
+                                style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: '0.74rem', color: C.text, fontFamily: FONT, caretColor: '#6366f1' }}
                               />
                               {dsSearch && (
                                 <button onClick={() => setDsSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', color: C.textMuted }}>
@@ -4021,15 +4163,15 @@ export default function AIWorkspace({
                                 const tbg   = DS_BG[type] || C.borderAlt
                                 return (
                                   <div key={ds.id} onClick={() => { setSelectedDatasetId(ds.id); setDatasetExplicit(true); setDsPendingRun(null); setNoDsWarning(false); setDsPicker(false) }}
-                                    style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: isSel ? 'rgba(124,58,237,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: isSel ? 'rgba(99,102,241,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
                                     onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = C.borderAlt }}
                                     onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent' }}>
                                     <div style={{ width: '22px', height: '15px', borderRadius: '3px', background: tbg, border: `1px solid ${tc}40`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.48rem', fontWeight: '700', color: tc, flexShrink: 0 }}>{type.slice(0, 3)}</div>
                                     <div style={{ flex: 1, minWidth: 0 }}>
-                                      <div style={{ fontSize: '0.75rem', fontWeight: '500', color: isSel ? '#7c3aed' : C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{ds.filename}</div>
+                                      <div style={{ fontSize: '0.75rem', fontWeight: '500', color: isSel ? '#6366f1' : C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{ds.filename}</div>
                                       <div style={{ fontSize: '0.60rem', color: C.textMuted, lineHeight: 1.2 }}>{(ds.row_count || 0).toLocaleString()} rows · {ds.column_count} cols</div>
                                     </div>
-                                    {isSel && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                                    {isSel && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
                                   </div>
                                 )
                               })
@@ -4037,8 +4179,8 @@ export default function AIWorkspace({
                           </div>
                           {/* Footer */}
                           <div onClick={() => { setDsPicker(false); setActiveNav('datasets') }}
-                            style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#7c3aed', fontSize: '0.74rem', fontWeight: '500', borderTop: `1px solid ${C.border}`, transition: 'background 0.12s' }}
-                            onMouseEnter={e => e.currentTarget.style.background = 'rgba(124,58,237,0.07)'}
+                            style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#6366f1', fontSize: '0.74rem', fontWeight: '500', borderTop: `1px solid ${C.border}`, transition: 'background 0.12s' }}
+                            onMouseEnter={e => e.currentTarget.style.background = 'rgba(99,102,241,0.07)'}
                             onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
                             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                             Manage datasets
@@ -4091,7 +4233,7 @@ export default function AIWorkspace({
                 {/* ── QUICK START EXAMPLES section ── */}
                 <div style={{ marginBottom: '4px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
                     <span style={{ fontSize: '0.63rem', fontWeight: '600', color: C.text, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Quick Start Examples</span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
@@ -4166,9 +4308,15 @@ export default function AIWorkspace({
               wsInput={wsInput}
               enginePlan={enginePlan}
               datasetName={activeDs?.filename ?? null}
+              activeDs={activeDs}
+              intel={intel}
               C={C}
               onOpenReport={onOpenReport}
               setActiveNav={setActiveNav}
+              onBack={() => setBackToComposer(true)}
+              onRunAgain={handleRun}
+              execDurationMs={wsExecDurationMs}
+              user={user}
             />
           )}
 
@@ -4181,54 +4329,14 @@ export default function AIWorkspace({
             </div>
           )}
 
-          {/* ── Result navigation bar ── */}
-          {hasResult && !backToComposer && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', animation: 'ws-fadein 0.3s ease', flexWrap: 'wrap' }}>
-              <button className="ws-ghost-btn" onClick={() => setBackToComposer(true)}
-                style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '8px 14px', fontSize: '0.74rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-                Back to Composer
-              </button>
-              <button className="ws-ghost-btn" onClick={() => handleRun()}
-                style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '8px 14px', fontSize: '0.74rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                Run Again
-              </button>
-              <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                {wsRunSource && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '5px', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.22)', borderRadius: '8px', padding: '4px 10px', fontSize: '0.62rem', fontWeight: '600', color: '#a78bfa', whiteSpace: 'nowrap' }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                    Executed from reusable workflow
-                  </div>
-                )}
-                {allWorkflows.length > 0 && (
-                  <button onClick={() => setBackToComposer(true)}
-                    style={{ display: 'flex', alignItems: 'center', gap: '5px', background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.22)', borderRadius: '8px', padding: '5px 11px', fontSize: '0.67rem', fontWeight: '600', color: '#a78bfa', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                    {allWorkflows.length} workflow{allWorkflows.length !== 1 ? 's' : ''} saved
-                  </button>
-                )}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.67rem', color: '#10b981' }}>
-                  <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
-                  Analysis complete
-                </div>
-              </div>
-            </div>
-          )}
-
-
-          {/* ── Delivery Status ── */}
-          {hasResult && !backToComposer && (
-            <ReportDeliveryCard result={wsResult} wsInput={wsInput} C={C} />
-          )}
         </div>
 
-        {/* ── Right column — always visible ── */}
-        <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-          {!activeLoading && (!hasResult || backToComposer) && (
+        {/* ── Right column — hidden during execution (console is full-width), shown otherwise ── */}
+        {!activeLoading && (!hasResult || backToComposer) && (
+          <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
             <EmptyAssistantPanel proposal={wsProposal} C={C} />
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )

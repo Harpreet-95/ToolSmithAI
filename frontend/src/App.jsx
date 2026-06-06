@@ -30,8 +30,8 @@ const C_DARK = {
   surface:     '#0d1128',
   border:      '#1e2b52',
   borderAlt:   '#283465',
-  accent:      '#7c3aed',
-  accentSoft:  '#7c3aed1a',
+  accent:      '#6366f1',
+  accentSoft:  '#6366f11a',
   text:        '#eef0ff',
   textSec:     '#dde1ff',
   textMuted:   '#545c82',
@@ -979,7 +979,7 @@ function LoginView({ onSignIn, sessionExpired }) {
             style={{
               width: '100%',
               height: '50px',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #7c3aed 100%)',
+              background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%)',
               color: '#ffffff',
               border: 'none',
               borderRadius: '11px',
@@ -1280,7 +1280,7 @@ function LoginView({ onSignIn, sessionExpired }) {
             style={{
               width: '100%',
               height: '50px',
-              background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #7c3aed 100%)',
+              background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%)',
               color: '#ffffff',
               border: 'none',
               borderRadius: '11px',

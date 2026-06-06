@@ -62,6 +62,12 @@ _SCHEDULE_HINT_WORDS: frozenset = frozenset({
     "friday", "saturday", "sunday",
 })
 
+# Explicit signals that mean the user wants execution right now.
+# If any of these appear alongside a schedule hint, fall through to immediate execution.
+_NOW_SIGNALS: frozenset = frozenset({
+    "now", "immediately", "right now", "today", "as soon as", "asap",
+})
+
 # These signals intentionally bias business intelligence requests toward dataset
 # reporting paths (Path 2 composer bridge) instead of generic workflow execution.
 # Pure notification/email/reminder intents are NOT included — they stay on the
@@ -197,6 +203,60 @@ def _maybe_create_schedule(
         result["schedule_error"] = str(exc)
 
 
+def _is_future_schedule_only(lowered: str) -> bool:
+    """Return True when the input clearly describes a future scheduled delivery
+    with no explicit intent to execute right now.
+
+    Requirements (all must hold):
+    1. At least one schedule hint word is present.
+    2. detect_frequency (or detect_weekday) resolves a valid frequency.
+    3. No "now" signal is present that would override scheduling intent.
+    """
+    if not any(w in lowered for w in _SCHEDULE_HINT_WORDS):
+        return False
+    if any(sig in lowered for sig in _NOW_SIGNALS):
+        return False
+    from core.interpreter.task_interpreter import detect_frequency, detect_weekday
+    frequency = detect_frequency(lowered)
+    day_of_week = detect_weekday(lowered)
+    if day_of_week and frequency is None:
+        frequency = "weekly"
+    return bool(frequency)
+
+
+def _build_schedule_only_result(user_input: str, lowered: str, user_id: str | None, dataset_id: int | None) -> dict:
+    """Build a lightweight result for future-schedule-only requests.
+
+    Does NOT execute the report or send any email/notification.
+    Sets email_delivery_configured / notification_configured so the
+    frontend can display the correct status.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    task_type = "generate_dataset_report"
+    if any(w in lowered for w in _EMAIL_HINT_WORDS):
+        task_type = "email_dataset_report"
+
+    result: dict = {
+        "plan_id":    str(uuid.uuid4()),
+        "status":     "scheduled",
+        "task_type":  task_type,
+        "started_at": now,
+        "finished_at": now,
+        "step_results": [],
+        "error":      None,
+        "report_id":  None,
+        "dataset_report": None,
+    }
+
+    if any(w in lowered for w in _EMAIL_HINT_WORDS):
+        result["email_delivery_configured"] = True
+    if any(s in lowered for s in _MULTI_STEP_SIGNALS):
+        result["notification_configured"] = True
+
+    _maybe_create_schedule(user_input, lowered, result, user_id, dataset_id)
+    return result
+
+
 def handle_input(
     user_input: str,
     user_id: str | None = None,
@@ -205,6 +265,21 @@ def handle_input(
     selected_sections: list[str] | None = None,
 ) -> dict:
     lowered = user_input.lower()
+
+    # ── Early exit: future schedule intent — configure automation, don't execute now ──
+    # If the user is scheduling a future delivery (e.g. "email me on Monday"),
+    # create the schedule row and return without generating a report or sending email.
+    if _is_future_schedule_only(lowered):
+        result = _build_schedule_only_result(user_input, lowered, user_id, dataset_id)
+        result["original_input"] = user_input
+        result["planner_source"] = "schedule_guard"
+        result["fallback_used"]  = False
+        _log_result(
+            {"plan_id": result["plan_id"], "intent": user_input,
+             "task_type": result["task_type"], "steps": []},
+            result, user_id=user_id, dataset_id=dataset_id,
+        )
+        return format_output(result)
 
     # ── Path 1: direct dataset shortcuts (preserved, fully tested) ────────────
     # When a dataset is attached and the input is a SIMPLE report/email-report
