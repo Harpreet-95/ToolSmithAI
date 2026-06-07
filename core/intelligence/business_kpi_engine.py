@@ -723,8 +723,10 @@ def compute_generic_measure_kpis(
     # Role classification + eligibility via new enterprise layer.
     # categorical_meta is empty: all candidates are confirmed numeric columns.
     role_profile      = classify_metric_roles(candidates)
-    candidate_profile = discover_metrics(role_profile, numeric_profile, row_count)
-    evaluated         = evaluate_kpi_eligibility(candidate_profile, numeric_profile, {}, row_count)
+    candidate_profile  = discover_metrics(role_profile, numeric_profile, row_count)
+    raw_candidates     = [c for c in candidate_profile if c.get("candidate_type") != "derived"]
+    derived_candidates = [c for c in candidate_profile if c.get("candidate_type") == "derived"]
+    evaluated          = evaluate_kpi_eligibility(raw_candidates, numeric_profile, {}, row_count)
 
     for item in evaluated:
         if not item.get("eligible"):
@@ -779,6 +781,27 @@ def compute_generic_measure_kpis(
                 priority        = defn["priority"],
                 semantic_source = "measure",
                 confidence      = 0.45,
+            ))
+        except Exception:
+            continue
+
+    for item in derived_candidates:
+        if item.get("derived_value") is None:
+            continue
+        try:
+            clean_label = _clean_col_display(item["column"])
+            cards.append(_kpi_card(
+                label           = clean_label,
+                value           = item["derived_value"],
+                fmt             = item["derived_format"],
+                description     = item.get("formula", item["column"]),
+                explanation     = (
+                    f"Derived metric: {item.get('formula', item['column'])}"
+                    f" across {row_count:,} records."
+                ),
+                priority        = "operational",
+                semantic_source = "measure",
+                confidence      = item["discovery_score"],
             ))
         except Exception:
             continue
