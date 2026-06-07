@@ -508,6 +508,58 @@ def _best_metric_col(
     return col, label
 
 
+def _rank_chart_sections(
+    charts: list[dict],
+    report_plan: dict | None,
+    intent_lowered: str = "",
+) -> list[dict]:
+    """Rank chart sections by viz_type_scores and intent relevance.
+
+    Adds three fields to every chart section:
+      chart_priority_score — numeric score used for ranking (higher = more relevant)
+      overview_rank        — 1-based rank; 1 is the most relevant chart
+      overview_chart       — True for the top 3 charts shown in the Overview row
+    """
+    viz_scores   = (report_plan or {}).get("viz_type_scores", {})
+    report_style = (report_plan or {}).get("report_style", "analyst_deep_dive")
+
+    # Completeness / data-quality charts are not hero charts for business styles
+    _BUSINESS_OVERVIEW_STYLES = frozenset({"executive_brief", "visual_dashboard", "kpi_summary"})
+
+    scored: list[tuple[float, int, dict]] = []
+    for original_idx, chart in enumerate(charts):
+        ct         = (chart.get("chart") or {}).get("chart_type", "bar")
+        base_score = float(viz_scores.get(ct, 5))
+
+        # Deprioritise completeness charts in executive / visual / KPI styles
+        heading = (chart.get("heading") or "").lower()
+        if "completeness" in heading and report_style in _BUSINESS_OVERVIEW_STYLES:
+            base_score = max(0.0, base_score - 4.0)
+
+        # Intent relevance bonus: +1 when a meaningful intent word appears in the heading
+        intent_bonus = 0.0
+        if intent_lowered:
+            for word in intent_lowered.split():
+                if len(word) > 3 and word in heading:
+                    intent_bonus = 1.0
+                    break
+
+        scored.append((base_score + intent_bonus, original_idx, chart))
+
+    # Highest score first; original position breaks ties (stable)
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    result: list[dict] = []
+    for rank, (score, _orig, chart) in enumerate(scored, 1):
+        c                         = dict(chart)
+        c["chart_priority_score"] = round(score, 2)
+        c["overview_rank"]        = rank
+        c["overview_chart"]       = rank <= 3
+        result.append(c)
+
+    return result
+
+
 def _build_chart_sections(
     categorical_profile: dict,
     missing_values: dict,
@@ -789,12 +841,17 @@ def _build_chart_sections(
                         f"'{top_label}' is the leading {col_label.lower()}, "
                         f"representing {top_pct}% of all records."
                     )
+                    pie_or_donut = (
+                        "donut"
+                        if _viz_score_for("donut", report_plan) > _viz_score_for("pie", report_plan)
+                        else "pie"
+                    )
                     charts.append({
                         "type":        "chart",
                         "heading":     f"{col_label} — Share",
                         "explanation": explanation,
                         "chart": {
-                            "chart_type": "pie",
+                            "chart_type": pie_or_donut,
                             "labels":     pie_labels,
                             "series":     [{"name": col_label, "data": pie_data}],
                         },
@@ -802,7 +859,7 @@ def _build_chart_sections(
         except Exception:
             pass
 
-    return charts
+    return _rank_chart_sections(charts, report_plan, intent_lowered)
 
 
 def _build_executive_summary_section(
@@ -2849,6 +2906,33 @@ def generate_dataset_report(
     except Exception:
         pass
 
+    # ── Report Strategy Engine ────────────────────────────────────────────────
+    # Resolved alongside the adaptive plan. In Phase 3 the strategy always
+    # returns section_scores={} so the reorder block falls back to plan_report
+    # scores — zero behaviour change.  Phase 4 will populate section_scores to
+    # activate intent-driven ordering.
+    _strategy = None
+    try:
+        from core.intelligence.report_strategy_engine import resolve_report_strategy as _resolve_strategy
+        _strategy = _resolve_strategy(
+            intent_text         = intent_text,
+            semantic_profile    = semantic_profile,
+            date_profile        = date_profile,
+            numeric_profile     = numeric_profile,
+            categorical_profile = categorical_profile,
+        )
+    except Exception:
+        pass
+
+    # Surface strategy metadata in the plan payload so the frontend and
+    # downstream callers can read intent_type and resolution source without
+    # a separate API call.  Only mutates when _report_plan is a real dict
+    # (i.e. plan_report succeeded); leaves None unchanged so old-dataset
+    # fallback paths are unaffected.
+    if _strategy is not None and isinstance(_report_plan, dict):
+        _report_plan["strategy_intent_type"] = _strategy.intent_type
+        _report_plan["strategy_source"]      = _strategy.source
+
     sections: list[dict] = []
 
     # ── Overview ──────────────────────────────────────────────────────────────
@@ -2873,6 +2957,7 @@ def generate_dataset_report(
             categorical_meta    = categorical_meta,
             date_profile        = date_profile,
             row_count           = row_count,
+            intent_text         = intent_text,
         )
         if biz_kpi_sec is not None:
             sections.append(biz_kpi_sec)
@@ -3176,19 +3261,18 @@ def generate_dataset_report(
             })
 
     # ── Planner-driven section reordering ────────────────────────────────────
-    # Only reorder when the planner detected explicit intent keywords AND chose a
-    # non-default style.  No intent → report order is exactly as built above
-    # (preserves all existing report behavior unchanged).
-    if (
-        _report_plan
-        and intent_text
-        and _report_plan.get("detected_preferences")
-        and _report_plan.get("report_style") != "analyst_deep_dive"
-    ):
+    # Reorder whenever a report plan is available, for all styles including the
+    # default analyst_deep_dive.  This ensures dataset-signal-driven and
+    # intent-driven styles both produce correctly ordered output.
+    if _report_plan:
         try:
             from core.intelligence.report_planner import reorder_sections as _reorder
             present_types = [s.get("type", "text") for s in sections]
-            plan_scores   = _report_plan.get("section_scores", {})
+            plan_scores   = (
+                _strategy.section_scores
+                if _strategy and _strategy.section_scores
+                else _report_plan.get("section_scores", {})
+            )
             # Rebuild section_order from only the types actually present
             _report_plan["section_order"] = sorted(
                 present_types,
@@ -3206,6 +3290,26 @@ def generate_dataset_report(
     # correct; the filter only affects what is returned to the caller.
     if selected_sections is not None:
         sections = [s for s in sections if s.get("type", "text") in selected_sections]
+
+    # ── max_sections enforcement ──────────────────────────────────────────────
+    # Applied after reordering so the slice retains the highest-priority sections.
+    # Applied after selected_sections so both constraints compose correctly.
+    # Skipped silently when _report_plan is None (old datasets) or the key is absent.
+    #
+    # overview_chart sections are always preserved outside the budget so the top-3
+    # ranked charts reach the frontend regardless of the style's section limit.
+    # Budget applies to non-overview sections only; overview charts are re-merged
+    # back into their sorted positions via object identity. No duplicates created.
+    try:
+        _max = int(_report_plan["layout_metadata"]["max_sections"])
+        if _max > 0 and len(sections) > _max:
+            _overview_secs = [s for s in sections if s.get("overview_chart")]
+            _other_secs    = [s for s in sections if not s.get("overview_chart")]
+            _other_kept    = _other_secs[:_max]
+            _keep_ids      = {id(s) for s in _other_kept + _overview_secs}
+            sections       = [s for s in sections if id(s) in _keep_ids]
+    except (TypeError, KeyError, ValueError):
+        pass
 
     if ai_narrative:
         return {"version": 2, "sections": sections, "ai_narrative": ai_narrative, "report_plan": _report_plan}

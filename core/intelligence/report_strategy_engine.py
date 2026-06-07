@@ -233,6 +233,129 @@ _INTENT_KEYWORD_SIGNALS: list[tuple[str, str, float]] = [
     ("detailed",          FULL_INTELLIGENCE, 1.2),
 ]
 
+# ---------------------------------------------------------------------------
+# Section priority scores per intent type
+# ---------------------------------------------------------------------------
+# Keys must match the `type` field stamped on sections in report_generator.py.
+# Missing keys score 0 in reorder_sections().  FULL_INTELLIGENCE omitted so it
+# falls back to the report_planner's own scores (zero-behaviour-change).
+# Note: "missing_data" and "trend_insights" are forward-looking keys — they
+# have no matching section type today (both render as "text") but will resolve
+# once those sections get dedicated type stamps in a later phase.
+
+_SECTION_SCORES_BY_INTENT: dict[str, dict[str, int]] = {
+    EXECUTIVE_BRIEF: {
+        "ai_dashboard":         100,
+        "executive_summary":     95,
+        "business_kpis":         90,
+        "kpi":                   85,
+        "recommendation":        80,
+        "insight_priority":      75,
+        "chart":                 70,
+        "anomaly":               40,
+        "trend":                 30,
+        "predictive_readiness":  20,
+        "historical_comparison": 15,
+        "drift_detection":       10,
+        "segmentation":           5,
+        "drilldown_table":        5,
+        "forecast":               0,
+        "text":                   0,
+    },
+    KPI_SCORECARD: {
+        "ai_dashboard":         100,
+        "business_kpis":         95,
+        "kpi":                   90,
+        "executive_summary":     85,
+        "chart":                 80,
+        "recommendation":        70,
+        "insight_priority":      60,
+        "anomaly":               40,
+        "trend":                 30,
+        "segmentation":          25,
+        "predictive_readiness":  15,
+        "historical_comparison": 10,
+        "text":                  10,
+        "drift_detection":        5,
+        "drilldown_table":        5,
+        "forecast":               5,
+    },
+    ANOMALY_FOCUS: {
+        "anomaly":              100,
+        "drift_detection":       90,
+        "insight_priority":      85,
+        "recommendation":        80,
+        "ai_dashboard":          75,
+        "executive_summary":     60,
+        "historical_comparison": 55,
+        "kpi":                   40,
+        "business_kpis":         35,
+        "trend":                 30,
+        "predictive_readiness":  20,
+        "chart":                 15,
+        "segmentation":          10,
+        "drilldown_table":       10,
+        "text":                  10,
+        "forecast":               5,
+    },
+    TREND_MONITORING: {
+        "trend":                100,
+        "trend_insights":        95,   # forward-looking key
+        "drift_detection":       90,
+        "historical_comparison": 85,
+        "forecast":              80,
+        "chart":                 75,
+        "ai_dashboard":          70,
+        "insight_priority":      65,
+        "anomaly":               55,
+        "executive_summary":     45,
+        "kpi":                   35,
+        "business_kpis":         30,
+        "recommendation":        25,
+        "predictive_readiness":  20,
+        "segmentation":          15,
+        "text":                   5,
+        "drilldown_table":        5,
+    },
+    DATA_QUALITY: {
+        "missing_data":         100,   # forward-looking key
+        "anomaly":               95,
+        "drift_detection":       85,
+        "insight_priority":      80,
+        "recommendation":        70,
+        "ai_dashboard":          65,
+        "kpi":                   55,
+        "executive_summary":     50,
+        "historical_comparison": 45,
+        "predictive_readiness":  40,
+        "trend":                 25,
+        "chart":                 20,
+        "business_kpis":         15,
+        "text":                  10,
+        "segmentation":           5,
+        "drilldown_table":        5,
+        "forecast":               5,
+    },
+    VISUAL_DASHBOARD: {
+        "chart":                100,
+        "ai_dashboard":          95,
+        "business_kpis":         90,
+        "kpi":                   85,
+        "executive_summary":     80,
+        "insight_priority":      70,
+        "trend":                 65,
+        "segmentation":          60,
+        "anomaly":               40,
+        "recommendation":        35,
+        "drilldown_table":       30,
+        "historical_comparison": 20,
+        "drift_detection":       15,
+        "predictive_readiness":  10,
+        "text":                   5,
+        "forecast":               5,
+    },
+}
+
 # Minimum cumulative score required to accept a non-fallback classification.
 # A single weak signal (e.g. "chart" in "bar chart breakdown") scores 1.1 —
 # just above threshold — so genuinely chart-focused requests are classified
@@ -335,6 +458,12 @@ def resolve_report_strategy(
         base = _full_intelligence_strategy()
         if intent_type == FULL_INTELLIGENCE:
             return base
-        return _dc_replace(base, intent_type=intent_type, source=source)
+        section_scores = _SECTION_SCORES_BY_INTENT.get(intent_type, {})
+        return _dc_replace(
+            base,
+            intent_type    = intent_type,
+            source         = source,
+            section_scores = section_scores,
+        )
     except Exception:
         return _full_intelligence_strategy()
