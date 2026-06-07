@@ -41,6 +41,7 @@ from core.intelligence.intent_ranker import rank_kpis
 from core.intelligence.metric_role_classifier import classify_metric_roles
 from core.intelligence.kpi_eligibility_engine import evaluate_kpi_eligibility
 from core.intelligence.metric_registry import get_metric_definition
+from core.intelligence.metric_discovery_engine import discover_metrics
 from core.intelligence.semantic_classifier import (
     get_revenue_columns,
     get_cost_columns,
@@ -721,8 +722,9 @@ def compute_generic_measure_kpis(
 
     # Role classification + eligibility via new enterprise layer.
     # categorical_meta is empty: all candidates are confirmed numeric columns.
-    role_profile = classify_metric_roles(candidates)
-    evaluated    = evaluate_kpi_eligibility(role_profile, numeric_profile, {}, row_count)
+    role_profile      = classify_metric_roles(candidates)
+    candidate_profile = discover_metrics(role_profile, numeric_profile, row_count)
+    evaluated         = evaluate_kpi_eligibility(candidate_profile, numeric_profile, {}, row_count)
 
     for item in evaluated:
         if not item.get("eligible"):
