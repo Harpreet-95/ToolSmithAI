@@ -36,6 +36,11 @@ Usage:
 import math
 from typing import Optional
 
+from core.output.kpi_formatter import format_kpi_value
+from core.intelligence.intent_ranker import rank_kpis
+from core.intelligence.metric_role_classifier import classify_metric_roles
+from core.intelligence.kpi_eligibility_engine import evaluate_kpi_eligibility
+from core.intelligence.metric_registry import get_metric_definition
 from core.intelligence.semantic_classifier import (
     get_revenue_columns,
     get_cost_columns,
@@ -48,62 +53,6 @@ from core.intelligence.semantic_classifier import (
     summarise_semantic_profile,
 )
 
-
-# ── Value formatting helpers ───────────────────────────────────────────────────
-
-def _fmt_currency(value: float) -> str:
-    """Format a monetary value with K/M/B abbreviation."""
-    try:
-        abs_v = abs(value)
-        sign  = "-" if value < 0 else ""
-        if abs_v >= 1_000_000_000:
-            return f"{sign}${abs_v / 1_000_000_000:.2f}B"
-        if abs_v >= 1_000_000:
-            return f"{sign}${abs_v / 1_000_000:.2f}M"
-        if abs_v >= 1_000:
-            return f"{sign}${abs_v / 1_000:.1f}K"
-        return f"{sign}${abs_v:,.0f}"
-    except (TypeError, ValueError, OverflowError):
-        return str(value)
-
-
-def _fmt_number(value: float) -> str:
-    """Format a plain integer count."""
-    try:
-        if abs(value) >= 1_000_000:
-            return f"{value / 1_000_000:.2f}M"
-        if abs(value) >= 1_000:
-            return f"{value:,.0f}"
-        return f"{value:,.0f}"
-    except (TypeError, ValueError, OverflowError):
-        return str(value)
-
-
-def _fmt_percent(value: float) -> str:
-    """Format a percentage value (expects 0-100 range)."""
-    try:
-        return f"{value:.1f}%"
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def _fmt_decimal(value: float) -> str:
-    """Format a 0–1 ratio or decimal metric."""
-    try:
-        return f"{value:.3f}"
-    except (TypeError, ValueError):
-        return str(value)
-
-
-def _format_display(value: float, fmt: str) -> str:
-    """Dispatch formatting by format type."""
-    if fmt == "currency":
-        return _fmt_currency(value)
-    if fmt == "percent":
-        return _fmt_percent(value)
-    if fmt == "number":
-        return _fmt_number(value)
-    return _fmt_decimal(value)
 
 
 def _safe_stat(profile: dict, col: str, stat: str) -> Optional[float]:
@@ -179,7 +128,7 @@ def _kpi_card(
         "priority":         priority,
         "semantic_source":  semantic_source,
         "confidence":       round(confidence, 2),
-        "value_formatted":  _format_display(value, fmt),
+        "value_formatted":  format_kpi_value(value, fmt),
     }
 
 
@@ -363,8 +312,8 @@ def compute_profit_metrics(
                         fmt            = "currency",
                         description    = f"{rev_cols[0]} − {cost_cols[0]}",
                         explanation    = (
-                            f"Estimated from {rev_cols[0]} (sum: {_fmt_currency(r_sum)}) "
-                            f"minus {cost_cols[0]} (sum: {_fmt_currency(c_sum)})."
+                            f"Estimated from {rev_cols[0]} (sum: {format_kpi_value(r_sum, 'currency')}) "
+                            f"minus {cost_cols[0]} (sum: {format_kpi_value(c_sum, 'currency')})."
                         ),
                         priority       = "executive",
                         semantic_source = "profit",
@@ -594,7 +543,7 @@ def compute_operational_metrics(
                     display_val = avg
                     fmt = "number"
 
-                range_str = f"{_fmt_decimal(mn)}–{_fmt_decimal(mx)}" if mn is not None and mx is not None else ""
+                range_str = f"{format_kpi_value(mn, 'decimal')}–{format_kpi_value(mx, 'decimal')}" if mn is not None and mx is not None else ""
                 cards.append(_kpi_card(
                     label          = f"Avg {col}",
                     value          = display_val,
@@ -707,47 +656,132 @@ def detect_dataset_type(summary: dict) -> str:
     return "general"
 
 
-# ── KPI prioritisation and ranking ────────────────────────────────────────────
+# ── Generic Metric Discovery — Phase 1 ───────────────────────────────────────
+# Columns whose semantic_type is already handled by a domain-specific compute
+# function are skipped so generic KPIs never duplicate domain-specific ones.
+# Classification determines confidence, not eligibility.
+_GENERIC_SKIP_TYPES: frozenset = frozenset({
+    "revenue", "cost", "profit",
+    "quantity", "price",
+    "score", "percentage", "risk",
+})
 
-_PRIORITY_ORDER = {"executive": 0, "operational": 1, "risk": 2, "trend": 3}
-_SEMANTIC_PRIORITY = {
-    "revenue":    0, "profit": 1,  "cost": 2,
-    "quantity":   3, "price":  4,  "customer": 5,
-    "percentage": 6, "score":  7,  "risk": 8,
-    "region":     9, "product": 10, "category": 11,
-}
 
+def _clean_col_display(col: str) -> str:
+    """Convert snake_case / camelCase / kebab-case column name to Title Case.
 
-def rank_business_kpis(cards: list[dict], dataset_type: str, max_kpis: int = 8) -> list[dict]:
-    """Sort KPI cards by priority order and select the top N.
-
-    Ordering: executive first, then by semantic_source priority, then confidence desc.
-    Deduplication: only one card per semantic_source type is kept unless the
-    dataset_type explicitly needs multiple (e.g. sales_financial shows both revenue + cost).
+    Examples:
+      load_weight_kg  → Load Weight Kg
+      transitDays     → Transit Days
+      delay-hours     → Delay Hours
     """
-    if not cards:
+    result = []
+    for i, ch in enumerate(col):
+        if i > 0 and ch.isupper() and col[i - 1].islower():
+            result.append(" ")
+        result.append(ch)
+    return (
+        "".join(result)
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace(".", " ")
+        .strip()
+        .title()
+    )
+
+
+def compute_generic_measure_kpis(
+    numeric_profile: dict,
+    semantic_profile: list[dict],
+    row_count: int,
+    already_claimed_cols: set[str] | None = None,
+) -> list[dict]:
+    """Discover KPI candidates from any unclaimed numeric column.
+
+    Uses metric_role_classifier, kpi_eligibility_engine, and metric_registry
+    for role-aware eligibility and formatting. Domain-specific columns already
+    covered by the 8 compute_*_metrics functions are excluded via
+    already_claimed_cols and _GENERIC_SKIP_TYPES.
+
+    Output shape is identical to the previous implementation.
+    Never raises. Returns [] on any failure.
+    """
+    cards: list[dict] = []
+    claimed = already_claimed_cols or set()
+
+    # Unclaimed, numeric, non-domain columns — input to the new enterprise layer
+    candidates = [
+        s for s in (semantic_profile or [])
+        if s.get("column") not in claimed
+        and s.get("column") in numeric_profile
+        and s.get("semantic_type") not in _GENERIC_SKIP_TYPES
+    ]
+    if not candidates:
         return []
 
-    # Allow multiple cards from the same source for financial-heavy datasets
-    multi_allowed = {"revenue", "profit", "cost"} if dataset_type in ("sales_financial", "financial_ops") else {"revenue"}
+    # Role classification + eligibility via new enterprise layer.
+    # categorical_meta is empty: all candidates are confirmed numeric columns.
+    role_profile = classify_metric_roles(candidates)
+    evaluated    = evaluate_kpi_eligibility(role_profile, numeric_profile, {}, row_count)
 
-    seen_sources: dict[str, int] = {}
-    filtered: list[dict] = []
-    for card in cards:
-        src = card.get("semantic_source", "unknown")
-        count = seen_sources.get(src, 0)
-        max_per_source = 3 if src in multi_allowed else 1
-        if count < max_per_source:
-            filtered.append(card)
-            seen_sources[src] = count + 1
+    for item in evaluated:
+        if not item.get("eligible"):
+            continue
+        try:
+            col  = item["column"]
+            role = item.get("role", "GENERIC_MEASURE")
 
-    filtered.sort(key=lambda c: (
-        _PRIORITY_ORDER.get(c.get("priority", "operational"), 9),
-        _SEMANTIC_PRIORITY.get(c.get("semantic_source", "unknown"), 99),
-        -c.get("confidence", 0),
-    ))
+            # Look up display rules; fall back to GENERIC_MEASURE when role has
+            # no registry entry (e.g. DIMENSION excluded via eligibility).
+            defn = get_metric_definition(role) or get_metric_definition("GENERIC_MEASURE")
 
-    return filtered[:max_kpis]
+            agg      = defn["aggregation"]
+            fmt_type = defn["format_type"]
+
+            if agg == "dominant":
+                continue
+
+            # Resolve display value using the role's primary aggregation
+            if agg == "sum":
+                display_val = _safe_stat(numeric_profile, col, "sum")
+                if display_val is None:
+                    display_val = _safe_stat(numeric_profile, col, "mean")
+            else:
+                display_val = _safe_stat(numeric_profile, col, "mean")
+
+            if display_val is None:
+                continue
+
+            # Scale 0–1 percentage values to 0–100 display range
+            if role == "PERCENT" and item.get("percentage_like") and 0.0 <= display_val <= 1.0:
+                display_val = display_val * 100
+
+            # Scale 0–1 ratio values to 0–100 display range
+            if role == "RATIO" and 0.0 <= display_val <= 1.0:
+                display_val = display_val * 100
+
+            clean_label = _clean_col_display(col)
+            label       = defn["label_template"].replace("{col}", clean_label)
+            explanation = (
+                f"Total {clean_label.lower()} across {row_count:,} records."
+                if agg == "sum"
+                else f"Average {clean_label.lower()} across {row_count:,} records."
+            )
+
+            cards.append(_kpi_card(
+                label           = label,
+                value           = display_val,
+                fmt             = fmt_type,
+                description     = f"{agg.title()} of {col}",
+                explanation     = explanation,
+                priority        = defn["priority"],
+                semantic_source = "measure",
+                confidence      = 0.45,
+            ))
+        except Exception:
+            continue
+
+    return cards
 
 
 # ── Main orchestrator ──────────────────────────────────────────────────────────
@@ -760,6 +794,7 @@ def build_business_kpi_section(
     date_profile: dict,
     row_count: int,
     max_kpis: int = 8,
+    intent_text: str | None = None,
 ) -> Optional[dict]:
     """Build a business_kpis section dict for insertion into the report.
 
@@ -775,7 +810,7 @@ def build_business_kpi_section(
             return None
 
         summary = summarise_semantic_profile(semantic_profile)
-        if summary.get("classified", 0) == 0:
+        if summary.get("classified", 0) == 0 and not numeric_profile:
             return None
 
         dataset_type = detect_dataset_type(summary)
@@ -791,10 +826,24 @@ def build_business_kpi_section(
         all_cards += compute_segmentation_metrics(semantic_profile, categorical_profile, categorical_meta, row_count)
         all_cards += compute_operational_metrics(semantic_profile, numeric_profile, row_count)
 
+        # Phase 1 — Generic Metric Discovery:
+        # Columns claimed by the 8 domain functions above (identified by semantic_type)
+        # are passed as already_claimed_cols so generic discovery never duplicates them.
+        _claimed: set[str] = {
+            s["column"] for s in semantic_profile
+            if s.get("semantic_type") in _GENERIC_SKIP_TYPES
+            and s.get("confidence", 0) >= 0.45
+            and s.get("column") in numeric_profile
+        }
+        all_cards += compute_generic_measure_kpis(
+            numeric_profile, semantic_profile, row_count,
+            already_claimed_cols=_claimed,
+        )
+
         if not all_cards:
             return None
 
-        ranked = rank_business_kpis(all_cards, dataset_type, max_kpis=max_kpis)
+        ranked = rank_kpis(all_cards, dataset_type, max_kpis=max_kpis, intent_text=intent_text)
         if not ranked:
             return None
 
