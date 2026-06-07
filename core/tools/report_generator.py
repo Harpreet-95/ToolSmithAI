@@ -2932,6 +2932,8 @@ def generate_dataset_report(
     if _strategy is not None and isinstance(_report_plan, dict):
         _report_plan["strategy_intent_type"] = _strategy.intent_type
         _report_plan["strategy_source"]      = _strategy.source
+        if _strategy.viz_type_scores:
+            _report_plan["viz_type_scores"] = _strategy.viz_type_scores
 
     sections: list[dict] = []
 

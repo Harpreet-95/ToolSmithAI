@@ -356,6 +356,58 @@ _SECTION_SCORES_BY_INTENT: dict[str, dict[str, int]] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Viz type preference scores per intent type
+# ---------------------------------------------------------------------------
+# Keys must match the chart_type strings used in _build_chart_sections()
+# and read by _viz_score_for() in report_generator.py.
+# 0 = suppress that chart type entirely.  Default when key is absent = 5.
+
+_VIZ_TYPE_SCORES_BY_INTENT: dict[str, dict[str, int]] = {
+    EXECUTIVE_BRIEF: {
+        "bar":                7,
+        "line":               6,
+        "donut":              9,
+        "pie":                5,
+        "correlation_matrix": 0,
+    },
+    KPI_SCORECARD: {
+        "bar":                8,
+        "line":               5,
+        "donut":              9,
+        "pie":                5,
+        "correlation_matrix": 0,
+    },
+    ANOMALY_FOCUS: {
+        "bar":                8,
+        "line":               4,
+        "donut":              3,
+        "pie":                3,
+        "correlation_matrix": 9,
+    },
+    TREND_MONITORING: {
+        "bar":                5,
+        "line":               10,
+        "donut":              3,
+        "pie":                3,
+        "correlation_matrix": 4,
+    },
+    DATA_QUALITY: {
+        "bar":                9,
+        "line":               2,
+        "donut":              2,
+        "pie":                2,
+        "correlation_matrix": 8,
+    },
+    VISUAL_DASHBOARD: {
+        "bar":                8,
+        "line":               8,
+        "donut":              9,
+        "pie":                6,
+        "correlation_matrix": 7,
+    },
+}
+
 # Minimum cumulative score required to accept a non-fallback classification.
 # A single weak signal (e.g. "chart" in "bar chart breakdown") scores 1.1 —
 # just above threshold — so genuinely chart-focused requests are classified
@@ -458,12 +510,16 @@ def resolve_report_strategy(
         base = _full_intelligence_strategy()
         if intent_type == FULL_INTELLIGENCE:
             return base
-        section_scores = _SECTION_SCORES_BY_INTENT.get(intent_type, {})
+        section_scores  = _SECTION_SCORES_BY_INTENT.get(intent_type, {})
+        viz_type_scores = _VIZ_TYPE_SCORES_BY_INTENT.get(intent_type, {})
+        report_style    = "anomaly_report" if intent_type == DATA_QUALITY else base.report_style
         return _dc_replace(
             base,
-            intent_type    = intent_type,
-            source         = source,
-            section_scores = section_scores,
+            intent_type     = intent_type,
+            source          = source,
+            section_scores  = section_scores,
+            viz_type_scores = viz_type_scores,
+            report_style    = report_style,
         )
     except Exception:
         return _full_intelligence_strategy()
