@@ -123,6 +123,10 @@ _TOKEN_FALLBACK_RULES: list[tuple[str, frozenset, float]] = [
     # ATTRIBUTE — descriptive scalar (age, tenure, experience)
     (ATTRIBUTE,     frozenset({"age", "tenure", "seniority",
                                "experience", "years"}),                        0.65),
+    # COUNT — volume/frequency columns not caught by semantic classifier
+    (COUNT,         frozenset({"count", "num", "records", "transactions",
+                               "visits", "sessions", "events", "calls",
+                               "occurrences", "instances"}),                   0.65),
     # RATIO — dimensionless rate/ratio columns unclassified by semantic layer
     (RATIO,         frozenset({"ratio", "rate", "proportion",
                                "fraction", "share"}),                          0.65),
