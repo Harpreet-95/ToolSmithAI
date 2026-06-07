@@ -13,7 +13,7 @@ population are all deferred to later phases.  Nothing in this module
 modifies any existing file or changes any live behaviour.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 
 # ---------------------------------------------------------------------------
 # Canonical intent-type constants
@@ -128,6 +128,152 @@ class ReportStrategy:
 
 
 # ---------------------------------------------------------------------------
+# Intent keyword signals
+# ---------------------------------------------------------------------------
+# Each tuple: (phrase_to_match, intent_type, weight).
+# Phrases are matched as lowercased substrings of the full intent text.
+# Scores accumulate across all matching phrases; highest total wins.
+# Longer / more-specific phrases are listed first so they accumulate weight
+# before shorter overlapping substrings also fire.
+
+_INTENT_KEYWORD_SIGNALS: list[tuple[str, str, float]] = [
+    # ── executive_brief ───────────────────────────────────────────────────────
+    ("exec summary",      EXECUTIVE_BRIEF,   1.5),
+    ("summary only",      EXECUTIVE_BRIEF,   1.3),
+    ("leadership summary",EXECUTIVE_BRIEF,   1.4),
+    ("management overview",EXECUTIVE_BRIEF,  1.3),
+    ("quick summary",     EXECUTIVE_BRIEF,   1.2),
+    ("quick overview",    EXECUTIVE_BRIEF,   1.1),
+    ("at a glance",       EXECUTIVE_BRIEF,   1.2),
+    ("high-level",        EXECUTIVE_BRIEF,   1.1),
+    ("high level",        EXECUTIVE_BRIEF,   1.1),
+    ("one-page",          EXECUTIVE_BRIEF,   1.5),
+    ("one page",          EXECUTIVE_BRIEF,   1.5),
+    ("top level",         EXECUTIVE_BRIEF,   1.0),
+    ("executive",         EXECUTIVE_BRIEF,   1.2),
+    ("c-suite",           EXECUTIVE_BRIEF,   1.2),
+    ("board",             EXECUTIVE_BRIEF,   1.1),
+    ("leadership",        EXECUTIVE_BRIEF,   1.0),
+    ("brief",             EXECUTIVE_BRIEF,   1.0),
+    ("ceo",               EXECUTIVE_BRIEF,   1.3),
+    ("cfo",               EXECUTIVE_BRIEF,   1.1),
+    # ── kpi_scorecard ─────────────────────────────────────────────────────────
+    ("kpi focused",       KPI_SCORECARD,     1.8),
+    ("kpi only",          KPI_SCORECARD,     1.8),
+    ("kpi summary",       KPI_SCORECARD,     1.8),
+    ("metrics only",      KPI_SCORECARD,     1.5),
+    ("key metrics",       KPI_SCORECARD,     1.2),
+    ("top metrics",       KPI_SCORECARD,     1.2),
+    ("scorecard",         KPI_SCORECARD,     1.3),
+    ("kpis",              KPI_SCORECARD,     1.5),
+    ("kpi",               KPI_SCORECARD,     1.3),
+    # ── anomaly_focus ─────────────────────────────────────────────────────────
+    ("anomalies",         ANOMALY_FOCUS,     1.5),
+    ("anomaly",           ANOMALY_FOCUS,     1.5),
+    ("outliers",          ANOMALY_FOCUS,     1.2),
+    ("outlier",           ANOMALY_FOCUS,     1.2),
+    ("abnormal",          ANOMALY_FOCUS,     1.0),
+    ("irregular",         ANOMALY_FOCUS,     1.0),
+    ("unusual",           ANOMALY_FOCUS,     1.0),
+    ("fraud",             ANOMALY_FOCUS,     1.3),
+    ("spike",             ANOMALY_FOCUS,     1.0),
+    ("detect",            ANOMALY_FOCUS,     0.9),
+    # ── trend_monitoring ──────────────────────────────────────────────────────
+    ("drift detection",   TREND_MONITORING,  1.8),
+    ("week over week",    TREND_MONITORING,  1.4),
+    ("month over month",  TREND_MONITORING,  1.4),
+    ("trend analysis",    TREND_MONITORING,  1.4),
+    ("analyze trends",    TREND_MONITORING,  1.3),
+    ("time-series",       TREND_MONITORING,  1.3),
+    ("time series",       TREND_MONITORING,  1.3),
+    ("performance over",  TREND_MONITORING,  1.2),
+    ("historical",        TREND_MONITORING,  1.2),
+    ("over time",         TREND_MONITORING,  1.0),
+    ("monitoring",        TREND_MONITORING,  1.5),
+    ("tracking",          TREND_MONITORING,  1.0),
+    ("monitor",           TREND_MONITORING,  1.3),
+    ("drift",             TREND_MONITORING,  1.5),
+    ("trend",             TREND_MONITORING,  1.1),
+    # ── data_quality ──────────────────────────────────────────────────────────
+    ("data quality",      DATA_QUALITY,      1.8),
+    ("quality report",    DATA_QUALITY,      1.6),
+    ("missing values",    DATA_QUALITY,      1.5),
+    ("null values",       DATA_QUALITY,      1.3),
+    ("completeness",      DATA_QUALITY,      1.5),
+    ("data hygiene",      DATA_QUALITY,      1.6),
+    ("hygiene",           DATA_QUALITY,      1.4),
+    ("cleanse",           DATA_QUALITY,      1.4),
+    ("cleaning",          DATA_QUALITY,      1.3),
+    ("validation",        DATA_QUALITY,      1.3),
+    ("validate",          DATA_QUALITY,      1.2),
+    ("integrity",         DATA_QUALITY,      1.2),
+    # ── visual_dashboard ──────────────────────────────────────────────────────
+    ("charts only",       VISUAL_DASHBOARD,  1.8),
+    ("visual report",     VISUAL_DASHBOARD,  1.3),
+    ("visualization",     VISUAL_DASHBOARD,  1.2),
+    ("dashboard",         VISUAL_DASHBOARD,  1.5),
+    ("visualize",         VISUAL_DASHBOARD,  1.0),
+    ("visual",            VISUAL_DASHBOARD,  1.2),
+    ("graphs",            VISUAL_DASHBOARD,  0.9),
+    ("charts",            VISUAL_DASHBOARD,  0.9),
+    ("graph",             VISUAL_DASHBOARD,  0.9),
+    ("chart",             VISUAL_DASHBOARD,  1.1),
+    ("plot",              VISUAL_DASHBOARD,  1.0),
+    # ── full_intelligence — explicit signals (scored but treated as fallback) ──
+    ("all sections",      FULL_INTELLIGENCE, 1.5),
+    ("complete report",   FULL_INTELLIGENCE, 1.2),
+    ("full analysis",     FULL_INTELLIGENCE, 1.4),
+    ("full report",       FULL_INTELLIGENCE, 1.2),
+    ("deep-dive",         FULL_INTELLIGENCE, 1.5),
+    ("deep dive",         FULL_INTELLIGENCE, 1.5),
+    ("in-depth",          FULL_INTELLIGENCE, 1.3),
+    ("in depth",          FULL_INTELLIGENCE, 1.3),
+    ("comprehensive",     FULL_INTELLIGENCE, 1.1),
+    ("everything",        FULL_INTELLIGENCE, 1.0),
+    ("detailed",          FULL_INTELLIGENCE, 1.2),
+]
+
+# Minimum cumulative score required to accept a non-fallback classification.
+# A single weak signal (e.g. "chart" in "bar chart breakdown") scores 1.1 —
+# just above threshold — so genuinely chart-focused requests are classified
+# correctly without false positives from incidental mentions.
+_MIN_SCORE: float = 1.0
+
+
+def _classify_intent_text(intent_text: str | None) -> tuple[str, str]:
+    """Score intent text against keyword signals; return (intent_type, source).
+
+    Accumulates weights for all matching phrases and returns the intent type
+    with the highest total score, provided it meets _MIN_SCORE.
+
+    Returns (FULL_INTELLIGENCE, "fallback") when:
+    - intent_text is absent or blank.
+    - no phrase matches.
+    - the top score is below _MIN_SCORE.
+    - the winning type is FULL_INTELLIGENCE itself (explicit or implicit).
+    """
+    if not intent_text or not intent_text.strip():
+        return FULL_INTELLIGENCE, "fallback"
+
+    lowered = intent_text.lower()
+    scores: dict[str, float] = {}
+
+    for phrase, intent_type, weight in _INTENT_KEYWORD_SIGNALS:
+        if phrase in lowered:
+            scores[intent_type] = scores.get(intent_type, 0.0) + weight
+
+    if not scores:
+        return FULL_INTELLIGENCE, "fallback"
+
+    best = max(scores, key=lambda k: scores[k])
+
+    if scores[best] < _MIN_SCORE or best == FULL_INTELLIGENCE:
+        return FULL_INTELLIGENCE, "fallback"
+
+    return best, "intent_keyword"
+
+
+# ---------------------------------------------------------------------------
 # Phase 1 fallback strategy — full intelligence, no filtering, no reordering
 # ---------------------------------------------------------------------------
 
@@ -185,6 +331,10 @@ def resolve_report_strategy(
         A valid ReportStrategy.  Never raises.
     """
     try:
-        return _full_intelligence_strategy()
+        intent_type, source = _classify_intent_text(intent_text)
+        base = _full_intelligence_strategy()
+        if intent_type == FULL_INTELLIGENCE:
+            return base
+        return _dc_replace(base, intent_type=intent_type, source=source)
     except Exception:
         return _full_intelligence_strategy()
