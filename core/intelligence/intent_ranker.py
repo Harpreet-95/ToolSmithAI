@@ -176,8 +176,14 @@ def rank_kpis(
     if not cards:
         return []
 
-    # Allow multiple cards from the same source for financial-heavy datasets
-    multi_allowed = {"revenue", "profit", "cost"} if dataset_type in ("sales_financial", "financial_ops") else {"revenue"}
+    # Allow multiple cards from the same source for financial-heavy datasets.
+    # kpi_scorecard broadens this to surface the widest possible KPI set.
+    if strategy_intent_type == "kpi_scorecard":
+        multi_allowed = {"revenue", "profit", "cost", "quantity", "price", "customer", "measure"}
+    elif dataset_type in ("sales_financial", "financial_ops"):
+        multi_allowed = {"revenue", "profit", "cost"}
+    else:
+        multi_allowed = {"revenue"}
 
     seen_sources: dict[str, int] = {}
     filtered: list[dict] = []

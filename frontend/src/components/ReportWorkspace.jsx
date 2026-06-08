@@ -103,7 +103,7 @@ function ExecutiveKpiGrid({ sections, C }) {
   if (!kpis.length) return null
 
   return (
-    <div style={{ display: 'flex', flexWrap: 'nowrap', gap: '10px', overflowX: 'auto' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '10px' }}>
       {kpis.map((kpi, i) => {
         const statusColor  = { good: C.success, warning: C.warn, risk: C.danger }[kpi.status] || C.textMuted
         const displayValue = kpi.value_formatted || kpi.value_display || String(kpi.value ?? '—')
@@ -111,8 +111,6 @@ function ExecutiveKpiGrid({ sections, C }) {
 
         return (
           <div key={i} style={{
-            flex:         '1 1 0',
-            minWidth:     0,
             background:   C.surface,
             border:       `1px solid ${C.border}70`,
             borderLeft:   `3px solid ${statusColor}`,
@@ -517,20 +515,11 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
           <div>
 
             {/* 1. Business KPIs — executive-only, no dataset metadata */}
-            <div style={{ marginBottom: '8px' }}>
-              {g.kpi.length > 0 ? (
+            {g.kpi.length > 0 && (
+              <div style={{ marginBottom: '8px' }}>
                 <ExecutiveKpiGrid sections={g.kpi} C={C} />
-              ) : (
-                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '20px 24px' }}>
-                  <div style={{ fontSize: '0.82rem', color: C.textMuted, marginBottom: '4px', fontWeight: '500' }}>
-                    No business KPIs detected
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: C.textMuted, opacity: 0.75, lineHeight: 1.5 }}>
-                    Business KPIs are generated when revenue, margin, customer, or product columns are present in the dataset.
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* 2. Top 3 ranked charts — directly under KPI row */}
             <div style={{ marginBottom: '32px' }}>

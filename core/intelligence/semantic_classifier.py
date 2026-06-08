@@ -106,7 +106,7 @@ _AMOUNT: dict[str, float] = {
 
 _PRICE: dict[str, float] = {
     "price":   0.88, "prices":  0.84,
-    "fee":     0.76, "charge":  0.72,
+    "fee":     0.76, "charge":  0.72, "charges": 0.72,
     "tariff":  0.76, "premium": 0.66,
     "fare":    0.72, "msrp":    0.88,
     "retail":  0.66, "list":    0.55,
@@ -117,7 +117,7 @@ _QUANTITY: dict[str, float] = {
     "units":     0.82, "unit":   0.76,
     "pieces":    0.72, "volume": 0.66,
     "items":     0.66, "orders": 0.62,
-    "shipments": 0.62,
+    "shipments": 0.62, "children": 0.70,
 }
 
 _PERCENTAGE: dict[str, float] = {
@@ -400,8 +400,11 @@ def _classify_column(
 
             if mn is not None and mx is not None and avg is not None:
                 if _is_percentage_range(mn, mx):
-                    cur = type_scores.get("percentage", 0.0)
-                    type_scores["percentage"] = max(cur, 0.60)
+                    has_pct_token = "percentage" in type_scores
+                    is_zero_to_one = (mn >= 0 and mx <= 1.01)
+                    if has_pct_token or is_zero_to_one:
+                        cur = type_scores.get("percentage", 0.0)
+                        type_scores["percentage"] = max(cur, 0.60)
 
                 # Currency/revenue signal: all positive, no small fractions
                 if mn >= 0 and mx > 1 and avg > 0.5:
