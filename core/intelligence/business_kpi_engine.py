@@ -856,6 +856,7 @@ def build_business_kpi_section(
     row_count: int,
     max_kpis: int = 8,
     intent_text: str | None = None,
+    strategy_intent_type: str | None = None,
 ) -> Optional[dict]:
     """Build a business_kpis section dict for insertion into the report.
 
@@ -927,7 +928,8 @@ def build_business_kpi_section(
         if not all_cards:
             return None
 
-        ranked = rank_kpis(all_cards, dataset_type, max_kpis=max_kpis, intent_text=intent_text)
+        ranked = rank_kpis(all_cards, dataset_type, max_kpis=max_kpis, intent_text=intent_text,
+                           strategy_intent_type=strategy_intent_type)
         if not ranked:
             return None
 

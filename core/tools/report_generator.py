@@ -2972,13 +2972,14 @@ def generate_dataset_report(
     # ── Business Intelligence KPIs (semantic — skipped on old datasets) ───────
     if semantic_profile:
         biz_kpi_sec = build_business_kpi_section(
-            semantic_profile    = semantic_profile,
-            numeric_profile     = numeric_profile,
-            categorical_profile = categorical_profile,
-            categorical_meta    = categorical_meta,
-            date_profile        = date_profile,
-            row_count           = row_count,
-            intent_text         = intent_text,
+            semantic_profile      = semantic_profile,
+            numeric_profile       = numeric_profile,
+            categorical_profile   = categorical_profile,
+            categorical_meta      = categorical_meta,
+            date_profile          = date_profile,
+            row_count             = row_count,
+            intent_text           = intent_text,
+            strategy_intent_type  = _strategy.intent_type if _strategy is not None else None,
         )
         if biz_kpi_sec is not None:
             sections.append(biz_kpi_sec)

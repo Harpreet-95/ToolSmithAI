@@ -26,6 +26,8 @@ _REPORT_HINT_WORDS = frozenset({
     "report", "summary", "analyze", "analyse",
     "summarize", "summarise", "insight", "insights",
     "analysis", "analytics", "overview", "data",
+    # Executive-style report intents
+    "executive", "brief",
     # Business performance
     "revenue", "sales", "profit", "margin", "growth",
     "trend", "trends", "performance", "forecast", "projection",

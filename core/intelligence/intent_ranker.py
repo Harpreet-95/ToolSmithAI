@@ -47,6 +47,102 @@ _INTENT_KPI_BOOST: list[tuple[str, frozenset]] = [
 ]
 
 
+# Maps strategy intent_type → semantic_source → ranking boost float.
+# Used when rank_kpis() receives a resolved strategy_intent_type instead of
+# raw intent_text, so classification runs once (in report_strategy_engine)
+# rather than being re-derived from keywords here.
+_KPI_SOURCE_BOOST_BY_INTENT: dict[str, dict[str, float]] = {
+    "executive_brief": {
+        "revenue":    2.0,
+        "profit":     1.5,
+        "cost":       1.0,
+        "customer":   0.5,
+        "quantity":   0.0,
+        "price":      0.0,
+        "score":      0.0,
+        "percentage": 0.0,
+        "risk":       0.0,
+        "measure":    0.0,
+    },
+    "kpi_scorecard": {
+        "revenue":    1.5,
+        "profit":     1.5,
+        "cost":       1.0,
+        "quantity":   1.0,
+        "price":      0.8,
+        "customer":   0.8,
+        "score":      0.5,
+        "percentage": 0.5,
+        "risk":       0.5,
+        "measure":    0.3,
+    },
+    "anomaly_focus": {
+        "risk":       2.0,
+        "percentage": 1.0,
+        "score":      0.8,
+        "revenue":    0.2,
+        "cost":       0.2,
+        "profit":     0.2,
+        "quantity":   0.2,
+        "price":      0.0,
+        "customer":   0.5,
+        "measure":    0.0,
+    },
+    "trend_monitoring": {
+        "revenue":    2.0,
+        "quantity":   1.2,
+        "percentage": 1.0,
+        "profit":     0.8,
+        "cost":       0.5,
+        "price":      0.3,
+        "score":      0.3,
+        "risk":       0.3,
+        "customer":   0.0,
+        "measure":    0.0,
+    },
+    "data_quality": {
+        "percentage": 1.5,
+        "score":      1.0,
+        "risk":       0.8,
+        "quantity":   0.5,
+        "revenue":    0.0,
+        "profit":     0.0,
+        "cost":       0.0,
+        "price":      0.0,
+        "customer":   0.3,
+        "measure":    0.0,
+    },
+    "visual_dashboard": {
+        "revenue":    1.5,
+        "profit":     1.2,
+        "quantity":   1.0,
+        "percentage": 1.0,
+        "customer":   0.8,
+        "price":      0.8,
+        "score":      0.5,
+        "risk":       0.5,
+        "cost":       0.5,
+        "measure":    0.3,
+    },
+}
+
+
+_KPI_MAX_BY_INTENT: dict[str, int] = {
+    "executive_brief":  5,
+    "kpi_scorecard":   12,
+    "anomaly_focus":    8,
+    "trend_monitoring": 8,
+    "data_quality":     4,
+    "visual_dashboard": 8,
+}
+
+
+def _strategy_boost(card: dict, strategy_intent_type: str) -> float:
+    """Return a ranking boost from the centralized strategy boost table."""
+    src = card.get("semantic_source", "")
+    return _KPI_SOURCE_BOOST_BY_INTENT.get(strategy_intent_type, {}).get(src, 0.0)
+
+
 def _intent_boost(card: dict, intent_lowered: str) -> float:
     """Return a ranking boost [0.0, 2.0] for a KPI card based on intent keywords.
 
@@ -69,6 +165,7 @@ def rank_kpis(
     dataset_type: str,
     max_kpis: int = 8,
     intent_text: str | None = None,
+    strategy_intent_type: str | None = None,
 ) -> list[dict]:
     """Sort KPI cards by priority order and select the top N.
 
@@ -92,12 +189,23 @@ def rank_kpis(
             filtered.append(card)
             seen_sources[src] = count + 1
 
+    if strategy_intent_type is not None:
+        max_kpis = _KPI_MAX_BY_INTENT.get(strategy_intent_type, max_kpis)
+
     intent_lowered = (intent_text or "").lower()
-    filtered.sort(key=lambda c: (
-        -_intent_boost(c, intent_lowered),                               # higher boost → sorts first
-        _PRIORITY_ORDER.get(c.get("priority", "operational"), 9),
-        _SEMANTIC_PRIORITY.get(c.get("semantic_source", "unknown"), 99),
-        -c.get("confidence", 0),
-    ))
+    if strategy_intent_type is not None:
+        filtered.sort(key=lambda c: (
+            -_strategy_boost(c, strategy_intent_type),
+            _PRIORITY_ORDER.get(c.get("priority", "operational"), 9),
+            _SEMANTIC_PRIORITY.get(c.get("semantic_source", "unknown"), 99),
+            -c.get("confidence", 0),
+        ))
+    else:
+        filtered.sort(key=lambda c: (
+            -_intent_boost(c, intent_lowered),                               # higher boost → sorts first
+            _PRIORITY_ORDER.get(c.get("priority", "operational"), 9),
+            _SEMANTIC_PRIORITY.get(c.get("semantic_source", "unknown"), 99),
+            -c.get("confidence", 0),
+        ))
 
     return filtered[:max_kpis]
