@@ -908,59 +908,57 @@ function ExecutionConsole({ result, wsInput, enginePlan, datasetName, activeDs, 
         )}
       </div>
 
-      {/* ── Execution metadata bar ── */}
-      {(() => {
-        const runDate        = result?.started_at ? new Date(result.started_at).toISOString().slice(0,10).replace(/-/g,'') : null
-        const runSeq         = result?.report_id  ? String(result.report_id).padStart(3,'0') : '001'
-        const runId          = result?.run_id != null ? String(result.run_id) : (runDate ? `RUN-${runDate}-${runSeq}` : null)
-        const execLabel      = runId ? `Execution #${runId}` : 'Execution'
-        const fmtDT          = iso => {
-          if (!iso) return null
-          const d = new Date(iso)
-          return [
-            d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            d.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' }),
-          ]
-        }
-        const [startTime, startDate] = fmtDT(result?.started_at)  || []
-        const [endTime,   endDate  ] = fmtDT(result?.finished_at) || []
-        const rowCount = activeDs?.row_count != null ? Number(activeDs.row_count).toLocaleString() + ' rows' : null
-        const cols = [
-          { label: 'Started',        primary: startTime ?? null, secondary: startDate ?? null },
-          { label: 'Finished',       primary: endTime   ?? null, secondary: endDate   ?? null },
-          { label: 'Total Duration', primary: fmtTotal  ?? null, secondary: null, mono: true  },
-          datasetName ? { label: 'Dataset',    primary: datasetName,      secondary: rowCount,   ellipsis: true } : null,
-          user?.name  ? { label: 'Started By', primary: user.name,        secondary: null, avatar: true         } : null,
-        ].filter(Boolean)
-        return (
-          <div style={{ borderBottom: `1px solid ${C.border}` }}>
-            <div style={{ display: 'flex' }}>
-              {cols.map((col, idx) => (
-                <div key={col.label} style={{ flex: 1, minWidth: 0, padding: '5px 12px', borderRight: idx < cols.length - 1 ? `1px solid ${C.border}` : 'none' }}>
-                  <div style={{ fontSize: '0.43rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '2px' }}>{col.label}</div>
-                  {col.avatar && col.primary ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.55rem', fontWeight: '700', color: '#fff', flexShrink: 0 }}>
-                        {col.primary[0].toUpperCase()}
-                      </div>
-                      <div style={{ fontSize: '0.62rem', fontWeight: '700', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.primary}</div>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: '0.62rem', fontWeight: '700', color: col.primary ? C.text : C.textMuted, fontFamily: col.mono ? MONO : 'inherit', overflow: col.ellipsis ? 'hidden' : 'visible', textOverflow: col.ellipsis ? 'ellipsis' : 'clip', whiteSpace: col.ellipsis ? 'nowrap' : 'normal' }}>{col.primary ?? '—'}</div>
-                  )}
-                  {col.secondary && <div style={{ fontSize: '0.53rem', color: C.textMuted, marginTop: '1px' }}>{col.secondary}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )
-      })()}
-
       {/* ── Two-column body ── */}
       <div style={{ display: 'flex' }}>
 
-        {/* Left: Execution steps (same visual structure throughout; state of each step updates) */}
+        {/* Left: Metadata bar + Execution steps */}
         <div style={{ flex: 1, minWidth: 0, borderRight: `1px solid ${C.border}` }}>
+
+          {/* Metadata columns */}
+          {(() => {
+            const runDate        = result?.started_at ? new Date(result.started_at).toISOString().slice(0,10).replace(/-/g,'') : null
+            const runSeq         = result?.report_id  ? String(result.report_id).padStart(3,'0') : '001'
+            const runId          = result?.run_id != null ? String(result.run_id) : (runDate ? `RUN-${runDate}-${runSeq}` : null)
+            const execLabel      = runId ? `Execution #${runId}` : 'Execution'
+            const fmtDT          = iso => {
+              if (!iso) return null
+              const d = new Date(iso)
+              return [
+                d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                d.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' }),
+              ]
+            }
+            const [startTime, startDate] = fmtDT(result?.started_at)  || []
+            const [endTime,   endDate  ] = fmtDT(result?.finished_at) || []
+            const rowCount = activeDs?.row_count != null ? Number(activeDs.row_count).toLocaleString() + ' rows' : null
+            const cols = [
+              { label: 'Started',        primary: startTime ?? null, secondary: startDate ?? null },
+              { label: 'Finished',       primary: endTime   ?? null, secondary: endDate   ?? null },
+              { label: 'Total Duration', primary: fmtTotal  ?? null, secondary: null, mono: true  },
+              datasetName ? { label: 'Dataset',    primary: datasetName,      secondary: rowCount,   ellipsis: true } : null,
+            ].filter(Boolean)
+            return (
+              <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}` }}>
+                {cols.map((col, idx) => (
+                  <div key={col.label} style={{ flex: 1, minWidth: 0, padding: '5px 12px', borderRight: idx < cols.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+                    <div style={{ fontSize: '0.43rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '2px' }}>{col.label}</div>
+                    {col.avatar && col.primary ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.55rem', fontWeight: '700', color: '#fff', flexShrink: 0 }}>
+                          {col.primary[0].toUpperCase()}
+                        </div>
+                        <div style={{ fontSize: '0.62rem', fontWeight: '700', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.primary}</div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: '0.62rem', fontWeight: '700', color: col.primary ? C.text : C.textMuted, fontFamily: col.mono ? MONO : 'inherit', overflow: col.ellipsis ? 'hidden' : 'visible', textOverflow: col.ellipsis ? 'ellipsis' : 'clip', whiteSpace: col.ellipsis ? 'nowrap' : 'normal' }}>{col.primary ?? '—'}</div>
+                    )}
+                    {col.secondary && <div style={{ fontSize: '0.53rem', color: C.textMuted, marginTop: '1px' }}>{col.secondary}</div>}
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
+
           <div style={{ padding: '12px 20px 10px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span style={{ fontSize: '0.78rem', fontWeight: '700', color: C.text }}>Execution Steps</span>
             <span style={{ fontSize: '0.59rem', fontWeight: '700', color: C.textMuted, background: C.borderAlt, border: `1px solid ${C.border}`, borderRadius: '20px', padding: '2px 8px' }}>{stepsToRender.length} Steps</span>
@@ -1113,7 +1111,7 @@ function ExecutionConsole({ result, wsInput, enginePlan, datasetName, activeDs, 
                       {notifSent && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                           <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>In-App Notification Created</span>
+                          <span style={{ fontSize: '0.68rem', fontWeight: '600', color: C.textSec }}>Notification Sent</span>
                         </div>
                       )}
                       {emailSent && (
@@ -1125,31 +1123,9 @@ function ExecutionConsole({ result, wsInput, enginePlan, datasetName, activeDs, 
                     </div>
                   </div>
                 )}
-                {fmtTotal && (
-                  <div>
-                    <div style={{ fontSize: '0.47rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.10em', marginBottom: '1px' }}>Duration</div>
-                    <div style={{ fontSize: '0.68rem', fontWeight: '700', color: C.text, fontFamily: MONO }}>{fmtTotal}</div>
-                  </div>
-                )}
                 {!isSuccess && (
                   <div style={{ fontSize: '0.65rem', color: '#ef4444', marginTop: '2px' }}>Review execution steps for details</div>
                 )}
-              </div>
-              {/* Execution Outcome */}
-              <div style={{ paddingTop: '12px', borderTop: `1px solid ${C.border}` }}>
-                <div style={{ fontSize: '0.54rem', fontWeight: '800', color: isSuccess ? '#10b981' : '#ef4444', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '10px' }}>Execution Outcome</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <OutcomeEvent label="Intent parsed" active={isSuccess} />
-                  {datasetName && <OutcomeEvent label="Dataset validated" active={isSuccess} />}
-                  <OutcomeEvent label="Analysis completed" active={isSuccess} failed={!isSuccess} />
-                  {reportGenerated   && <OutcomeEvent label="Report generated" active />}
-                  {scheduleCreated  && <OutcomeEvent label="Schedule created" active />}
-                  {emailConfigured  && <OutcomeEvent label="Email delivery configured" active />}
-                  {notifConfigured  && <OutcomeEvent label="In-App notification configured" active />}
-                  {notifSent        && <OutcomeEvent label="In-App Notification Created" active />}
-                  {emailSent        && <OutcomeEvent label="Email delivered" active />}
-                  {!isSuccess      && <OutcomeEvent label="Execution failed" active={false} failed />}
-                </div>
               </div>
             </div>
           )}
@@ -2474,7 +2450,7 @@ function ReportDeliveryCard({ result, wsInput, C }) {
       color:  '#a5b4fc',
     },
     notifSent && {
-      label:  'In-App Notification Created',
+      label:  'Notification Sent',
       detail: 'Notification Status: Sent',
       color:  '#38bdf8',
     },

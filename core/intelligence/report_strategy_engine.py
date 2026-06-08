@@ -46,9 +46,8 @@ _ALL_INTENT_TYPES: frozenset[str] = frozenset({
 class NarrativeConfig:
     """Controls content density and emphasis within section builders.
 
-    Phase 1: all fields carry defaults that reproduce current behaviour.
-    Phase 4 will pass this object into section builders to differentiate
-    content per intent.
+    All fields carry defaults that reproduce current behaviour when unset.
+    Section builders read these fields to differentiate content per intent.
 
     Fields
     ------
@@ -65,11 +64,31 @@ class NarrativeConfig:
     suppress_types : list[str]
         Section types that this strategy considers irrelevant and should be
         excluded from the final report.  Empty list = no suppression.
+    executive_language : bool
+        When True, suppress raw column names and statistical jargon in favour
+        of business-friendly labels.  Default False preserves analyst detail.
+    recommendation_limit : int
+        Hard cap on the number of recommendations surfaced.  Independent of
+        items_per_section so recs can be tuned separately.  Default 5.
+    verbosity : str
+        "minimal" | "standard" | "detailed".  Controls how many items are
+        produced in takeaway / risk / opportunity lists.  Default "standard".
+    emphasize_opportunities : bool
+        When True, opportunity items are surfaced before risk items.  Inverse
+        of emphasize_risks; intended for positive-framing intents.
+    suppress_low_confidence : bool
+        When True, medium-confidence recommendations and low-strength trends
+        are dropped.  Intended for executive audiences.
     """
-    items_per_section: int       = 6
-    show_evidence:     bool      = True
-    emphasize_risks:   bool      = True
-    suppress_types:    list[str] = field(default_factory=list)
+    items_per_section:       int       = 6
+    show_evidence:           bool      = True
+    emphasize_risks:         bool      = True
+    suppress_types:          list[str] = field(default_factory=list)
+    executive_language:      bool      = False
+    recommendation_limit:    int       = 5
+    verbosity:               str       = "standard"
+    emphasize_opportunities: bool      = False
+    suppress_low_confidence: bool      = False
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +427,75 @@ _VIZ_TYPE_SCORES_BY_INTENT: dict[str, dict[str, int]] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Narrative config per intent type
+# ---------------------------------------------------------------------------
+# FULL_INTELLIGENCE omitted — falls back to NarrativeConfig() defaults so
+# existing behaviour is unchanged for generic / unclassified reports.
+
+_NARRATIVE_CONFIGS_BY_INTENT: dict[str, NarrativeConfig] = {
+    EXECUTIVE_BRIEF: NarrativeConfig(
+        items_per_section       = 3,
+        show_evidence           = False,
+        emphasize_risks         = False,
+        emphasize_opportunities = True,
+        executive_language      = True,
+        recommendation_limit    = 3,
+        verbosity               = "minimal",
+        suppress_low_confidence = True,
+    ),
+    KPI_SCORECARD: NarrativeConfig(
+        items_per_section       = 4,
+        show_evidence           = False,
+        emphasize_risks         = False,
+        emphasize_opportunities = True,
+        executive_language      = True,
+        recommendation_limit    = 3,
+        verbosity               = "minimal",
+        suppress_low_confidence = True,
+    ),
+    ANOMALY_FOCUS: NarrativeConfig(
+        items_per_section       = 8,
+        show_evidence           = True,
+        emphasize_risks         = True,
+        emphasize_opportunities = False,
+        executive_language      = False,
+        recommendation_limit    = 5,
+        verbosity               = "detailed",
+        suppress_low_confidence = False,
+    ),
+    TREND_MONITORING: NarrativeConfig(
+        items_per_section       = 6,
+        show_evidence           = True,
+        emphasize_risks         = False,
+        emphasize_opportunities = False,
+        executive_language      = False,
+        recommendation_limit    = 4,
+        verbosity               = "standard",
+        suppress_low_confidence = False,
+    ),
+    DATA_QUALITY: NarrativeConfig(
+        items_per_section       = 8,
+        show_evidence           = True,
+        emphasize_risks         = True,
+        emphasize_opportunities = False,
+        executive_language      = False,
+        recommendation_limit    = 5,
+        verbosity               = "detailed",
+        suppress_low_confidence = False,
+    ),
+    VISUAL_DASHBOARD: NarrativeConfig(
+        items_per_section       = 3,
+        show_evidence           = False,
+        emphasize_risks         = False,
+        emphasize_opportunities = True,
+        executive_language      = True,
+        recommendation_limit    = 2,
+        verbosity               = "minimal",
+        suppress_low_confidence = True,
+    ),
+}
+
 # Minimum cumulative score required to accept a non-fallback classification.
 # A single weak signal (e.g. "chart" in "bar chart breakdown") scores 1.1 —
 # just above threshold — so genuinely chart-focused requests are classified
@@ -510,16 +598,18 @@ def resolve_report_strategy(
         base = _full_intelligence_strategy()
         if intent_type == FULL_INTELLIGENCE:
             return base
-        section_scores  = _SECTION_SCORES_BY_INTENT.get(intent_type, {})
-        viz_type_scores = _VIZ_TYPE_SCORES_BY_INTENT.get(intent_type, {})
-        report_style    = "anomaly_report" if intent_type == DATA_QUALITY else base.report_style
+        section_scores   = _SECTION_SCORES_BY_INTENT.get(intent_type, {})
+        viz_type_scores  = _VIZ_TYPE_SCORES_BY_INTENT.get(intent_type, {})
+        narrative_config = _NARRATIVE_CONFIGS_BY_INTENT.get(intent_type, NarrativeConfig())
+        report_style     = "anomaly_report" if intent_type == DATA_QUALITY else base.report_style
         return _dc_replace(
             base,
-            intent_type     = intent_type,
-            source          = source,
-            section_scores  = section_scores,
-            viz_type_scores = viz_type_scores,
-            report_style    = report_style,
+            intent_type      = intent_type,
+            source           = source,
+            section_scores   = section_scores,
+            viz_type_scores  = viz_type_scores,
+            narrative_config = narrative_config,
+            report_style     = report_style,
         )
     except Exception:
         return _full_intelligence_strategy()

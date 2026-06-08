@@ -393,21 +393,42 @@ def compute_price_metrics(
         if not price_cols:
             return []
         col  = price_cols[0]
-        conf = next((s["confidence"] for s in semantic_profile if s["column"] == col), 0.7)
-        if not _completeness_ok(numeric_profile, col, row_count):
+        item = next((s for s in semantic_profile if s["column"] == col), None)
+        if item is None:
             return []
+
+        # Enterprise layer: role classification (semantic_type="price" → MONEY)
+        role_profile = classify_metric_roles([item])
+        if not role_profile:
+            return []
+
+        # Enterprise layer: eligibility — replaces _completeness_ok
+        # MONEY threshold: completeness >= 0.50, sum or mean stat present
+        evaluated = evaluate_kpi_eligibility(role_profile, numeric_profile, {}, row_count)
+        if not evaluated or not evaluated[0].get("eligible"):
+            return []
+        evaluated_item = evaluated[0]
+
+        # Enterprise layer: registry lookup — price is averaged, not summed
+        defn = get_metric_definition("MONEY", "mean")
+        if defn is None:
+            return []
+
         avg = _safe_stat(numeric_profile, col, "mean")
-        if avg is not None:
-            cards.append(_kpi_card(
-                label          = "Avg Price",
-                value          = avg,
-                fmt            = "currency",
-                description    = f"Mean of {col}",
-                explanation    = f"Average price across {row_count:,} records in '{col}'.",
-                priority       = "operational",
-                semantic_source = "price",
-                confidence     = conf,
-            ))
+        if avg is None:
+            return []
+
+        clean_label = _clean_col_display(col)
+        cards.append(_kpi_card(
+            label           = defn["label_template"].replace("{col}", clean_label),
+            value           = avg,
+            fmt             = defn["format_type"],
+            description     = f"Mean of {col}",
+            explanation     = f"Average price across {row_count:,} records in '{col}'.",
+            priority        = defn["priority"],
+            semantic_source = "price",
+            confidence      = round(evaluated_item.get("role_confidence", 0.7), 2),
+        ))
     except Exception:
         pass
     return cards
@@ -696,6 +717,9 @@ def compute_generic_measure_kpis(
     semantic_profile: list[dict],
     row_count: int,
     already_claimed_cols: set[str] | None = None,
+    role_profile: list | None = None,
+    eligibility_profile: list | None = None,
+    discovery_profile: list | None = None,
 ) -> list[dict]:
     """Discover KPI candidates from any unclaimed numeric column.
 
@@ -722,11 +746,23 @@ def compute_generic_measure_kpis(
 
     # Role classification + eligibility via new enterprise layer.
     # categorical_meta is empty: all candidates are confirmed numeric columns.
-    role_profile      = classify_metric_roles(candidates)
-    candidate_profile  = discover_metrics(role_profile, numeric_profile, row_count)
+    if role_profile is not None:
+        candidate_cols = {s["column"] for s in candidates}
+        role_profile = [r for r in role_profile if r.get("column") in candidate_cols]
+    else:
+        role_profile = classify_metric_roles(candidates)
+    if discovery_profile is not None:
+        _cand_cols        = {s["column"] for s in candidates}
+        candidate_profile = [d for d in discovery_profile if d.get("column") in _cand_cols]
+    else:
+        candidate_profile = discover_metrics(role_profile, numeric_profile, row_count)
     raw_candidates     = [c for c in candidate_profile if c.get("candidate_type") != "derived"]
     derived_candidates = [c for c in candidate_profile if c.get("candidate_type") == "derived"]
-    evaluated          = evaluate_kpi_eligibility(raw_candidates, numeric_profile, {}, row_count)
+    if eligibility_profile is not None:
+        _cand_cols = {s["column"] for s in candidates}
+        evaluated  = [e for e in eligibility_profile if e.get("column") in _cand_cols]
+    else:
+        evaluated  = evaluate_kpi_eligibility(raw_candidates, numeric_profile, {}, row_count)
 
     for item in evaluated:
         if not item.get("eligible"):
@@ -840,6 +876,26 @@ def build_business_kpi_section(
 
         dataset_type = detect_dataset_type(summary)
 
+        # Phase 1 Enterprise Migration: classify all numeric business metrics once
+        # so role_profile is available to every KPI path in future phases.
+        _numeric_candidates = [
+            s for s in semantic_profile
+            if s.get("column") in numeric_profile
+        ]
+        role_profile = classify_metric_roles(_numeric_candidates)
+
+        # Phase 3 Enterprise Migration: evaluate eligibility once for all numeric
+        # candidates so eligibility_profile is available to every KPI path in future phases.
+        eligibility_profile = evaluate_kpi_eligibility(  # noqa: F841
+            role_profile, numeric_profile, categorical_meta, row_count
+        )
+
+        # Phase 5 Enterprise Migration: run metric discovery once for all numeric
+        # candidates so discovery_profile is available to every KPI path in future phases.
+        discovery_profile = discover_metrics(  # noqa: F841
+            role_profile, numeric_profile, row_count
+        )
+
         # Compute all KPI classes
         all_cards: list[dict] = []
         all_cards += compute_revenue_metrics(semantic_profile, numeric_profile, date_profile, row_count)
@@ -863,6 +919,9 @@ def build_business_kpi_section(
         all_cards += compute_generic_measure_kpis(
             numeric_profile, semantic_profile, row_count,
             already_claimed_cols=_claimed,
+            role_profile=role_profile,
+            eligibility_profile=eligibility_profile,
+            discovery_profile=discovery_profile,
         )
 
         if not all_cards:

@@ -1038,6 +1038,7 @@ def _build_recommendation_section(
     missing_values: dict,
     date_profile: dict,
     correlation_profile: list | None = None,
+    narrative_config: dict | None = None,
 ) -> dict | None:
     """Build deterministic recommended actions from stored profile data.
 
@@ -1232,10 +1233,16 @@ def _build_recommendation_section(
     if not recs:
         return None
 
+    limit = 5
+    if narrative_config:
+        if narrative_config.get("suppress_low_confidence"):
+            recs = [r for r in recs if r.get("confidence") != "medium"]
+        limit = narrative_config.get("recommendation_limit", 5)
+
     return {
         "type":            "recommendation",
         "heading":         "Recommended Actions",
-        "recommendations": recs[:5],
+        "recommendations": recs[:limit],
     }
 
 
@@ -2934,6 +2941,18 @@ def generate_dataset_report(
         _report_plan["strategy_source"]      = _strategy.source
         if _strategy.viz_type_scores:
             _report_plan["viz_type_scores"] = _strategy.viz_type_scores
+        if _strategy.source != "fallback":
+            nc = _strategy.narrative_config
+            _report_plan["narrative_config"] = {
+                "items_per_section":       nc.items_per_section,
+                "show_evidence":           nc.show_evidence,
+                "emphasize_risks":         nc.emphasize_risks,
+                "emphasize_opportunities": nc.emphasize_opportunities,
+                "executive_language":      nc.executive_language,
+                "recommendation_limit":    nc.recommendation_limit,
+                "verbosity":               nc.verbosity,
+                "suppress_low_confidence": nc.suppress_low_confidence,
+            }
 
     sections: list[dict] = []
 
@@ -3110,6 +3129,7 @@ def generate_dataset_report(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
         correlation_profile=correlation_profile,
+        narrative_config=_report_plan.get("narrative_config") if isinstance(_report_plan, dict) else None,
     )
     if rec_sec is not None:
         # KPI section was appended second (after Overview), so it's always at

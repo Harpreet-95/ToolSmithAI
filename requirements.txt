@@ -11,4 +11,4 @@ xlrd>=2.0,<3.0
 python-multipart>=0.0.9
 APScheduler>=3.10,<4.0
 fpdf2>=2.7,<3.0
-# openai>=1.0,<2.0  # optional: install to enable ENABLE_AI_PLANNER=true in .env
+openai==2.38.0

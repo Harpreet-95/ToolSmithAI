@@ -60,6 +60,10 @@ _ALERT_SIGNALS: frozenset = frozenset([
 _REPORT_STEP_SIGNALS: frozenset = frozenset([
     "report", "summary", "overview", "digest", "insights", "intelligence",
     "breakdown", "kpi", "kpis", "summarize", "summarise",
+    # Monitoring / operational intents also produce a saved report, not just analysis.
+    # "monitor" is in _ANOMALY_SIGNALS which only adds analyze_dataset; these additions
+    # ensure generate_dataset_report is also included for report-style intents.
+    "monitoring", "monitor", "operational", "operations", "trend", "dashboard",
 ])
 _ANALYZE_STEP_SIGNALS: frozenset = frozenset([
     "analyze", "analyse", "analysis",

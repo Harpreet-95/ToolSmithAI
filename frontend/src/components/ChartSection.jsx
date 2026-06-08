@@ -119,22 +119,72 @@ function FallbackTable({ labels, series, C }) {
 }
 
 // ─── Bar chart ────────────────────────────────────────────────────────────────
+
+// Horizontal bar — used when labels are long or chart is dense (> 12 bars).
+// Labels sit on the left, bars grow right, values appear after the bar.
+function HBarChart({ labels, nums, maxVal, name, C }) {
+  const n          = labels.length
+  const LBL_W      = 130, VAL_W = 52, TOP = 10
+  const BAR_H      = 20,  GAP   = 7
+  const SVG_W      = 520, CHART_W = SVG_W - LBL_W - VAL_W
+  const SVG_H      = TOP + n * (BAR_H + GAP) + 4
+  const multiColor = n <= 12
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} width="100%"
+        style={{ display: 'block', minWidth: '280px', maxWidth: `${SVG_W}px` }}
+        aria-label={name || 'bar chart'}>
+        {labels.map((label, i) => {
+          const val   = nums[i]
+          const barW  = Math.max(2, Math.round((val / maxVal) * CHART_W * 0.95))
+          const y     = TOP + i * (BAR_H + GAP)
+          const color = multiColor ? PALETTE[i % PALETTE.length] : '#6366f1'
+          const short = label.length > 20 ? label.slice(0, 19) + '…' : label
+          return (
+            <g key={i}>
+              <text x={LBL_W - 8} y={y + BAR_H / 2 + 4} textAnchor="end"
+                fontSize={8} fill={C.text} fontFamily={FONT}>{short}</text>
+              <rect x={LBL_W} y={y} width={barW} height={BAR_H} fill={color} rx={3} opacity={0.86}>
+                <title>{label}: {val.toLocaleString()}</title>
+              </rect>
+              <text x={LBL_W + barW + 5} y={y + BAR_H / 2 + 4} textAnchor="start"
+                fontSize={8} fill={C.textSec} fontFamily={FONT} fontWeight="600">{fmtVal(val)}</text>
+            </g>
+          )
+        })}
+      </svg>
+      {name && <div style={{ fontSize: '0.65rem', color: C.textMuted, textAlign: 'center', marginTop: '4px' }}>{name}</div>}
+    </div>
+  )
+}
+
 function BarChart({ labels, series, C }) {
   const firstSer = series[0] || {}
   const nums     = (firstSer.data || []).map(v => (typeof v === 'number' && isFinite(v) ? v : 0))
   const name     = firstSer.name || ''
   if (!nums.length) return null
 
-  const n      = labels.length
-  const maxVal = Math.max(...nums, 1)
+  // Sort descending by value so the tallest bar is always on the left
+  const pairs        = labels.map((lbl, i) => ({ lbl: String(lbl), val: nums[i] }))
+    .sort((a, b) => b.val - a.val)
+  const sortedLabels = pairs.map(p => p.lbl)
+  const sortedNums   = pairs.map(p => p.val)
 
+  const n      = sortedLabels.length
+  const maxVal = Math.max(...sortedNums, 1)
+
+  // Long labels or dense charts → horizontal layout eliminates rotation / truncation
+  if (sortedLabels.some(l => l.length > 10) || n > 12) {
+    return <HBarChart labels={sortedLabels} nums={sortedNums} maxVal={maxVal} name={name} C={C} />
+  }
+
+  // ── Vertical bar chart ──────────────────────────────────────────────────────
   const LEFT = 42, RIGHT = 10, TOP = 18, CH = 180, LBL_H = 52
   const SVG_W = 520, SVG_H = TOP + CH + LBL_H
   const CHART_W = SVG_W - LEFT - RIGHT, BASE_Y = TOP + CH
-
   const BAR_W = Math.max(10, Math.min(48, Math.floor(CHART_W / n * 0.7)))
   const gap   = (CHART_W - n * BAR_W) / (n + 1)
-
   const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => ({
     y: TOP + CH - f * CH, val: Math.round(f * maxVal),
   }))
@@ -154,31 +204,29 @@ function BarChart({ labels, series, C }) {
               fontSize={7} fill={C.textMuted} fontFamily={FONT}>{fmtVal(val)}</text>
           </g>
         ))}
-        {labels.map((label, i) => {
-          const val   = nums[i] || 0
-          const barH  = Math.max(2, Math.round((val / maxVal) * CH * 0.96))
-          const x     = LEFT + gap + i * (BAR_W + gap)
-          const y     = BASE_Y - barH
-          const color = multiColor ? PALETTE[i % PALETTE.length] : '#6366f1'
-          const lbl   = String(label)
-          const rotate = lbl.length > 7 || n > 9
-          const short  = lbl.length > 12 ? lbl.slice(0, 11) + '…' : lbl
+        {sortedLabels.map((label, i) => {
+          const val    = sortedNums[i]
+          const barH   = Math.max(2, Math.round((val / maxVal) * CH * 0.96))
+          const x      = LEFT + gap + i * (BAR_W + gap)
+          const y      = BASE_Y - barH
+          const color  = multiColor ? PALETTE[i % PALETTE.length] : '#6366f1'
+          const short  = label.length > 11 ? label.slice(0, 10) + '…' : label
+          const rotate = label.length > 7 || n > 9
           return (
             <g key={i}>
               <rect x={x} y={y} width={BAR_W} height={barH} fill={color} rx={3} opacity={0.86}>
                 <title>{label}: {val.toLocaleString()}</title>
               </rect>
-              {barH > 10 && (
-                <text x={x + BAR_W / 2} y={y - 4} textAnchor="middle"
-                  fontSize={7} fill={C.textSec} fontFamily={FONT}>{fmtVal(val)}</text>
-              )}
+              {/* Value label — always visible, clearer font */}
+              <text x={x + BAR_W / 2} y={y - 5} textAnchor="middle"
+                fontSize={8} fill={C.textSec} fontFamily={FONT} fontWeight="500">{fmtVal(val)}</text>
               {rotate ? (
                 <text x={x + BAR_W / 2} y={BASE_Y + 10} textAnchor="end"
                   fontSize={7} fill={C.textMuted} fontFamily={FONT}
                   transform={`rotate(-42,${x + BAR_W / 2},${BASE_Y + 10})`}>{short}</text>
               ) : (
                 <text x={x + BAR_W / 2} y={BASE_Y + 14} textAnchor="middle"
-                  fontSize={7.5} fill={C.textMuted} fontFamily={FONT}>{short}</text>
+                  fontSize={8} fill={C.textMuted} fontFamily={FONT}>{short}</text>
               )}
             </g>
           )
@@ -198,7 +246,21 @@ function LineChart({ labels, series, C }) {
 
   const n = labels.length, maxVal = Math.max(...nums, 1)
   const minVal = Math.min(...nums, 0), range = maxVal - minVal || 1
-  const LEFT = 42, RIGHT = 16, TOP = 20, CH = 160, LBL_H = 48
+
+  // ── Trend annotation ────────────────────────────────────────────────────────
+  const startVal = nums[0]
+  const endVal   = nums[n - 1]
+  const rawPct   = startVal !== 0 ? ((endVal - startVal) / Math.abs(startVal)) * 100 : null
+  const pctStr   = rawPct != null ? `${rawPct >= 0 ? '+' : ''}${rawPct.toFixed(1)}%` : null
+  const pctColor = rawPct == null ? C.textMuted : rawPct > 0 ? '#10b981' : rawPct < 0 ? '#ef4444' : C.textMuted
+  const pctIcon  = rawPct == null ? '→' : rawPct > 0 ? '↑' : rawPct < 0 ? '↓' : '→'
+
+  // ── Min / max indices ────────────────────────────────────────────────────────
+  const maxIdx = nums.indexOf(Math.max(...nums))
+  const minIdx = nums.indexOf(Math.min(...nums))
+
+  // Extra TOP headroom so max-point callout text stays inside the SVG
+  const LEFT = 42, RIGHT = 16, TOP = 30, CH = 160, LBL_H = 48
   const SVG_W = 520, SVG_H = TOP + CH + LBL_H
   const CHART_W = SVG_W - LEFT - RIGHT, BASE_Y = TOP + CH
   const xStep = CHART_W / (n - 1)
@@ -215,42 +277,84 @@ function LineChart({ labels, series, C }) {
   }))
 
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} width="100%"
-        style={{ display: 'block', minWidth: `${Math.min(SVG_W, 200)}px`, maxWidth: `${SVG_W}px` }}
-        aria-label={name || 'line chart'}>
-        {ticks.map(({ val, y }, gi) => (
-          <g key={gi}>
-            <line x1={LEFT} y1={y} x2={SVG_W - RIGHT} y2={y}
-              stroke={C.border} strokeWidth={0.7} strokeDasharray="3 3" />
-            <text x={LEFT - 4} y={y + 3.5} textAnchor="end"
-              fontSize={7} fill={C.textMuted} fontFamily={FONT}>{fmtVal(val)}</text>
-          </g>
-        ))}
-        <line x1={LEFT} y1={BASE_Y} x2={SVG_W - RIGHT} y2={BASE_Y} stroke={C.border} strokeWidth={1} />
-        <polygon points={areaPts} fill="#6366f1" fillOpacity="0.10" />
-        <polyline points={linePts} fill="none" stroke="#6366f1" strokeWidth={2.2}
-          strokeLinecap="round" strokeLinejoin="round" />
-        {pts.map((p, i) => (
-          <g key={i}>
-            <circle cx={p.x} cy={p.y} r={3.5} fill="#6366f1" stroke={C.surface} strokeWidth={1.5} />
-            <title>{labels[i]}: {p.val.toLocaleString()}</title>
-          </g>
-        ))}
-        {labels.map((label, i) => {
-          const x = LEFT + i * xStep, lbl = String(label)
-          const rotate = lbl.length > 6 || n > 10
-          const short  = lbl.length > 12 ? lbl.slice(0, 11) + '…' : lbl
-          return rotate ? (
-            <text key={i} x={x} y={BASE_Y + 10} textAnchor="end"
-              fontSize={7} fill={C.textMuted} fontFamily={FONT}
-              transform={`rotate(-42,${x},${BASE_Y + 10})`}>{short}</text>
-          ) : (
-            <text key={i} x={x} y={BASE_Y + 15} textAnchor="middle"
-              fontSize={7.5} fill={C.textMuted} fontFamily={FONT}>{short}</text>
-          )
-        })}
-      </svg>
+    <div>
+      {/* Trend summary: start → end  ↑/↓ pct% */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '4px 10px', marginBottom: '5px',
+        background: C.surface, border: `1px solid ${C.border}`, borderRadius: '5px',
+        fontSize: '0.71rem',
+      }}>
+        <span style={{ color: C.textMuted }}>
+          Start&nbsp;<span style={{ color: C.text, fontWeight: 600 }}>{fmtVal(startVal)}</span>
+        </span>
+        <span style={{ color: pctColor, fontWeight: 700, fontSize: '0.8rem' }}>
+          {pctIcon} {pctStr ?? '—'}
+        </span>
+        <span style={{ color: C.textMuted }}>
+          End&nbsp;<span style={{ color: C.text, fontWeight: 600 }}>{fmtVal(endVal)}</span>
+        </span>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <svg viewBox={`0 0 ${SVG_W} ${SVG_H}`} width="100%"
+          style={{ display: 'block', minWidth: `${Math.min(SVG_W, 200)}px`, maxWidth: `${SVG_W}px` }}
+          aria-label={name || 'line chart'}>
+          {ticks.map(({ val, y }, gi) => (
+            <g key={gi}>
+              <line x1={LEFT} y1={y} x2={SVG_W - RIGHT} y2={y}
+                stroke={C.border} strokeWidth={0.7} strokeDasharray="3 3" />
+              <text x={LEFT - 4} y={y + 3.5} textAnchor="end"
+                fontSize={7} fill={C.textMuted} fontFamily={FONT}>{fmtVal(val)}</text>
+            </g>
+          ))}
+          <line x1={LEFT} y1={BASE_Y} x2={SVG_W - RIGHT} y2={BASE_Y} stroke={C.border} strokeWidth={1} />
+          <polygon points={areaPts} fill="#6366f1" fillOpacity="0.10" />
+          <polyline points={linePts} fill="none" stroke="#6366f1" strokeWidth={2.2}
+            strokeLinecap="round" strokeLinejoin="round" />
+          {pts.map((p, i) => {
+            const isMax  = i === maxIdx
+            const isMin  = i === minIdx
+            const r      = (isMax || isMin) ? 5 : 3.5
+            const fill   = isMax ? '#10b981' : isMin ? '#ef4444' : '#6366f1'
+            // Clamp callout labels to remain inside the SVG viewport
+            const anchor    = p.x < LEFT + 36 ? 'start' : p.x > SVG_W - RIGHT - 36 ? 'end' : 'middle'
+            const maxLblY   = Math.max(TOP + 9, p.y - 9)
+            const minLblY   = Math.min(BASE_Y - 4, p.y + 14)
+            return (
+              <g key={i}>
+                <title>{labels[i]}: {p.val.toLocaleString()}</title>
+                <circle cx={p.x} cy={p.y} r={r} fill={fill} stroke={C.surface} strokeWidth={1.5} />
+                {isMax && (
+                  <text x={p.x} y={maxLblY} textAnchor={anchor}
+                    fontSize={7.5} fill="#10b981" fontFamily={FONT} fontWeight="700">
+                    ↑ {fmtVal(p.val)}
+                  </text>
+                )}
+                {isMin && !isMax && (
+                  <text x={p.x} y={minLblY} textAnchor={anchor}
+                    fontSize={7.5} fill="#ef4444" fontFamily={FONT} fontWeight="700">
+                    ↓ {fmtVal(p.val)}
+                  </text>
+                )}
+              </g>
+            )
+          })}
+          {labels.map((label, i) => {
+            const x = LEFT + i * xStep, lbl = String(label)
+            const rotate = lbl.length > 6 || n > 10
+            const short  = lbl.length > 12 ? lbl.slice(0, 11) + '…' : lbl
+            return rotate ? (
+              <text key={i} x={x} y={BASE_Y + 10} textAnchor="end"
+                fontSize={7} fill={C.textMuted} fontFamily={FONT}
+                transform={`rotate(-42,${x},${BASE_Y + 10})`}>{short}</text>
+            ) : (
+              <text key={i} x={x} y={BASE_Y + 15} textAnchor="middle"
+                fontSize={7.5} fill={C.textMuted} fontFamily={FONT}>{short}</text>
+            )
+          })}
+        </svg>
+      </div>
       {name && <div style={{ fontSize: '0.65rem', color: C.textMuted, textAlign: 'center', marginTop: '4px' }}>{name}</div>}
     </div>
   )
@@ -264,12 +368,24 @@ function DonutChart({ labels, series, C }) {
   const total    = rawNums.reduce((a, b) => a + b, 0)
   if (!total) return <FallbackTable labels={labels} series={series} C={C} />
 
-  const limit = Math.min(labels.length, 8)
-  const CX = 90, CY = 90, OR = 74, IR = 44, SIZE = 180
+  // Sort descending by value so the dominant slice is always first
+  const all   = labels.map((lbl, i) => ({ lbl: String(lbl), val: rawNums[i] || 0 }))
+    .sort((a, b) => b.val - a.val)
 
+  // Show top 6; group anything beyond that into a single "Other (N)" slice
+  const TOP_N = 6
+  const shown = all.length > TOP_N + 1 ? all.slice(0, TOP_N) : all.slice()
+  const rest  = all.length > TOP_N + 1 ? all.slice(TOP_N)   : []
+  if (rest.length > 0) {
+    shown.push({ lbl: `Other (${rest.length})`, val: rest.reduce((s, x) => s + x.val, 0) })
+  }
+
+  const CX = 90, CY = 90, OR = 74, IR = 44, SIZE = 180
   let angle = -Math.PI / 2
-  const slices = rawNums.slice(0, limit).map((val, i) => {
-    const frac = val / total, start = angle, end = angle + frac * 2 * Math.PI
+
+  const slices = shown.map((item, i) => {
+    const frac = item.val / total
+    const start = angle, end = angle + frac * 2 * Math.PI
     angle = end
     const x1o = CX + OR * Math.cos(start), y1o = CY + OR * Math.sin(start)
     const x2o = CX + OR * Math.cos(end),   y2o = CY + OR * Math.sin(end)
@@ -277,11 +393,14 @@ function DonutChart({ labels, series, C }) {
     const x2i = CX + IR * Math.cos(start), y2i = CY + IR * Math.sin(start)
     const lg   = end - start > Math.PI ? 1 : 0
     return {
-      frac, val, color: PALETTE[i % PALETTE.length],
-      label: String(labels[i] || ''),
+      frac, val: item.val, color: PALETTE[i % PALETTE.length], label: item.lbl,
       d: `M${x1o.toFixed(2)} ${y1o.toFixed(2)} A${OR} ${OR} 0 ${lg} 1 ${x2o.toFixed(2)} ${y2o.toFixed(2)} L${x1i.toFixed(2)} ${y1i.toFixed(2)} A${IR} ${IR} 0 ${lg} 0 ${x2i.toFixed(2)} ${y2i.toFixed(2)} Z`,
     }
   })
+
+  // Dominant = first slice (highest value after sort)
+  const dom      = slices[0]
+  const domShort = dom.label.length > 10 ? dom.label.slice(0, 9) + '…' : dom.label
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
@@ -291,22 +410,33 @@ function DonutChart({ labels, series, C }) {
             <title>{s.label}: {s.val.toLocaleString()} ({(s.frac * 100).toFixed(1)}%)</title>
           </path>
         ))}
-        <text x={CX} y={CY - 6} textAnchor="middle" fontSize={11} fontWeight="700"
+        {/* Center: total value */}
+        <text x={CX} y={CY - 11} textAnchor="middle" fontSize={11} fontWeight="700"
           fill={C.text} fontFamily={FONT}>{fmtVal(total)}</text>
-        <text x={CX} y={CY + 9} textAnchor="middle" fontSize={7.5}
+        <text x={CX} y={CY + 3} textAnchor="middle" fontSize={7}
           fill={C.textMuted} fontFamily={FONT}>total</text>
+        {/* Center: dominant segment name + pct */}
+        <text x={CX} y={CY + 16} textAnchor="middle" fontSize={6.5}
+          fill={dom.color} fontFamily={FONT} fontWeight="600">
+          {domShort} {(dom.frac * 100).toFixed(0)}%
+        </text>
       </svg>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px 14px', justifyContent: 'center', maxWidth: '340px' }}>
+
+      {/* Legend: colour swatch + label + value + pct */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px 14px', justifyContent: 'center', maxWidth: '360px' }}>
         {slices.map((s, i) => (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
             <div style={{ width: '8px', height: '8px', borderRadius: '2px', background: s.color, flexShrink: 0 }} />
             <span style={{ fontSize: '0.67rem', color: C.textSec }}>
-              {s.label.length > 16 ? s.label.slice(0, 15) + '…' : s.label}{' '}
-              <span style={{ color: C.textMuted }}>({(s.frac * 100).toFixed(0)}%)</span>
+              {s.label.length > 16 ? s.label.slice(0, 15) + '…' : s.label}
+            </span>
+            <span style={{ fontSize: '0.67rem', color: C.textMuted, whiteSpace: 'nowrap' }}>
+              {fmtVal(s.val)} · {(s.frac * 100).toFixed(0)}%
             </span>
           </div>
         ))}
       </div>
+
       {name && <div style={{ fontSize: '0.65rem', color: C.textMuted }}>{name}</div>}
     </div>
   )

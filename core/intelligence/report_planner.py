@@ -445,81 +445,100 @@ _STYLE_META: dict[str, dict[str, Any]] = {
 
 _INTENT_SIGNALS: list[tuple[str, str, float]] = [
     # Executive / brief
-    ("executive",        "executive_brief",    1.2),
-    ("one page",         "executive_brief",    1.5),
-    ("one-page",         "executive_brief",    1.5),
-    ("brief",            "executive_brief",    1.0),
-    ("summary only",     "executive_brief",    1.3),
-    ("board",            "executive_brief",    1.1),
-    ("c-suite",          "executive_brief",    1.2),
-    ("high level",       "executive_brief",    1.1),
-    ("high-level",       "executive_brief",    1.1),
-    ("quick summary",    "executive_brief",    1.2),
-    ("quick overview",   "executive_brief",    1.1),
+    ("executive",           "executive_brief",    1.2),
+    ("one page",            "executive_brief",    1.5),
+    ("one-page",            "executive_brief",    1.5),
+    ("brief",               "executive_brief",    1.0),
+    ("summary only",        "executive_brief",    1.3),
+    ("board",               "executive_brief",    1.1),
+    ("c-suite",             "executive_brief",    1.2),
+    ("high level",          "executive_brief",    1.1),
+    ("high-level",          "executive_brief",    1.1),
+    ("quick summary",       "executive_brief",    1.2),
+    ("quick overview",      "executive_brief",    1.1),
+    ("ceo",                 "executive_brief",    1.3),
+    ("cfo",                 "executive_brief",    1.1),
+    ("leadership summary",  "executive_brief",    1.4),
+    ("top level",           "executive_brief",    1.1),
+    ("at a glance",         "executive_brief",    1.2),
     # Visual / dashboard
-    ("dashboard",        "visual_dashboard",   1.5),
-    ("visual",           "visual_dashboard",   1.2),
-    ("charts only",      "visual_dashboard",   1.8),
-    ("chart",            "visual_dashboard",   0.8),
-    ("charts",           "visual_dashboard",   0.9),
-    ("graph",            "visual_dashboard",   0.9),
-    ("graphs",           "visual_dashboard",   0.9),
-    ("visualization",    "visual_dashboard",   1.2),
-    ("visualize",        "visual_dashboard",   1.0),
+    ("dashboard",           "visual_dashboard",   1.5),
+    ("visual",              "visual_dashboard",   1.2),
+    ("charts only",         "visual_dashboard",   1.8),
+    ("chart",               "visual_dashboard",   1.1),
+    ("charts",              "visual_dashboard",   0.9),
+    ("graph",               "visual_dashboard",   0.9),
+    ("graphs",              "visual_dashboard",   0.9),
+    ("visualization",       "visual_dashboard",   1.2),
+    ("visualize",           "visual_dashboard",   1.0),
+    ("visual report",       "visual_dashboard",   1.3),
+    ("plot",                "visual_dashboard",   1.0),
     # Analyst / deep-dive
-    ("detailed",         "analyst_deep_dive",  1.2),
-    ("deep dive",        "analyst_deep_dive",  1.5),
-    ("deep-dive",        "analyst_deep_dive",  1.5),
-    ("full analysis",    "analyst_deep_dive",  1.4),
-    ("full report",      "analyst_deep_dive",  1.2),
-    ("comprehensive",    "analyst_deep_dive",  1.1),
-    ("in-depth",         "analyst_deep_dive",  1.3),
-    ("in depth",         "analyst_deep_dive",  1.3),
-    ("complete report",  "analyst_deep_dive",  1.2),
+    ("detailed",            "analyst_deep_dive",  1.2),
+    ("deep dive",           "analyst_deep_dive",  1.5),
+    ("deep-dive",           "analyst_deep_dive",  1.5),
+    ("full analysis",       "analyst_deep_dive",  1.4),
+    ("full report",         "analyst_deep_dive",  1.2),
+    ("comprehensive",       "analyst_deep_dive",  1.1),
+    ("in-depth",            "analyst_deep_dive",  1.3),
+    ("in depth",            "analyst_deep_dive",  1.3),
+    ("complete report",     "analyst_deep_dive",  1.2),
     # Table-heavy
-    ("table-heavy",      "table_heavy_report", 1.8),
-    ("table heavy",      "table_heavy_report", 1.8),
-    ("tables",           "table_heavy_report", 1.2),
-    ("tabular",          "table_heavy_report", 1.3),
-    ("drilldown",        "table_heavy_report", 1.2),
-    ("drill down",       "table_heavy_report", 1.2),
-    ("drill-down",       "table_heavy_report", 1.2),
-    ("breakdown",        "table_heavy_report", 0.8),
+    ("table-heavy",         "table_heavy_report", 1.8),
+    ("table heavy",         "table_heavy_report", 1.8),
+    ("tables",              "table_heavy_report", 1.2),
+    ("tabular",             "table_heavy_report", 1.3),
+    ("drilldown",           "table_heavy_report", 1.2),
+    ("drill down",          "table_heavy_report", 1.2),
+    ("drill-down",          "table_heavy_report", 1.2),
+    ("breakdown",           "table_heavy_report", 0.8),
     # Operational
-    ("operational",      "operational_report", 1.5),
-    ("operations",       "operational_report", 1.3),
-    ("ops report",       "operational_report", 1.4),
-    ("daily digest",     "operational_report", 1.4),
-    ("daily report",     "operational_report", 1.1),
-    ("ops",              "operational_report", 0.9),
+    ("operational",         "operational_report", 1.5),
+    ("operations",          "operational_report", 1.3),
+    ("ops report",          "operational_report", 1.4),
+    ("daily digest",        "operational_report", 1.4),
+    ("daily report",        "operational_report", 1.1),
+    ("ops",                 "operational_report", 0.9),
     # Anomaly / quality
-    ("anomaly",          "anomaly_report",     1.5),
-    ("anomalies",        "anomaly_report",     1.5),
-    ("data quality",     "anomaly_report",     1.4),
-    ("quality report",   "anomaly_report",     1.4),
-    ("missing values",   "anomaly_report",     1.2),
-    ("outliers",         "anomaly_report",     1.2),
-    ("outlier",          "anomaly_report",     1.2),
-    ("issues",           "anomaly_report",     0.8),
+    ("anomaly",             "anomaly_report",     1.5),
+    ("anomalies",           "anomaly_report",     1.5),
+    ("data quality",        "anomaly_report",     1.4),
+    ("quality report",      "anomaly_report",     1.4),
+    ("missing values",      "anomaly_report",     1.2),
+    ("outliers",            "anomaly_report",     1.2),
+    ("outlier",             "anomaly_report",     1.2),
+    ("issues",              "anomaly_report",     0.8),
+    ("churn",               "anomaly_report",     1.3),
+    ("attrition",           "anomaly_report",     1.2),
+    # Retention / customer lifecycle
+    ("retention",           "operational_report", 1.2),
     # KPI
-    ("kpi focused",      "kpi_summary",        1.8),
-    ("kpi only",         "kpi_summary",        1.8),
-    ("kpi summary",      "kpi_summary",        1.8),
-    ("kpis",             "kpi_summary",        1.5),
-    ("kpi",              "kpi_summary",        1.3),
-    ("metrics only",     "kpi_summary",        1.5),
-    ("key metrics",      "kpi_summary",        1.2),
-    # Monitoring / drift / comparison
-    ("drift",            "monitoring_report",  1.5),
-    ("drift detection",  "monitoring_report",  1.8),
-    ("monitor",          "monitoring_report",  1.3),
-    ("monitoring",       "monitoring_report",  1.5),
-    ("tracking",         "monitoring_report",  1.0),
-    ("comparison",       "monitoring_report",  1.0),
-    ("compare",          "monitoring_report",  0.8),
-    ("historical",       "monitoring_report",  1.2),
-    ("week over week",   "monitoring_report",  1.4),
-    ("month over month", "monitoring_report",  1.4),
+    ("kpi focused",         "kpi_summary",        1.8),
+    ("kpi only",            "kpi_summary",        1.8),
+    ("kpi summary",         "kpi_summary",        1.8),
+    ("kpis",                "kpi_summary",        1.5),
+    ("kpi",                 "kpi_summary",        1.3),
+    ("metrics only",        "kpi_summary",        1.5),
+    ("key metrics",         "kpi_summary",        1.2),
+    ("top metrics",         "kpi_summary",        1.2),
+    ("scorecard",           "kpi_summary",        1.3),
+    # Monitoring / drift / comparison / trend
+    ("drift",               "monitoring_report",  1.5),
+    ("drift detection",     "monitoring_report",  1.8),
+    ("monitor",             "monitoring_report",  1.3),
+    ("monitoring",          "monitoring_report",  1.5),
+    ("tracking",            "monitoring_report",  1.0),
+    ("comparison",          "monitoring_report",  1.0),
+    ("compare",             "monitoring_report",  0.8),
+    ("historical",          "monitoring_report",  1.2),
+    ("week over week",      "monitoring_report",  1.4),
+    ("month over month",    "monitoring_report",  1.4),
+    ("trend analysis",      "monitoring_report",  1.4),
+    ("analyze trends",      "monitoring_report",  1.3),
+    ("time series",         "monitoring_report",  1.3),
+    ("time-series",         "monitoring_report",  1.3),
+    ("over time",           "monitoring_report",  1.0),
+    ("performance over",    "monitoring_report",  1.2),
 ]
 
 
@@ -830,4 +849,372 @@ def plan_report(
                 "expandable_sections": [],
             },
             "future_hooks": {},
+        }
+
+
+# ── Report Title Generator ────────────────────────────────────────────────────
+
+_INTENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
+    # Longer / more-specific phrases first so they win over short substrings
+    ("supply chain",   "Supply Chain"),
+    ("customer retention", "Customer Retention"),
+    ("customer churn", "Customer Churn"),
+    ("revenue",        "Revenue"),
+    ("sales",          "Sales"),
+    ("customer",       "Customer"),
+    ("marketing",      "Marketing"),
+    ("inventory",      "Inventory"),
+    ("product",        "Product"),
+    ("financial",      "Financial"),
+    ("finance",        "Financial"),
+    ("profit",         "Profit"),
+    ("margin",         "Margin"),
+    ("cost",           "Cost"),
+    ("forecast",       "Forecast"),
+    ("logistics",      "Logistics"),
+    ("employee",       "Employee"),
+    ("hr",             "HR"),
+    ("traffic",        "Traffic"),
+    ("growth",         "Growth"),
+    ("budget",         "Budget"),
+    ("spend",          "Budget"),
+    ("operations",     "Operations"),
+    ("ops",            "Operations"),
+    ("regional",       "Regional"),
+    ("region",         "Regional"),
+    ("performance",    "Performance"),
+]
+
+_DATASET_TYPE_DOMAIN: dict[str, str] = {
+    "sales_financial":  "Sales",
+    "sales_data":       "Sales",
+    "financial_data":   "Revenue",
+    "time_series_log":  "Performance",
+    "operational_data": "Operations",
+    "segmented_data":   "Market",
+    "general_data":     "",
+}
+
+_DATASET_TYPE_DESCRIPTOR: dict[str, str] = {
+    "sales_financial":  "Performance",
+    "sales_data":       "Performance",
+    "financial_data":   "Performance",
+    "time_series_log":  "Trend",
+    "operational_data": "",
+    "segmented_data":   "",
+    "general_data":     "",
+}
+
+_STYLE_TEMPLATE: dict[str, str] = {
+    "executive_brief":    "Executive {domain} Brief",
+    "visual_dashboard":   "{domain} Dashboard",
+    "analyst_deep_dive":  "{domain} Analysis",
+    "table_heavy_report": "{domain} Report",
+    "operational_report": "{domain} Operations Report",
+    "anomaly_report":     "{domain} Anomaly Report",
+    "kpi_summary":        "{domain} KPI Scorecard",
+    "monitoring_report":  "{domain} Trend Analysis",
+}
+
+# Maps intent action phrases → a descriptor word that shapes the title.
+# Longer / more-specific phrases first so they win over short substrings.
+# An empty string explicitly suppresses any descriptor (keeps domain clean).
+_INTENT_ACTION_DESCRIPTORS: list[tuple[str, str]] = [
+    ("over time",         "Trend"),
+    ("trend analysis",    "Trend"),
+    ("analyze trends",    "Trend"),
+    ("time series",       "Trend"),
+    ("time-series",       "Trend"),
+    ("anomalies",         "Risk & Anomaly"),
+    ("anomaly",           "Risk & Anomaly"),
+    ("outliers",          "Risk & Anomaly"),
+    ("outlier",           "Risk & Anomaly"),
+    ("compare",           "Comparison"),
+    ("comparison",        "Comparison"),
+    ("monitoring",        "Monitoring"),
+    ("monitor",           "Monitoring"),
+    ("forecast",          "Forecast"),
+    ("retention",         "Retention"),
+    ("churn",             "Churn"),
+    ("kpis",              ""),   # suppress descriptor → "Sales KPI Scorecard" not "Sales Performance KPI Scorecard"
+    ("kpi",               ""),
+    ("scorecard",         ""),
+    ("key metrics",       ""),
+    ("metrics only",      ""),
+    ("trends",            "Trend"),
+    ("trend",             "Trend"),
+]
+
+# When the intent action descriptor strongly implies a title shape,
+# override the style template entirely so intent wins over style.
+_ACTION_TEMPLATE_OVERRIDE: dict[str, str] = {
+    "Trend":          "{domain} Trend Analysis",
+    "Risk & Anomaly": "{domain} Risk & Anomaly Report",
+    "Comparison":     "{domain} Comparison Report",
+    "Monitoring":     "{domain} Monitoring Report",
+    "Forecast":       "{domain} Forecast",
+}
+
+# Intent domain labels that are location/dimension modifiers rather than
+# content domains. When matched, they prefix the dataset domain instead of
+# replacing it: "Regional" + "Sales" → "Regional Sales".
+_MODIFIER_DOMAINS: frozenset[str] = frozenset({"Regional"})
+
+
+def _clean_filename_for_title(filename: str) -> str:
+    """Strip extension and version/date suffixes, return title-cased words."""
+    import os
+    import re
+    name = os.path.splitext(filename)[0]
+    # Remove trailing version/date suffixes like _v1, _final, _2024, -copy
+    name = re.sub(
+        r'[-_](v\d+|final|copy|backup|export|\d{4}|\d{6}|\d{8})$',
+        '', name, flags=re.IGNORECASE,
+    )
+    # Replace separators with spaces
+    name = re.sub(r'[-_]+', ' ', name).strip()
+    return name.title()
+
+
+def generate_report_title(
+    intent_text: str | None,
+    report_style: str | None,
+    dataset_signals: dict | None,
+    dataset_filename: str | None,
+) -> str:
+    """Generate a business-readable report title.
+
+    Priority order:
+      1. Domain extracted from user intent text
+      2. Report style + dataset semantic type
+      3. Cleaned dataset filename as last fallback
+    """
+    try:
+        style    = report_style or "analyst_deep_dive"
+        signals  = dataset_signals or {}
+        text     = (intent_text or "").lower()
+        template = _STYLE_TEMPLATE.get(style, "{domain} Report")
+
+        # 1a. Extract subject domain from intent text
+        intent_domain = ""
+        for phrase, label in _INTENT_DOMAIN_KEYWORDS:
+            if phrase in text:
+                intent_domain = label
+                break
+
+        # 1b. Extract action descriptor from intent text
+        # None = no match; "" = explicitly suppress; str = descriptor word
+        action_desc: str | None = None
+        for phrase, desc in _INTENT_ACTION_DESCRIPTORS:
+            if phrase in text:
+                action_desc = desc
+                break
+
+        # 2. Dataset semantic domain + descriptor fallbacks
+        dtype       = signals.get("dataset_type", "general_data")
+        data_domain = _DATASET_TYPE_DOMAIN.get(dtype, "")
+        data_desc   = _DATASET_TYPE_DESCRIPTOR.get(dtype, "")
+
+        # Intent action overrides dataset descriptor; None = "not found, use dataset default"
+        effective_desc = action_desc if action_desc is not None else data_desc
+
+        # When intent action clearly states the report type, override the style template
+        if action_desc and action_desc in _ACTION_TEMPLATE_OVERRIDE:
+            template = _ACTION_TEMPLATE_OVERRIDE[action_desc]
+
+        # Suppress descriptor if it already appears in the intent domain or
+        # in the template suffix (avoids "Sales Trend Trend Analysis")
+        if effective_desc:
+            template_suffix = template.replace("{domain}", "").lower()
+            if (effective_desc.lower() in intent_domain.lower()
+                    or effective_desc.lower() in template_suffix):
+                effective_desc = ""
+
+        # 3. Build domain string
+        if intent_domain:
+            if intent_domain in _MODIFIER_DOMAINS and data_domain:
+                # Location/dimension modifier: prefix the dataset domain
+                # "Regional" + "Sales" → "Regional Sales [Comparison Report]"
+                domain = f"{intent_domain} {data_domain}"
+            else:
+                domain = f"{intent_domain} {effective_desc}".strip() if effective_desc else intent_domain
+        elif data_domain:
+            domain = f"{data_domain} {effective_desc}".strip() if effective_desc else data_domain
+        elif dataset_filename:
+            # 4. Filename fallback
+            domain = _clean_filename_for_title(dataset_filename)
+        else:
+            domain = "Dataset"
+
+        return template.format(domain=domain)[:80]
+
+    except Exception:
+        if dataset_filename:
+            try:
+                return _clean_filename_for_title(dataset_filename) + " Report"
+            except Exception:
+                pass
+        return "Dataset Report"
+
+
+# ── Structured Intent Builder ─────────────────────────────────────────────────
+# Pure function. Not wired into routing yet — foundation for StructuredIntent
+# migration. Call sites will be added in a later phase.
+
+_SI_EMAIL_SIGNALS: frozenset = frozenset([
+    "email", "send", "mail", "share",
+])
+_SI_NOTIFY_SIGNALS: frozenset = frozenset([
+    "notify", "notification", "notif", "alert", "ping",
+])
+_SI_SCHEDULE_SIGNALS: frozenset = frozenset([
+    "schedule", "every", "recurring", "daily", "weekly", "monthly",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+])
+_SI_NOW_SIGNALS: frozenset = frozenset([
+    "now", "immediately", "right now", "today", "asap", "as soon as",
+])
+_SI_REPORT_SIGNALS: frozenset = frozenset([
+    "report", "analysis", "analyze", "analyse", "summary", "overview",
+    "dashboard", "insights", "intelligence", "monitoring", "monitor",
+    "trend", "kpi", "kpis", "operational", "operations",
+])
+_SI_FOCUS_MAP: list[tuple[str, tuple]] = [
+    ("retention",    ("churn", "retention", "attrition", "dropout", "cancellation")),
+    ("anomaly",      ("anomaly", "anomalies", "outlier", "outliers", "irregular",
+                      "abnormal", "fraud", "detect", "detection")),
+    ("monitoring",   ("monitor", "monitoring", "drift", "spike", "unusual")),
+    ("trend",        ("trend", "trends", "over time", "time series", "historical",
+                      "forecast", "projection")),
+    ("quality",      ("quality", "missing", "completeness", "null", "clean",
+                      "validation", "integrity")),
+    ("kpi",          ("kpi", "kpis", "metrics", "scorecard", "key metrics")),
+    ("segmentation", ("segment", "segmentation", "breakdown", "by region",
+                      "by product", "by category")),
+]
+
+
+def build_structured_intent(
+    intent_text: str,
+    dataset_signals: dict | None = None,
+) -> dict:
+    """Build a StructuredIntent dict from intent text and optional dataset signals.
+
+    Additive pure function — not wired into any routing path yet.
+    Provides a single structured object that downstream routing, step selection,
+    report style inference, and KPI ranking can all consume instead of each
+    re-scanning the raw intent string independently.
+
+    Args:
+        intent_text:      Raw user input string.
+        dataset_signals:  Optional dataset_signals dict from report_plan (ignored for now,
+                          reserved for Phase 2 when dataset context informs routing).
+
+    Returns:
+        {
+          "primary_action":  "generate_report" | "analyze" | "email_report"
+                             | "schedule" | "notify" | "unknown"
+          "report_style":    one of 8 style names, or None
+          "analysis_focus":  "anomaly" | "monitoring" | "trend" | "quality"
+                             | "kpi" | "segmentation" | None
+          "audience":        "executive" | "analyst" | "operations" | None
+          "delivery_intent": "view" | "email" | "notify" | "view_and_notify"
+          "schedule_intent": "daily" | "weekly" | "monthly" | None
+          "confidence":      float 0.0–1.0
+        }
+
+    Never raises.
+    """
+    try:
+        text = (intent_text or "").lower()
+
+        # ── report_style: reuse the existing weighted intent signal scorer ────
+        prefs       = detect_user_preferences(text)
+        style_votes = prefs.get("style_votes", {})
+        if style_votes:
+            best_style = max(style_votes, key=lambda k: style_votes[k])
+            best_score = float(style_votes[best_style])
+            report_style = best_style if best_score >= 1.0 else None
+            confidence   = round(min(best_score / 2.0, 1.0), 2)
+        else:
+            best_score   = 0.0
+            report_style = None
+            confidence   = 0.2
+
+        # ── primary_action ────────────────────────────────────────────────────
+        has_email    = any(w in text for w in _SI_EMAIL_SIGNALS)
+        has_notify   = any(w in text for w in _SI_NOTIFY_SIGNALS)
+        has_schedule = (
+            any(w in text for w in _SI_SCHEDULE_SIGNALS)
+            and not any(s in text for s in _SI_NOW_SIGNALS)
+        )
+        has_report   = (
+            any(w in text for w in _SI_REPORT_SIGNALS)
+            or report_style is not None
+        )
+
+        if has_schedule:
+            primary_action = "schedule"
+        elif has_email and has_report:
+            primary_action = "email_report"
+        elif has_report:
+            primary_action = "generate_report"
+        elif any(w in text for w in ("analyze", "analyse", "analysis")):
+            primary_action = "analyze"
+        elif has_notify:
+            primary_action = "notify"
+        else:
+            primary_action = "unknown"
+
+        # ── analysis_focus ────────────────────────────────────────────────────
+        analysis_focus: str | None = None
+        for focus, signals in _SI_FOCUS_MAP:
+            if any(sig in text for sig in signals):
+                analysis_focus = focus
+                break
+
+        # ── audience ──────────────────────────────────────────────────────────
+        raw_audience = prefs.get("inferred_audience", "general")
+        audience     = raw_audience if raw_audience != "general" else None
+
+        # ── delivery_intent ───────────────────────────────────────────────────
+        if has_email and has_notify:
+            delivery_intent = "view_and_notify"
+        elif has_email:
+            delivery_intent = "email"
+        elif has_notify:
+            delivery_intent = "notify"
+        else:
+            delivery_intent = "view"
+
+        # ── schedule_intent ───────────────────────────────────────────────────
+        schedule_intent: str | None = None
+        _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday",
+                     "friday", "saturday", "sunday")
+        if "daily" in text:
+            schedule_intent = "daily"
+        elif "weekly" in text or any(d in text for d in _WEEKDAYS):
+            schedule_intent = "weekly"
+        elif "monthly" in text:
+            schedule_intent = "monthly"
+
+        return {
+            "primary_action":  primary_action,
+            "report_style":    report_style,
+            "analysis_focus":  analysis_focus,
+            "audience":        audience,
+            "delivery_intent": delivery_intent,
+            "schedule_intent": schedule_intent,
+            "confidence":      confidence,
+        }
+
+    except Exception:
+        return {
+            "primary_action":  "unknown",
+            "report_style":    None,
+            "analysis_focus":  None,
+            "audience":        None,
+            "delivery_intent": "view",
+            "schedule_intent": None,
+            "confidence":      0.0,
         }

@@ -74,10 +74,20 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
     report_save_warning = None
     try:
         from data.report_service import save_report
-        title = "{} — {}".format(
-            dataset["filename"],
-            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
-        )
+        try:
+            from core.intelligence.report_planner import generate_report_title as _gen_title
+            _rp = report.get("report_plan") or {}
+            title = _gen_title(
+                intent_text=plan.get("intent") or "",
+                report_style=_rp.get("report_style"),
+                dataset_signals=_rp.get("dataset_signals"),
+                dataset_filename=dataset["filename"],
+            )
+        except Exception:
+            title = "{} — {}".format(
+                dataset["filename"],
+                datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+            )
         report_id = save_report(
             user_id=user_id,
             title=title,
@@ -205,10 +215,20 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
     if not report_from_ctx:
         try:
             from data.report_service import save_report
-            title = "{} — {}".format(
-                dataset["filename"],
-                datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
-            )
+            try:
+                from core.intelligence.report_planner import generate_report_title as _gen_title
+                _rp = report.get("report_plan") or {}
+                title = _gen_title(
+                    intent_text=plan.get("intent") or "",
+                    report_style=_rp.get("report_style"),
+                    dataset_signals=_rp.get("dataset_signals"),
+                    dataset_filename=dataset["filename"],
+                )
+            except Exception:
+                title = "{} — {}".format(
+                    dataset["filename"],
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+                )
             report_id = save_report(
                 user_id=user_id,
                 title=title,

@@ -1474,7 +1474,7 @@ function WorkflowStepBuilder({ steps, onStepsChange, C, S }) {
 function ReportSection({ section, C }) {
   const secType = section.type || 'text'
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '14px 16px' }}>
+    <div style={{ background: C.surface, border: `1px solid ${C.border}70`, borderRadius: '10px', padding: '14px 16px', height: '100%', boxSizing: 'border-box' }}>
       <div style={{ fontSize: '0.64rem', color: C.textMuted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: '8px' }}>
         {section.heading}
       </div>
@@ -1625,7 +1625,22 @@ function ReportSection({ section, C }) {
             )
           }
           case 'chart': {
-            return <ChartSection chart={section.chart || {}} C={C} />
+            const chart = section.chart || {}
+            return (
+              <div>
+                <ChartSection chart={chart} C={C} />
+                {section.explanation && (
+                  <div style={{ fontSize: '0.74rem', color: C.textSec, lineHeight: 1.6, marginTop: '10px' }}>
+                    {section.explanation}
+                  </div>
+                )}
+                {(chart.insight || chart.caption) && (
+                  <div style={{ fontSize: '0.67rem', color: C.textMuted, lineHeight: 1.5, marginTop: '6px', fontStyle: 'italic' }}>
+                    {chart.insight || chart.caption}
+                  </div>
+                )}
+              </div>
+            )
           }
           case 'drift_detection': {
             const drifts = section.drifts || []
@@ -2269,6 +2284,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [selectedReportId,      setSelectedReportId]      = useState(null)
   const [selectedReportData,    setSelectedReportData]    = useState(null)
   const [selectedReportLoading, setSelectedReportLoading] = useState(false)
+  const [reportViewMode,        setReportViewMode]        = useState('list')
   const [reportEmailInput,      setReportEmailInput]      = useState('')
   const [reportEmailStatus,     setReportEmailStatus]     = useState(null)
   const [reportEmailSending,    setReportEmailSending]    = useState(false)
@@ -2679,6 +2695,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   }
 
   useEffect(() => { if (activeNav === 'reports' || activeNav === 'operations' || activeNav === 'overview') refreshReports() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (activeNav !== 'reports') setReportViewMode('list') }, [activeNav]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (activeNav === 'workspaces') refreshWorkspaces() }, [activeNav, token]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function refreshNotifications() {
@@ -2711,15 +2728,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   }
 
   async function handleSelectReport(id) {
-    if (selectedReportId === id) {
-      setSelectedReportId(null); setSelectedReportData(null)
-      setReportEmailInput(''); setReportEmailStatus(null); setReportEmailSending(false)
-      return
-    }
     setSelectedReportId(id)
     setSelectedReportData(null)
     setSelectedReportLoading(true)
     setReportEmailInput(''); setReportEmailStatus(null); setReportEmailSending(false)
+    setReportViewMode('detail')
     try {
       const d = await getReportById(id, token)
       setSelectedReportData(d?.data ?? null)
@@ -2748,9 +2761,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
   function handleOpenSavedReport(reportId) {
     setActiveNav('reports')
-    // Set selected state immediately so the detail panel opens without waiting
-    // for the list refresh — avoids the race where handleSelectReport bails
-    // early if selectedReportId already equals reportId.
+    setReportViewMode('detail')
     setSelectedReportId(reportId)
     setSelectedReportData(null)
     setSelectedReportLoading(true)
@@ -2962,7 +2973,17 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '0 28px', zIndex: 50, flexShrink: 0,
         }}>
-          <div />
+          {/* Back to Reports — shown in header when viewing a report detail */}
+          {activeNav === 'reports' && reportViewMode === 'detail' ? (
+            <button
+              onClick={() => { setReportViewMode('list'); setSelectedReportId(null); setSelectedReportData(null) }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontSize: '0.76rem', fontWeight: '500', padding: '0', letterSpacing: '0.01em' }}
+              onMouseEnter={e => { e.currentTarget.style.color = C.accent }}
+              onMouseLeave={e => { e.currentTarget.style.color = C.textSec }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              Back to Reports
+            </button>
+          ) : <div />}
           {/* Right icon cluster */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
             {/* Bell */}
@@ -3129,7 +3150,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           </div>
         </header>
 
-        <main style={{ flex: 1, padding: '0px 12px 36px 35px', boxSizing: 'border-box' }}>
+        <main style={{ flex: 1, padding: activeNav === 'reports' && reportViewMode === 'detail' ? '0' : '0px 12px 36px 35px', boxSizing: 'border-box' }}>
           <div style={{ width: '100%' }}>
 
             {/* ── AI Workspace ─────────────────────────────────────── */}
@@ -4670,6 +4691,34 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {activeNav === 'reports' && (() => {
               const typeLabel = t => t === 'email_dataset_report' ? 'Emailed Report' : 'Dataset Report'
               const typeColor = t => t === 'email_dataset_report' ? '#06b6d4' : C.accent
+
+              if (reportViewMode === 'detail') {
+                const r = reportList.find(x => x.id === selectedReportId)
+                return <>
+                  {selectedReportLoading ? (
+                    <div style={{ padding: '48px 32px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading report…</div>
+                  ) : selectedReportData?.content?.sections?.length > 0 ? (
+                    <ErrorBoundary C={C}>
+                      <Suspense fallback={<LazyFallback />}>
+                        <ReportWorkspace
+                          sections={selectedReportData.content.sections}
+                          reportMeta={r}
+                          C={C}
+                          onExport={fmt => exportReport(selectedReportId, token, fmt)}
+                          onEmail={to => emailReport(selectedReportId, to, token)}
+                          SectionRenderer={ReportSection}
+                          token={token}
+                          reportPlan={selectedReportData.content?.report_plan ?? null}
+                          onBack={() => { setReportViewMode('list'); setSelectedReportId(null); setSelectedReportData(null) }}
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  ) : (
+                    <div style={{ fontSize: '0.78rem', color: C.textMuted }}>No report content available.</div>
+                  )}
+                </>
+              }
+
               return <>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                   <div>
@@ -4705,68 +4754,39 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                       </div>
 
                       {reportList.map((r, idx) => {
-                        const isSelected = selectedReportId === r.id
                         const tc = typeColor(r.task_type)
                         return (
-                          <div key={r.id}>
-                            <div
-                              onClick={() => handleSelectReport(r.id)}
-                              style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 1fr) 130px minmax(100px, 140px) 110px 36px', alignItems: 'center', padding: '12px 20px', cursor: 'pointer', background: isSelected ? C.accentSoft : 'transparent', borderBottom: idx < reportList.length - 1 || isSelected ? `1px solid ${C.border}` : 'none', transition: 'background 0.1s' }}
-                              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = C.borderAlt }}
-                              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent' }}
-                            >
-                              {/* Title + summary */}
-                              <div style={{ minWidth: 0, paddingRight: '12px' }}>
-                                <div style={{ fontSize: '0.78rem', fontWeight: '500', color: isSelected ? C.accent : C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
-                                {r.summary_text && <div style={{ fontSize: '0.65rem', color: C.textMuted, marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.summary_text}</div>}
-                              </div>
-                              {/* Type badge */}
-                              <div>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: tc + '18', color: tc, border: `1px solid ${tc}40`, borderRadius: '20px', padding: '2px 8px', fontSize: '0.64rem', fontWeight: '500', whiteSpace: 'nowrap' }}>
-                                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: tc, display: 'inline-block', flexShrink: 0 }}/>
-                                  {typeLabel(r.task_type)}
-                                </span>
-                              </div>
-                              {/* Dataset */}
-                              <div style={{ fontSize: '0.73rem', color: r.dataset_filename ? C.textSec : C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dataset_filename || '—'}</div>
-                              {/* Created */}
-                              <div style={{ fontSize: '0.72rem', color: C.textMuted }}>{fmtRelTime(r.created_at)}</div>
-                              {/* Delete */}
-                              <button
-                                onClick={e => { e.stopPropagation(); handleDeleteReport(r.id) }}
-                                style={{ background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer', padding: '4px', borderRadius: '5px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                                onMouseEnter={e => { e.currentTarget.style.color = C.danger; e.currentTarget.style.background = C.dangerSoft }}
-                                onMouseLeave={e => { e.currentTarget.style.color = C.textMuted; e.currentTarget.style.background = 'transparent' }}
-                              >
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-                              </button>
+                          <div key={r.id}
+                            onClick={() => handleSelectReport(r.id)}
+                            style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 1fr) 130px minmax(100px, 140px) 110px 36px', alignItems: 'center', padding: '12px 20px', cursor: 'pointer', background: 'transparent', borderBottom: idx < reportList.length - 1 ? `1px solid ${C.border}` : 'none', transition: 'background 0.1s' }}
+                            onMouseEnter={e => { e.currentTarget.style.background = C.borderAlt }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+                          >
+                            {/* Title + summary */}
+                            <div style={{ minWidth: 0, paddingRight: '12px' }}>
+                              <div style={{ fontSize: '0.78rem', fontWeight: '500', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.title}</div>
+                              {r.summary_text && <div style={{ fontSize: '0.65rem', color: C.textMuted, marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.summary_text}</div>}
                             </div>
-
-                            {/* Inline detail — enterprise workspace */}
-                            {isSelected && (
-                              <div style={{ padding: '16px 20px 20px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
-                                {selectedReportLoading ? (
-                                  <div style={{ padding: '24px', textAlign: 'center', color: C.textMuted, fontSize: '0.82rem' }}>Loading report…</div>
-                                ) : selectedReportData?.content?.sections?.length > 0 ? (
-                                  <ErrorBoundary C={C}>
-                                    <Suspense fallback={<LazyFallback />}>
-                                      <ReportWorkspace
-                                        sections={selectedReportData.content.sections}
-                                        reportMeta={r}
-                                        C={C}
-                                        onExport={fmt => exportReport(r.id, token, fmt)}
-                                        onEmail={to => emailReport(r.id, to, token)}
-                                        SectionRenderer={ReportSection}
-                                        token={token}
-                                        reportPlan={selectedReportData.content?.report_plan ?? null}
-                                      />
-                                    </Suspense>
-                                  </ErrorBoundary>
-                                ) : (
-                                  <div style={{ fontSize: '0.78rem', color: C.textMuted }}>No report content available.</div>
-                                )}
-                              </div>
-                            )}
+                            {/* Type badge */}
+                            <div>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: tc + '18', color: tc, border: `1px solid ${tc}40`, borderRadius: '20px', padding: '2px 8px', fontSize: '0.64rem', fontWeight: '500', whiteSpace: 'nowrap' }}>
+                                <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: tc, display: 'inline-block', flexShrink: 0 }}/>
+                                {typeLabel(r.task_type)}
+                              </span>
+                            </div>
+                            {/* Dataset */}
+                            <div style={{ fontSize: '0.73rem', color: r.dataset_filename ? C.textSec : C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.dataset_filename || '—'}</div>
+                            {/* Created */}
+                            <div style={{ fontSize: '0.72rem', color: C.textMuted }}>{fmtRelTime(r.created_at)}</div>
+                            {/* Delete */}
+                            <button
+                              onClick={e => { e.stopPropagation(); handleDeleteReport(r.id) }}
+                              style={{ background: 'transparent', border: 'none', color: C.textMuted, cursor: 'pointer', padding: '4px', borderRadius: '5px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                              onMouseEnter={e => { e.currentTarget.style.color = C.danger; e.currentTarget.style.background = C.dangerSoft }}
+                              onMouseLeave={e => { e.currentTarget.style.color = C.textMuted; e.currentTarget.style.background = 'transparent' }}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                            </button>
                           </div>
                         )
                       })}
