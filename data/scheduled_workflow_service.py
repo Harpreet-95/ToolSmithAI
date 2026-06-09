@@ -55,6 +55,7 @@ def create_scheduled_workflow(
     engine_tool_id: str | None = None,
     cron: str | None = None,
     human_label: str | None = None,
+    refresh_before_run: bool = False,
 ) -> dict:
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     next_run_at = _compute_next_run_at(frequency, day_of_week, cron=cron)
@@ -65,12 +66,12 @@ def create_scheduled_workflow(
             INSERT INTO scheduled_workflows
               (user_id, dataset_id, input_text, task_type, frequency,
                day_of_week, next_run_at, enabled, created_at, updated_at,
-               engine_tool_id, cron, human_label)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+               engine_tool_id, cron, human_label, refresh_before_run)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             """,
             (user_id, dataset_id, input_text, task_type, frequency,
              day_of_week, next_run_at, now, now, engine_tool_id,
-             cron or None, human_label or None),
+             cron or None, human_label or None, 1 if refresh_before_run else 0),
         )
         conn.commit()
         row_id = cursor.lastrowid
@@ -350,6 +351,40 @@ def run_due_workflows() -> None:
         except Exception:
             pass
 
+        # ── Reprofile guard — isolated try/except, degrade-safe ───────────────
+        reprofile_status = None
+        reprofile_duration_ms = None
+        if (
+            wf.get("refresh_before_run")
+            and wf.get("dataset_id")
+            and not wf.get("engine_tool_id")
+        ):
+            _rp_start = datetime.datetime.now(datetime.timezone.utc)
+            try:
+                from data.dataset_service import reprofile_dataset
+                refreshed = reprofile_dataset(wf["dataset_id"], user_id)
+                reprofile_duration_ms = int(
+                    (datetime.datetime.now(datetime.timezone.utc) - _rp_start).total_seconds() * 1000
+                )
+                reprofile_status = "skipped" if refreshed is None else "succeeded"
+            except Exception as rp_exc:
+                reprofile_duration_ms = int(
+                    (datetime.datetime.now(datetime.timezone.utc) - _rp_start).total_seconds() * 1000
+                )
+                reprofile_status = "failed_degraded"
+                logger.warning("Scheduled workflow %s reprofile failed (degraded): %s", wid, rp_exc)
+                try:
+                    from data.notification_service import create_notification
+                    create_notification(
+                        user_id=user_id,
+                        title="Dataset refresh failed — using cached intelligence",
+                        message=f"'{wf['input_text'][:80]}': reprofile error: {str(rp_exc)[:150]}",
+                        type="schedule",
+                        status="warn",
+                    )
+                except Exception:
+                    pass
+
         try:
             if wf.get("engine_tool_id"):
                 from data.engine.tool_store import get_tool
@@ -386,7 +421,12 @@ def run_due_workflows() -> None:
             if run_id is not None:
                 try:
                     from data.scheduler_run_service import complete_schedule_run
-                    complete_schedule_run(run_id, related_report_id=related_report_id)
+                    complete_schedule_run(
+                        run_id,
+                        related_report_id=related_report_id,
+                        reprofile_status=reprofile_status,
+                        reprofile_duration_ms=reprofile_duration_ms,
+                    )
                 except Exception:
                     pass
 
@@ -419,7 +459,12 @@ def run_due_workflows() -> None:
             if run_id is not None:
                 try:
                     from data.scheduler_run_service import fail_schedule_run
-                    fail_schedule_run(run_id, error_message=err_msg)
+                    fail_schedule_run(
+                        run_id,
+                        error_message=err_msg,
+                        reprofile_status=reprofile_status,
+                        reprofile_duration_ms=reprofile_duration_ms,
+                    )
                 except Exception:
                     pass
 

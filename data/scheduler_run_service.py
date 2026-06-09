@@ -42,6 +42,8 @@ def complete_schedule_run(
     run_id: int,
     related_execution_id: int | None = None,
     related_report_id: int | None = None,
+    reprofile_status: str | None = None,
+    reprofile_duration_ms: int | None = None,
 ) -> None:
     """Mark a run as completed, record finish time and duration."""
     finished_at = _now()
@@ -55,9 +57,11 @@ def complete_schedule_run(
         conn.execute(
             """UPDATE scheduled_workflow_runs
                SET status = 'completed', finished_at = ?, duration_ms = ?,
-                   related_execution_id = ?, related_report_id = ?
+                   related_execution_id = ?, related_report_id = ?,
+                   reprofile_status = ?, reprofile_duration_ms = ?
                WHERE id = ?""",
-            (finished_at, duration_ms, related_execution_id, related_report_id, run_id),
+            (finished_at, duration_ms, related_execution_id, related_report_id,
+             reprofile_status, reprofile_duration_ms, run_id),
         )
         conn.commit()
     finally:
@@ -68,6 +72,8 @@ def fail_schedule_run(
     run_id: int,
     error_message: str | None = None,
     related_execution_id: int | None = None,
+    reprofile_status: str | None = None,
+    reprofile_duration_ms: int | None = None,
 ) -> None:
     """Mark a run as failed, record finish time, duration, and error."""
     finished_at = _now()
@@ -81,9 +87,11 @@ def fail_schedule_run(
         conn.execute(
             """UPDATE scheduled_workflow_runs
                SET status = 'failed', finished_at = ?, duration_ms = ?,
-                   error_message = ?, related_execution_id = ?
+                   error_message = ?, related_execution_id = ?,
+                   reprofile_status = ?, reprofile_duration_ms = ?
                WHERE id = ?""",
-            (finished_at, duration_ms, (error_message or "")[:500], related_execution_id, run_id),
+            (finished_at, duration_ms, (error_message or "")[:500], related_execution_id,
+             reprofile_status, reprofile_duration_ms, run_id),
         )
         conn.commit()
     finally:
@@ -102,7 +110,8 @@ def list_runs_for_schedule(
             """
             SELECT id, schedule_id, user_id, status, started_at, finished_at,
                    duration_ms, trigger_type, error_message,
-                   related_execution_id, related_report_id
+                   related_execution_id, related_report_id,
+                   reprofile_status, reprofile_duration_ms
             FROM scheduled_workflow_runs
             WHERE schedule_id = ? AND user_id = ?
             ORDER BY started_at DESC
@@ -129,6 +138,7 @@ def list_recent_runs_for_user(user_id: str, limit: int = 50) -> list[dict]:
                    r.started_at, r.finished_at, r.duration_ms,
                    r.trigger_type, r.error_message,
                    r.related_execution_id, r.related_report_id,
+                   r.reprofile_status, r.reprofile_duration_ms,
                    sw.input_text  AS schedule_input_text,
                    sw.frequency   AS schedule_frequency
             FROM scheduled_workflow_runs r

@@ -529,6 +529,7 @@ class DeleteMyDataRequest(BaseModel):
 class CreateScheduledWorkflowRequest(BaseModel):
     input_text: str
     dataset_id: int | None = None
+    refresh_before_run: bool = False
 
 
 class CreateToolRequest(BaseModel):
@@ -1954,6 +1955,7 @@ def create_scheduled_workflow_route(
             day_of_week=day_of_week,
             cron=parsed_cron,
             human_label=parsed_label,
+            refresh_before_run=request.refresh_before_run,
         )
         return {"status": "success", "data": entry}
     except Exception as e:

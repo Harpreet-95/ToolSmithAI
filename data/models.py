@@ -95,9 +95,10 @@ def init_db() -> None:
             last_status    TEXT,
             last_error     TEXT,
             run_count      INTEGER NOT NULL DEFAULT 0,
-            engine_tool_id TEXT,
-            cron           TEXT,
-            human_label    TEXT
+            engine_tool_id     TEXT,
+            cron               TEXT,
+            human_label        TEXT,
+            refresh_before_run INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS usage_events (
@@ -160,8 +161,10 @@ def init_db() -> None:
             duration_ms          INTEGER,
             trigger_type         TEXT    NOT NULL DEFAULT 'scheduled',
             error_message        TEXT,
-            related_execution_id INTEGER REFERENCES execution_history(id) ON DELETE SET NULL,
-            related_report_id    INTEGER REFERENCES reports(id) ON DELETE SET NULL
+            related_execution_id  INTEGER REFERENCES execution_history(id) ON DELETE SET NULL,
+            related_report_id     INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+            reprofile_status      TEXT,
+            reprofile_duration_ms INTEGER
         );
 
         CREATE INDEX IF NOT EXISTS idx_sched_runs_schedule_id ON scheduled_workflow_runs (schedule_id);
@@ -256,12 +259,27 @@ def init_db() -> None:
         ("last_status",    "ALTER TABLE scheduled_workflows ADD COLUMN last_status TEXT"),
         ("last_error",     "ALTER TABLE scheduled_workflows ADD COLUMN last_error TEXT"),
         ("run_count",      "ALTER TABLE scheduled_workflows ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0"),
-        ("engine_tool_id", "ALTER TABLE scheduled_workflows ADD COLUMN engine_tool_id TEXT"),
-        ("cron",           "ALTER TABLE scheduled_workflows ADD COLUMN cron TEXT"),
-        ("human_label",    "ALTER TABLE scheduled_workflows ADD COLUMN human_label TEXT"),
+        ("engine_tool_id",    "ALTER TABLE scheduled_workflows ADD COLUMN engine_tool_id TEXT"),
+        ("cron",              "ALTER TABLE scheduled_workflows ADD COLUMN cron TEXT"),
+        ("human_label",       "ALTER TABLE scheduled_workflows ADD COLUMN human_label TEXT"),
+        ("refresh_before_run", "ALTER TABLE scheduled_workflows ADD COLUMN refresh_before_run INTEGER NOT NULL DEFAULT 0"),
     ]
     for col, stmt in sw_migrations:
         if col not in sw_existing:
+            cursor.execute(stmt)
+    conn.commit()
+
+    # Idempotent migrations for scheduled_workflow_runs: reprofile tracking columns.
+    swr_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(scheduled_workflow_runs)").fetchall()
+    }
+    swr_migrations = [
+        ("reprofile_status",      "ALTER TABLE scheduled_workflow_runs ADD COLUMN reprofile_status TEXT"),
+        ("reprofile_duration_ms", "ALTER TABLE scheduled_workflow_runs ADD COLUMN reprofile_duration_ms INTEGER"),
+    ]
+    for col, stmt in swr_migrations:
+        if col not in swr_existing:
             cursor.execute(stmt)
     conn.commit()
 

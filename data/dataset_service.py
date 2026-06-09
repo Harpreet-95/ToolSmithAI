@@ -268,7 +268,9 @@ def reprofile_dataset(dataset_id: int, user_id: str) -> dict | None:
     """Recompute all profiles for an existing dataset from its stored source file.
 
     Returns the updated dataset dict, or None if the dataset is not found,
-    not owned by user_id, or the stored file is missing/unreadable.
+    not owned by user_id, has no stored file_path, or the file no longer
+    exists on disk.  Raises if the file exists but cannot be read or parsed —
+    callers that want degrade-and-continue must catch exceptions themselves.
     """
     row = get_dataset_by_id(dataset_id)
     if row is None or str(row.get("user_id", "")) != str(user_id):
@@ -289,7 +291,7 @@ def reprofile_dataset(dataset_id: int, user_id: str) -> dict | None:
         else:
             df = pd.read_excel(io.BytesIO(contents), engine="xlrd")
     except Exception:
-        return None
+        raise
 
     def _safe_float(val):
         try:

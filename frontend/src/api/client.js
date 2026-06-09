@@ -86,9 +86,10 @@ export async function loginUser(email, password) {
   return parseResponse(res);
 }
 
-export async function createScheduledWorkflow(inputText, token, datasetId = null) {
+export async function createScheduledWorkflow(inputText, token, datasetId = null, refreshBeforeRun = false) {
   const body = { input_text: inputText };
   if (datasetId != null) body.dataset_id = datasetId;
+  if (refreshBeforeRun) body.refresh_before_run = true;
   const res = await fetch('/v1/scheduled-workflows', {
     method: 'POST',
     headers: AUTH_HEADERS(token),
@@ -176,6 +177,14 @@ export async function renameDataset(id, filename, token) {
     method: 'PATCH',
     headers: AUTH_HEADERS(token),
     body: JSON.stringify({ filename }),
+  });
+  return parseResponse(res);
+}
+
+export async function reprofileDataset(id, token) {
+  const res = await fetch(`/v1/datasets/${id}/reprofile`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
   });
   return parseResponse(res);
 }

@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
+import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
 
@@ -2218,11 +2218,12 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [datasetExplicit,     setDatasetExplicit]     = useState(false)
   const [scheduledList,       setScheduledList]       = useState([])
   const [scheduledLoading,    setScheduledLoading]    = useState(false)
-  const [scheduleInput,       setScheduleInput]       = useState('')
-  const [scheduleFreq,        setScheduleFreq]        = useState('daily')
-  const [scheduleCreating,    setScheduleCreating]    = useState(false)
-  const [scheduleError,       setScheduleError]       = useState(null)
-  const [scheduleSuccess,     setScheduleSuccess]     = useState(null)
+  const [scheduleInput,          setScheduleInput]          = useState('')
+  const [scheduleFreq,           setScheduleFreq]           = useState('daily')
+  const [scheduleCreating,       setScheduleCreating]       = useState(false)
+  const [scheduleError,          setScheduleError]          = useState(null)
+  const [scheduleSuccess,        setScheduleSuccess]        = useState(null)
+  const [scheduleRefreshBeforeRun, setScheduleRefreshBeforeRun] = useState(false)
   const [schedulePauseLoading,  setSchedulePauseLoading]  = useState(new Set())
   const [schedRuns,             setSchedRuns]             = useState([])
   const [schedRunsLoading,      setSchedRunsLoading]      = useState(false)
@@ -2275,8 +2276,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [dsSearch,     setDsSearch]     = useState('')
   const [dsTypeFilter, setDsTypeFilter] = useState('all')
   const [dsSortBy,     setDsSortBy]     = useState('newest')
-  const [dsOpenMenu,   setDsOpenMenu]   = useState(null)
-  const [dsPickerOpen, setDsPickerOpen] = useState(false)
+  const [dsOpenMenu,    setDsOpenMenu]    = useState(null)
+  const [dsReprofiling, setDsReprofiling] = useState(null)
+  const [dsPickerOpen,  setDsPickerOpen]  = useState(false)
   const [dsDragOver,   setDsDragOver]   = useState(false)
   const [reportList,            setReportList]            = useState([])
   const [reportListLoading,     setReportListLoading]     = useState(false)
@@ -2493,8 +2495,9 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     setScheduleSuccess(null)
     setScheduleCreating(true)
     try {
-      await createScheduledWorkflow(scheduleInput, token, selectedDatasetId)
+      await createScheduledWorkflow(scheduleInput, token, selectedDatasetId, scheduleRefreshBeforeRun)
       setScheduleInput('')
+      setScheduleRefreshBeforeRun(false)
       setScheduleSuccess('Schedule saved.')
       refreshScheduled()
     } catch (err) {
@@ -2867,6 +2870,28 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       setDsToast({ msg: 'Failed to rename dataset.', ok: false })
     } finally {
       setDsRenameSaving(false)
+    }
+  }
+
+  async function handleReprofileDataset(id) {
+    setDsReprofiling(id)
+    try {
+      const result = await reprofileDataset(id, token)
+      const updated = result?.data
+      setDatasetList(prev => prev.map(d =>
+        d.id === id ? { ...d, row_count: updated.row_count, column_count: updated.column_count } : d
+      ))
+      if (selectedDatasetId === id) {
+        getDatasetById(id, token)
+          .then(data => setDatasetSummary(data.data))
+          .catch(() => {})
+      }
+      setDsToast({ msg: 'Dataset intelligence refreshed.', ok: true })
+    } catch (err) {
+      if (is401(err)) { onSessionExpired(); return }
+      setDsToast({ msg: 'Failed to refresh dataset intelligence.', ok: false })
+    } finally {
+      setDsReprofiling(null)
     }
   }
 
@@ -3903,9 +3928,12 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
                                       </button>
                                       <div style={{ position: 'relative' }}>
-                                        <button onClick={e => { e.stopPropagation(); setDsOpenMenu(menuOpen ? null : ds.id) }}
-                                          style={{ background: 'transparent', border: 'none', padding: '5px 7px', borderRadius: '6px', cursor: 'pointer', color: C.textSec, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                          <svg width="3" height="15" viewBox="0 0 3 15"><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/><circle cx="1.5" cy="7.5" r="1.5" fill="currentColor"/><circle cx="1.5" cy="13.5" r="1.5" fill="currentColor"/></svg>
+                                        <button onClick={e => { e.stopPropagation(); if (dsReprofiling !== ds.id) setDsOpenMenu(menuOpen ? null : ds.id) }}
+                                          style={{ background: 'transparent', border: 'none', padding: '5px 7px', borderRadius: '6px', cursor: dsReprofiling === ds.id ? 'wait' : 'pointer', color: C.textSec, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: dsReprofiling === ds.id ? 0.35 : 1 }}>
+                                          {dsReprofiling === ds.id
+                                            ? <span style={{ fontSize: '0.65rem', letterSpacing: '0.1em', fontFamily: 'monospace', lineHeight: 1 }}>…</span>
+                                            : <svg width="3" height="15" viewBox="0 0 3 15"><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/><circle cx="1.5" cy="7.5" r="1.5" fill="currentColor"/><circle cx="1.5" cy="13.5" r="1.5" fill="currentColor"/></svg>
+                                          }
                                         </button>
                                         {menuOpen && (
                                           <div style={{ position: 'absolute', right: 0, top: '110%', background: '#13151f', border: `1px solid ${C.borderAlt}`, borderRadius: '10px', boxShadow: '0 8px 32px #000b', zIndex: 50, minWidth: '160px', overflow: 'hidden' }}>
@@ -3921,6 +3949,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                                 Set Active
                                               </button>
                                             )}
+                                            <button onClick={() => { handleReprofileDataset(ds.id); setDsOpenMenu(null) }}
+                                              style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: `1px solid ${C.border}`, padding: '9px 14px', fontSize: '0.75rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
+                                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.07"/></svg>
+                                              Refresh Dataset Intelligence
+                                            </button>
                                             <button onClick={() => { handleDeleteDataset(ds.id, ds.filename); setDsOpenMenu(null) }}
                                               style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', textAlign: 'left', background: 'transparent', border: 'none', borderTop: `1px solid ${C.border}`, padding: '9px 14px', fontSize: '0.81rem', color: C.danger, cursor: 'pointer', fontFamily: FONT }}>
                                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
@@ -4220,10 +4253,20 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                         onChange={e => { setScheduleInput(e.target.value); setScheduleError(null); setScheduleSuccess(null) }}
                         style={{ ...S.textarea, fontFamily: FONT, fontSize: '0.76rem', marginBottom: '8px' }}
                       />
-                      <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '18px', lineHeight: 1.6 }}>
+                      <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '12px', lineHeight: 1.6 }}>
                         Try: "generate a daily dataset report" · "email me a weekly dataset report on Monday"
                         {selectedDatasetId && activeDs && <span style={{ color: C.accent }}> · {activeDs.filename} active</span>}
                       </div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.74rem', color: C.textSec, marginBottom: '16px', userSelect: 'none' }}>
+                        <input
+                          type="checkbox"
+                          checked={scheduleRefreshBeforeRun}
+                          onChange={e => setScheduleRefreshBeforeRun(e.target.checked)}
+                          disabled={!selectedDatasetId}
+                          style={{ accentColor: C.accent, width: '14px', height: '14px', cursor: selectedDatasetId ? 'pointer' : 'not-allowed', flexShrink: 0 }}
+                        />
+                        <span style={{ opacity: selectedDatasetId ? 1 : 0.45 }}>Refresh Dataset Intelligence before each run</span>
+                      </label>
                       <button
                         onClick={handleCreateSchedule}
                         disabled={scheduleCreating || !scheduleInput.trim()}
@@ -4413,6 +4456,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                         <span style={{ color: C.textMuted, minWidth: '72px' }}>{_relTime(run.started_at)}</span>
                                         <span style={{ color: C.textMuted, minWidth: '46px' }}>{_fmtDuration(run.duration_ms)}</span>
                                         {run.trigger_type === 'manual' && <span style={{ color: C.accent, fontSize: '0.65rem', background: C.accentSoft, borderRadius: '4px', padding: '0 5px' }}>manual</span>}
+                                        {run.reprofile_status === 'succeeded' && <span style={{ color: C.success, fontSize: '0.65rem', background: C.successSoft, borderRadius: '4px', padding: '0 5px' }}>↺ refreshed</span>}
+                                        {run.reprofile_status === 'failed_degraded' && <span style={{ color: C.warn, fontSize: '0.65rem', background: C.warnSoft, borderRadius: '4px', padding: '0 5px' }}>↺ degraded</span>}
                                         {run.related_report_id && (
                                           <button onClick={() => { setSelectedReportId(run.related_report_id); setActiveNav('reports') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.accent, fontSize: '0.7rem', padding: 0, textDecoration: 'underline', fontFamily: FONT }}>View Report</button>
                                         )}
