@@ -287,6 +287,7 @@ def init_db() -> None:
         ("categorical_meta_json",       "ALTER TABLE datasets ADD COLUMN categorical_meta_json TEXT"),
         ("semantic_profile_json",       "ALTER TABLE datasets ADD COLUMN semantic_profile_json TEXT"),
         ("segmentation_profile_json",   "ALTER TABLE datasets ADD COLUMN segmentation_profile_json TEXT"),
+        ("file_path",                   "ALTER TABLE datasets ADD COLUMN file_path TEXT"),
     ]
     for col, stmt in ds_migrations:
         if col not in ds_existing:
@@ -342,6 +343,31 @@ def init_db() -> None:
     for col, stmt in aw_migrations:
         if col not in aw_existing:
             cursor.execute(stmt)
+    conn.commit()
+
+    # dataset_source_replacements — audit trail for every replace-source operation.
+    # Each row records one attempt: pending → success | failed.
+    # ON DELETE CASCADE keeps history only as long as the dataset exists.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS dataset_source_replacements (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id        INTEGER NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+            user_id           TEXT    NOT NULL,
+            old_file_path     TEXT,
+            new_file_path     TEXT    NOT NULL,
+            original_filename TEXT    NOT NULL,
+            status            TEXT    NOT NULL DEFAULT 'pending',
+            error             TEXT,
+            replaced_at       TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ds_replacements_dataset_id
+            ON dataset_source_replacements (dataset_id);
+        CREATE INDEX IF NOT EXISTS idx_ds_replacements_user_id
+            ON dataset_source_replacements (user_id);
+        CREATE INDEX IF NOT EXISTS idx_ds_replacements_replaced_at
+            ON dataset_source_replacements (replaced_at);
+    """)
     conn.commit()
 
     # Seed the three static built-in tools so the DB reflects the registry.

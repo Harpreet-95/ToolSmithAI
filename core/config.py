@@ -40,6 +40,12 @@ if not USER_ID_SALT:
         "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
     )
 
+# ---------------------------------------------------------------------------
+# Dataset upload storage
+# ---------------------------------------------------------------------------
+DATASET_UPLOADS_DIR: str = os.getenv("DATASET_UPLOADS_DIR", os.path.join("data", "uploads"))
+ALLOWED_DATASET_EXTENSIONS: tuple[str, ...] = (".csv", ".xlsx", ".xls")
+
 RETENTION_DAYS: int = int(os.getenv("RETENTION_DAYS", "90"))
 MAX_STEP_RETRIES: int = int(os.getenv("MAX_STEP_RETRIES", "2"))
 RETRY_BACKOFF_SECONDS: float = float(os.getenv("RETRY_BACKOFF_SECONDS", "1.0"))

@@ -2,7 +2,9 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import math
+import os
 import secrets
+import uuid
 
 import pandas as pd
 
@@ -21,7 +23,7 @@ from core.output.output_formatter import format_output
 from core.workflows.workflow_runner import run_workflow_by_name
 from core.intelligence.semantic_classifier import classify_columns
 from core.intelligence.segmentation_engine import compute_segmentation_profile_from_df
-from data.dataset_service import create_dataset_summary, list_datasets_for_user, delete_dataset, rename_dataset, get_dataset_by_id
+from data.dataset_service import create_dataset_summary, list_datasets_for_user, delete_dataset, rename_dataset, get_dataset_by_id, reprofile_dataset, replace_dataset_source_file
 from data.scheduled_workflow_service import (
     create_scheduled_workflow,
     list_scheduled_workflows,
@@ -43,7 +45,13 @@ from data.scheduler_run_service import (
 )
 from core.interpreter.task_interpreter import interpret_task
 from data.workflow_service import create_workflow, list_workflows, delete_workflow, ALLOWED_MULTI_STEP_TYPES
-from core.config import ENABLE_REAL_EMAIL, RETENTION_DAYS, ENABLE_AUTO_APPROVE_ENGINE_TOOLS
+from core.config import (
+    ALLOWED_DATASET_EXTENSIONS,
+    DATASET_UPLOADS_DIR,
+    ENABLE_REAL_EMAIL,
+    RETENTION_DAYS,
+    ENABLE_AUTO_APPROVE_ENGINE_TOOLS,
+)
 from data.audit import delete_audit_log_entries, purge_old_audit_db, purge_old_audit_log_file
 from data.db import get_connection
 from data.execution_history import enrich_execution_record, get_execution_by_id, get_repeated_intent_suggestions, get_workflow_success_insights, purge_old_execution_history
@@ -1543,7 +1551,7 @@ async def upload_dataset(
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> dict:
     fname_lower = (file.filename or "").lower()
-    if not any(fname_lower.endswith(ext) for ext in (".csv", ".xlsx", ".xls")):
+    if not any(fname_lower.endswith(ext) for ext in ALLOWED_DATASET_EXTENSIONS):
         return JSONResponse(
             status_code=400,
             content=build_error_response("Only CSV and Excel files (.csv, .xlsx, .xls) are supported"),
@@ -1563,6 +1571,15 @@ async def upload_dataset(
             status_code=400,
             content=build_error_response(f"Could not parse {fmt} file: {reason}"),
         )
+    os.makedirs(DATASET_UPLOADS_DIR, exist_ok=True)
+    _ext = fname_lower.rsplit(".", 1)[-1]
+    _raw_file_path: str | None = os.path.join(DATASET_UPLOADS_DIR, f"{uuid.uuid4().hex}.{_ext}")
+    try:
+        with open(_raw_file_path, "wb") as _fh:
+            _fh.write(contents)
+    except Exception:
+        _raw_file_path = None
+
     def _safe_float(val):
         try:
             v = float(val)
@@ -1725,6 +1742,7 @@ async def upload_dataset(
         categorical_meta=categorical_meta or None,
         semantic_profile=semantic_profile or None,
         segmentation_profile=segmentation_profile if segmentation_profile.get("computed_pairs", 0) > 0 else None,
+        file_path=_raw_file_path,
     )
 
     sample_rows = df.head(5).fillna("").to_dict(orient="records")
@@ -1820,6 +1838,64 @@ def delete_dataset_route(dataset_id: int, user: AuthenticatedUser = Depends(requ
         if not deleted:
             return JSONResponse(status_code=404, content=build_error_response("Dataset not found"))
         return {"status": "success", "data": {"deleted_id": dataset_id}}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/datasets/{dataset_id}/replace-source")
+async def replace_dataset_source_route(
+    dataset_id: int,
+    file: UploadFile = File(...),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    fname_lower = (file.filename or "").lower()
+    if not any(fname_lower.endswith(ext) for ext in ALLOWED_DATASET_EXTENSIONS):
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response("Only CSV and Excel files (.csv, .xlsx, .xls) are supported"),
+        )
+    try:
+        contents = await file.read()
+        updated = replace_dataset_source_file(dataset_id, str(user.user_id), contents, file.filename)
+        if updated is None:
+            return JSONResponse(status_code=404, content=build_error_response("Dataset not found"))
+        return {
+            "status": "success",
+            "data": {
+                "dataset_id":   updated["id"],
+                "filename":     updated["filename"],
+                "row_count":    updated["row_count"],
+                "column_count": updated["column_count"],
+                "uploaded_at":  updated.get("uploaded_at"),
+            },
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.post("/datasets/{dataset_id}/reprofile")
+def reprofile_dataset_route(dataset_id: int, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    try:
+        updated = reprofile_dataset(dataset_id, str(user.user_id))
+        if updated is None:
+            return JSONResponse(
+                status_code=404,
+                content=build_error_response(
+                    "Dataset not found or cannot be reprofiled. "
+                    "The dataset may not have a stored source file (uploaded before Phase 1)."
+                ),
+            )
+        return {
+            "status": "success",
+            "data": {
+                "dataset_id":   updated["id"],
+                "filename":     updated["filename"],
+                "row_count":    updated["row_count"],
+                "column_count": updated["column_count"],
+                "uploaded_at":  updated.get("uploaded_at"),
+                "file_path":    updated.get("file_path"),
+            },
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
