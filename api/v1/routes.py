@@ -341,7 +341,7 @@ def register(request: RegisterRequest) -> dict:
     finally:
         conn.close()
 
-    send_verification_email(request.email, raw_token)
+    send_verification_email(request.email, raw_token, user_id=str(user_id))
 
     token = create_access_token({"sub": str(user_id), "email": request.email, "role": "user"})
     return {

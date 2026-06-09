@@ -93,6 +93,12 @@ ALLOWED_ORIGINS: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Frontend base URL — used to construct clickable links in outbound emails.
+# Override in .env for staging / production deployments.
+# ---------------------------------------------------------------------------
+FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
+
+# ---------------------------------------------------------------------------
 # SMTP email delivery (all optional — guarded by ENABLE_REAL_EMAIL)
 # ---------------------------------------------------------------------------
 SMTP_HOST: str = os.getenv("SMTP_HOST", "")

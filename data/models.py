@@ -218,6 +218,25 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_admin_invites_email      ON admin_invites (email);
         CREATE INDEX IF NOT EXISTS idx_admin_invites_token_hash ON admin_invites (invite_token_hash);
+
+        CREATE TABLE IF NOT EXISTS email_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         TEXT,
+            report_id       INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+            recipient_email TEXT    NOT NULL,
+            subject         TEXT    NOT NULL,
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            attempt_count   INTEGER NOT NULL DEFAULT 0,
+            error_reason    TEXT,
+            sent_at         TEXT,
+            created_at      TEXT    NOT NULL,
+            email_type      TEXT    NOT NULL DEFAULT 'report'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_email_logs_user_id    ON email_logs (user_id);
+        CREATE INDEX IF NOT EXISTS idx_email_logs_report_id  ON email_logs (report_id);
+        CREATE INDEX IF NOT EXISTS idx_email_logs_status     ON email_logs (status);
+        CREATE INDEX IF NOT EXISTS idx_email_logs_created_at ON email_logs (created_at);
     """)
     conn.commit()
 

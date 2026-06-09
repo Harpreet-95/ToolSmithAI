@@ -206,7 +206,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             "reason": "No recipient email address. Please provide a recipient or ensure your account has an email.",
         }
     else:
-        email_delivery = send_real_email(to=to_address, subject=subject, body=body)
+        email_delivery = send_real_email(to=to_address, subject=subject, body=body, user_id=user_id, email_type="report")
 
     # Only save when the report was freshly generated — if it came from ctx it was
     # already saved by the preceding generate_dataset_report step.

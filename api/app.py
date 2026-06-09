@@ -5,7 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import ALLOWED_ORIGINS, LOG_LEVEL, SCHEDULER_INTERVAL_SECONDS
+from core.config import ALLOWED_ORIGINS, ENABLE_REAL_EMAIL, LOG_LEVEL, SCHEDULER_INTERVAL_SECONDS
 from api.v1.routes import router as v1_router
 from data.models import init_db
 from data.scheduled_workflow_service import run_due_workflows
@@ -22,6 +22,12 @@ _scheduler = BackgroundScheduler()
 @asynccontextmanager
 async def lifespan(app):
     init_db()
+    if not ENABLE_REAL_EMAIL:
+        logger.warning("=" * 60)
+        logger.warning("  EMAIL DELIVERY IS DISABLED  (ENABLE_REAL_EMAIL=false)")
+        logger.warning("  Emails are logged to email_logs but NOT delivered.")
+        logger.warning("  Set ENABLE_REAL_EMAIL=true in .env to enable delivery.")
+        logger.warning("=" * 60)
     _scheduler.add_job(
         run_due_workflows,
         "interval",
