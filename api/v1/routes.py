@@ -8,7 +8,7 @@ import uuid
 
 import pandas as pd
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
@@ -76,6 +76,7 @@ from data.workspace_service import (
     link_workspace_workflow,
 )
 from data.invite_service import create_invite, consume_invite
+from data.export_log_service import create_export_log, list_export_logs_for_user, list_all_export_logs
 
 
 def _compute_histogram(series, n_bins: int = 10) -> list:
@@ -3028,9 +3029,19 @@ def _build_pdf_bytes(report: dict) -> bytes:
 _EXPORT_FORMATS = {"json", "pdf", "csv"}
 
 
+def _get_client_ip(request: Request) -> str | None:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    if request.client:
+        return request.client.host
+    return None
+
+
 @router.get("/reports/{report_id}/export")
 def export_report_route(
     report_id: int,
+    request: Request,
     format: str = Query(default="json"),
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> Response:
@@ -3042,6 +3053,8 @@ def export_report_route(
                 f"Supported formats: {', '.join(sorted(_EXPORT_FORMATS))}"
             ),
         )
+    _ip = _get_client_ip(request)
+    _ua = (request.headers.get("User-Agent") or "")[:512]
     try:
         report = get_report_by_id(report_id, str(user.user_id))
         if report is None:
@@ -3235,11 +3248,57 @@ def export_report_route(
             content    = _json.dumps(payload, indent=2).encode()
             media_type = "application/json"
 
+        try:
+            create_export_log(
+                user_id=str(user.user_id),
+                report_id=report_id,
+                export_format=format,
+                filename=filename,
+                file_size_bytes=len(content),
+                status="success",
+                ip_address=_ip,
+                user_agent=_ua,
+            )
+        except Exception:
+            pass
+
         return Response(
             content=content,
             media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    except Exception as e:
+        try:
+            create_export_log(
+                user_id=str(user.user_id),
+                report_id=report_id,
+                export_format=format,
+                status="failed",
+                error_reason=str(e)[:500],
+                ip_address=_ip,
+                user_agent=_ua,
+            )
+        except Exception:
+            pass
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/admin/export-logs")
+def list_admin_export_logs_route(
+    user: AuthenticatedUser = Depends(require_role("admin")),
+    limit: int = Query(default=100, le=500),
+    offset: int = Query(default=0, ge=0),
+    export_format: str | None = None,
+    status: str | None = None,
+) -> dict:
+    try:
+        logs = list_all_export_logs(
+            limit=limit,
+            offset=offset,
+            export_format=export_format or None,
+            status=status or None,
+        )
+        return {"status": "success", "data": logs, "count": len(logs)}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 

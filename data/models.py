@@ -237,6 +237,26 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_email_logs_report_id  ON email_logs (report_id);
         CREATE INDEX IF NOT EXISTS idx_email_logs_status     ON email_logs (status);
         CREATE INDEX IF NOT EXISTS idx_email_logs_created_at ON email_logs (created_at);
+
+        CREATE TABLE IF NOT EXISTS export_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         TEXT    NOT NULL,
+            report_id       INTEGER REFERENCES reports(id) ON DELETE SET NULL,
+            export_format   TEXT    NOT NULL,
+            filename        TEXT,
+            file_size_bytes INTEGER,
+            status          TEXT    NOT NULL DEFAULT 'success',
+            error_reason    TEXT,
+            ip_address      TEXT,
+            user_agent      TEXT,
+            exported_at     TEXT,
+            created_at      TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_export_logs_user_id       ON export_logs (user_id);
+        CREATE INDEX IF NOT EXISTS idx_export_logs_report_id     ON export_logs (report_id);
+        CREATE INDEX IF NOT EXISTS idx_export_logs_export_format ON export_logs (export_format);
+        CREATE INDEX IF NOT EXISTS idx_export_logs_exported_at   ON export_logs (exported_at);
     """)
     conn.commit()
 
