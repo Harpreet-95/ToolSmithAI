@@ -49,6 +49,7 @@ from core.config import (
     ALLOWED_DATASET_EXTENSIONS,
     DATASET_UPLOADS_DIR,
     ENABLE_REAL_EMAIL,
+    FRONTEND_BASE_URL,
     RETENTION_DAYS,
     ENABLE_AUTO_APPROVE_ENGINE_TOOLS,
 )
@@ -3243,49 +3244,6 @@ def export_report_route(
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
-def _build_email_body(report: dict) -> str:
-    """Build a plain-text email body from a saved report dict."""
-    title      = report.get("title", "Untitled Report")
-    task_type  = report.get("task_type", "")
-    dataset    = report.get("dataset_filename") or "Not specified"
-    created    = (report.get("created_at") or "")[:19].replace("T", " ")
-    sections   = (report.get("content") or {}).get("sections", [])
-    type_label = {
-        "generate_dataset_report": "Dataset Report",
-        "email_dataset_report":    "Emailed Dataset Report",
-    }.get(task_type, task_type.replace("_", " ").title())
-
-    lines = [
-        "ToolSmithAI — Report",
-        "=" * 44,
-        "",
-        f"Title:    {title}",
-        f"Type:     {type_label}",
-        f"Dataset:  {dataset}",
-        f"Created:  {created} UTC",
-        "",
-        "-" * 44,
-        "",
-    ]
-    # Include the first three sections to keep the email concise
-    for section in sections[:3]:
-        lines.append(section.get("heading", "").upper())
-        for item in section.get("items", []):
-            lines.append(f"  -> {item}")
-        lines.append("")
-    if len(sections) > 3:
-        extra = len(sections) - 3
-        lines.append(f"... and {extra} more section{'s' if extra > 1 else ''}.")
-        lines.append("")
-    lines += [
-        "-" * 44,
-        "View full report in ToolSmithAI",
-        "",
-        "Sent by ToolSmithAI",
-    ]
-    return "\n".join(lines)
-
-
 class EmailReportRequest(BaseModel):
     recipient_email: str
 
@@ -3304,12 +3262,20 @@ def email_report_route(
         )
     try:
         from core.email import send_real_email
+        from core.tools.report_generator import render_report_as_plain_text
         report = get_report_by_id(report_id, str(user.user_id))
         if report is None:
             return JSONResponse(status_code=404, content=build_error_response("Report not found"))
-        subject  = f"ToolSmithAI Report — {report.get('title', 'Report')}"
-        body     = _build_email_body(report)
-        result   = send_real_email(to=to, subject=subject, body=body)
+        subject  = f"ToolSmithAI Intelligence Report — {report.get('title', 'Report')}"
+        body     = render_report_as_plain_text(
+            report.get("content") or {},
+            title=report.get("title", ""),
+            dataset_filename=report.get("dataset_filename") or "",
+            report_url=f"{FRONTEND_BASE_URL}/reports/{report_id}",
+        )
+        result   = send_real_email(to=to, subject=subject, body=body,
+                                   user_id=str(user.user_id), report_id=report_id,
+                                   email_type="report")
         sent     = result["sent"]
         reason   = result.get("reason", "")
         # ENABLE_REAL_EMAIL=false returns sent=False with a "disabled" reason.

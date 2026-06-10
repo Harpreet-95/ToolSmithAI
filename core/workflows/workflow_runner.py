@@ -133,7 +133,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
 
 def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None, selected_sections: list[str] | None = None) -> dict:
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id, get_user_email
-    from core.tools.report_generator import generate_dataset_report, format_report_as_email_body
+    from core.tools.report_generator import generate_dataset_report, render_report_as_plain_text
     from core.email import send_real_email
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -196,8 +196,14 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             selected_sections=selected_sections,
             intent_text=plan.get("intent") or "",
         )
-    body = format_report_as_email_body(report, dataset["filename"])
-    subject = f"Dataset Report — {dataset['filename']}"
+    body = render_report_as_plain_text(
+        report,
+        title=dataset["filename"],
+        dataset_filename=dataset["filename"],
+    )
+    _stem    = dataset["filename"].rsplit(".", 1)[0]
+    _display = _stem.replace("_", " ").replace("-", " ").title()
+    subject  = f"ToolSmithAI Intelligence Report — {_display}"
 
     to_address = recipient or get_user_email(user_id)
     if to_address is None:
