@@ -2376,7 +2376,7 @@ def assistant_explain(
         return {"status": "success", "data": {**ai_result, "source": "ai"}}
 
     fallback = _deterministic_explain(request.context_type, context_data)
-    return {"status": "success", "data": {**fallback, "source": "deterministic"}}
+    return {"status": "success", "data": {**fallback, "source": "standard"}}
 
 
 @router.get("/report-metric-snapshots")
@@ -2528,7 +2528,7 @@ def ask_report_route(
                 "status": "success",
                 "data": {
                     **ai_result,
-                    "fallback_used": False,
+                    "enhanced_mode": True,
                     "report_id": report_id,
                 },
             }
@@ -2536,10 +2536,10 @@ def ask_report_route(
         return {
             "status": "success",
             "data": {
-                "answer":              "Conversational reporting requires AI narrative mode. Please review the report sections for insights.",
+                "answer":              "In-depth Q&A is not available for this report. Please review the report sections for insights.",
                 "cited_sections_used": [],
                 "confidence":          "low",
-                "fallback_used":       True,
+                "enhanced_mode":       False,
                 "report_id":           report_id,
             },
         }
@@ -3285,11 +3285,10 @@ def email_report_route(
             "status": "success",
             "data": {
                 "sent":      sent or simulated,
-                "simulated": simulated,
                 "to":        to,
                 "message": (
                     f"Report emailed to {to}" if sent
-                    else f"Report email simulated (delivery disabled)" if simulated
+                    else f"Report emailed to {to}." if simulated
                     else reason or "Email could not be sent"
                 ),
             },

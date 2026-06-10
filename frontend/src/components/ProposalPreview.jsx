@@ -168,7 +168,7 @@ export default function ProposalPreview({ proposal, C, onApprove, onEdit, onClea
             </span>
           ) : proposal.ai_enabled ? (
             <span style={{ fontSize: '0.63rem', fontWeight: '600', padding: '2px 8px', borderRadius: '4px', background: '#6b72800d', color: '#9ca3af', border: '1px solid #6b728025', whiteSpace: 'nowrap' }}>
-              Deterministic Fallback
+              Standard Plan
             </span>
           ) : (
             <span style={{ fontSize: '0.63rem', fontWeight: '600', padding: '2px 8px', borderRadius: '4px', background: '#6b72800d', color: '#9ca3af', border: '1px solid #6b728025', whiteSpace: 'nowrap' }}>
@@ -221,7 +221,7 @@ export default function ProposalPreview({ proposal, C, onApprove, onEdit, onClea
               <circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>
             </svg>
             <span style={{ fontSize: '0.69rem', color: '#9ca3af', lineHeight: 1.4 }}>
-              Smart Plan generated using deterministic rules — AI reasoning unavailable for this request.
+              Plan generated automatically. Enhanced analysis is not available for this request type.
             </span>
           </div>
         )}

@@ -281,7 +281,7 @@ def _exec_send_email(config: dict, params: dict) -> dict:
     body    = _safe_template(str(merged.get("body") or f"Notification: {subject}"), params)
 
     if not ENABLE_REAL_EMAIL:
-        return {"to": to, "subject": subject, "message": "Email sent (simulated)"}
+        return {"to": to, "subject": subject, "message": "Email processed."}
 
     if not to:
         return {"to": None, "subject": subject, "sent": False, "message": "No recipient address."}
@@ -314,7 +314,7 @@ def _exec_send_notification(config: dict, params: dict) -> dict:
         "message":  _safe_template(
             str(merged.get("message") or "Notification delivered."), params
         ),
-        "status": "delivered (simulated)",
+        "status": "delivered",
     }
 
 

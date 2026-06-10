@@ -159,7 +159,7 @@ function ActionCenter({ result, C, onOpenReport, onExportReport }) {
               <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.warn, flexShrink: 0 }} />
               <span style={{ fontSize: '0.8rem', color: C.warn, fontWeight: '600' }}>Generated — not saved</span>
             </div>
-            <div style={{ fontSize: '0.7rem', color: C.textSec, marginLeft: '13px', lineHeight: 1.45 }}>{result.report_save_warning}</div>
+            <div style={{ fontSize: '0.7rem', color: C.textSec, marginLeft: '13px', lineHeight: 1.45 }}>Report was generated but could not be saved. Please try again.</div>
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>

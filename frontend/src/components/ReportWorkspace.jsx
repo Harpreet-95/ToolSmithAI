@@ -38,6 +38,7 @@ const SEC_LABEL = {
   ai_findings:          'AI Findings',
   ai_insights:          'AI Intelligence',
   ai_dashboard:         'Executive Intelligence',
+  executive_intelligence: 'Executive Intelligence',
   insight_priority:     'Prioritized Insights',
   drilldown_table:      'Data Table',
   forecast:             'Forecast',
@@ -78,7 +79,7 @@ function groupSections(sections) {
     if      (t === 'executive_summary')                                        g.execSummary.push(sec)
     else if (t === 'business_kpis')                                            g.kpi.push(sec)
     else if (t === 'kpi')                                                      g.metaKpi.push(sec)
-    else if (['insight_priority','ai_insights','ai_findings','ai_dashboard'].includes(t)) g.insight.push(sec)
+    else if (['insight_priority','ai_insights','ai_findings','ai_dashboard','executive_intelligence'].includes(t)) g.insight.push(sec)
     else if (['recommendation','ai_recommendations'].includes(t))              g.recommendation.push(sec)
     else if (t === 'chart')                                                    g.chart.push(sec)
     else                                                                       g.data.push(sec)
@@ -357,7 +358,7 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
       const res = await askReport(reportMeta.id, askQ.trim(), token)
       setAskResult(res?.data || null)
     } catch (err) {
-      setAskResult({ answer: `Error: ${err.message}`, cited_sections_used: [], confidence: 'low', fallback_used: true })
+      setAskResult({ answer: `Error: ${err.message}`, cited_sections_used: [], confidence: 'low', enhanced_mode: false })
     } finally {
       setAskLoading(false)
     }
@@ -697,9 +698,6 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
                     <span style={{ fontSize: '0.63rem', color: askResult.confidence === 'high' ? C.success : askResult.confidence === 'medium' ? C.warn : C.textMuted, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                       {askResult.confidence} confidence
                     </span>
-                  )}
-                  {askResult.fallback_used && (
-                    <span style={{ fontSize: '0.63rem', color: C.textMuted }}>· deterministic fallback</span>
                   )}
                 </div>
               </div>

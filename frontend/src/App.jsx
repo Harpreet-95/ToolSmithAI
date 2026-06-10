@@ -1951,6 +1951,7 @@ function ReportSection({ section, C }) {
               </div>
             )
           }
+          case 'executive_intelligence':
           case 'ai_dashboard': {
             const { most_important_insight, highest_risk, recommended_action, watchlist } = section
             const Cell = ({ label, color, children }) => (
@@ -4919,7 +4920,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                           {explainData[`workflow_health:${wf.workflow_id}`] && (
                             <div style={{ margin: '2px 0 10px', padding: '10px 12px', background: C.accentSoft, border: `1px solid ${C.accent}25`, borderRadius: '8px', borderBottom: notLast ? `1px solid ${C.border}` : 'none' }}>
                               <div style={{ fontSize: '0.65rem', color: C.accent, fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '5px' }}>
-                                {explainData[`workflow_health:${wf.workflow_id}`].source === 'ai' ? 'AI Explanation' : 'Explanation'}
+                                {explainData[`workflow_health:${wf.workflow_id}`].source === 'ai' ? 'AI Analysis' : 'Analysis'}
                               </div>
                               <p style={{ margin: '0 0 6px', fontSize: '0.75rem', color: C.textSec, lineHeight: 1.6 }}>
                                 {explainData[`workflow_health:${wf.workflow_id}`].explanation}

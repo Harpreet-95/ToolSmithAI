@@ -3393,15 +3393,15 @@ function EngineOrchestrationPlan({
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             {showRawJson ? <polyline points="18 15 12 9 6 15" /> : <polyline points="6 9 12 15 18 9" />}
           </svg>
-          <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted, letterSpacing: '0.04em' }}>Developer details</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: C.textMuted, opacity: 0.55 }}>internal name · raw schema · node IDs</span>
+          <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted, letterSpacing: '0.04em' }}>Technical Details</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: C.textMuted, opacity: 0.55 }}>Tool configuration · Schema · Identifiers</span>
         </button>
         {showRawJson && (
           <div style={{ borderTop: `1px solid ${C.border}`, padding: '14px 16px', background: C.bg, display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {/* Internal identifiers */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted }}>Internal name</span>
+                <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted }}>System Name</span>
                 <code style={{ fontFamily: MONO, fontSize: '0.68rem', color: C.textSec, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '5px', padding: '2px 7px' }}>{internalName || '—'}</code>
               </div>
               {savedToolId && (

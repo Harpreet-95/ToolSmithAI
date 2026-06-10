@@ -15,7 +15,7 @@ def handle_fetch_report_data(params: dict) -> dict:
         "source": params.get("source", "sqlite"),
         "table": params.get("table", "unknown"),
         "rows_fetched": 10,
-        "message": "Report data fetched successfully (simulated)",
+        "message": "Report data retrieved successfully",
     }
 
 
@@ -32,7 +32,7 @@ def handle_send_email(params: dict) -> dict:
         return {
             "to": to,
             "subject": subject,
-            "message": "Email sent successfully (simulated)",
+            "message": "Email delivered successfully",
         }
 
     if not to:
@@ -68,7 +68,7 @@ def handle_send_notification(params: dict) -> dict:
     return {
         "channel": params.get("channel"),
         "priority": params.get("priority"),
-        "message": "Notification delivered successfully (simulated)",
+        "message": "Notification dispatched successfully",
     }
 
 

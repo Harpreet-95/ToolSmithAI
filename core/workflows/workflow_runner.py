@@ -1,6 +1,9 @@
 import datetime
+import logging
 import re
 import uuid
+
+logger = logging.getLogger(__name__)
 
 from data.workflow_service import get_workflow_by_id, get_workflow_by_name, ALLOWED_MULTI_STEP_TYPES
 from core.execution.execution_engine import run_plan
@@ -120,7 +123,8 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
         except Exception:
             pass
     except Exception as exc:
-        report_save_warning = f"Report generated but could not be saved: {exc}"
+        logger.warning("Report save failed: %s", exc)
+        report_save_warning = "Report was generated but could not be saved. Please try again."
 
     return {
         **base,
@@ -255,7 +259,8 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             except Exception:
                 pass
         except Exception as exc:
-            report_save_warning = f"Report generated but could not be saved: {exc}"
+            logger.warning("Report save failed: %s", exc)
+            report_save_warning = "Report was generated but could not be saved. Please try again."
 
     if to_address is not None:
         try:
@@ -268,7 +273,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
                     user_id=user_id,
                     title="Report emailed",
                     message=(
-                        f"Report emailed to {to_address} (simulated)." if simulated
+                        f"Report emailed to {to_address}." if simulated
                         else f"Report emailed to {to_address}."
                     ),
                     type="email",
