@@ -8,6 +8,7 @@ from core.intelligence.segmentation_engine import (
     build_segmentation_section,
     build_drilldown_table_section,
 )
+from core.output.kpi_formatter import format_kpi_display_label, format_dataset_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -1077,7 +1078,7 @@ def _build_recommendation_section(
                 "title":       "Review and Clean Missing Data",
                 "reason":      (
                     f"{n} column{'s' if n > 1 else ''} contain missing values. "
-                    "Clean or impute before relying on analysis conclusions."
+                    "Fill or remove missing values before relying on analysis conclusions."
                 ),
                 "priority":    priority,
                 "action_type": "clean_data",
@@ -1540,11 +1541,11 @@ def _build_anomaly_section(
                 if abs(c) >= 0.90:
                     a, b = pair.get("column_a", ""), pair.get("column_b", "")
                     anomalies.append({
-                        "title":       f"Strong Collinearity: {a} & {b}",
-                        "description": f"Near-perfect correlation between '{a}' and '{b}' may indicate redundant or co-dependent features.",
+                        "title":       f"Highly Correlated Fields: {a} & {b}",
+                        "description": f"'{a}' and '{b}' move together very closely and may contain overlapping information.",
                         "severity":    "medium",
                         "category":    "quality",
-                        "evidence":    f"Pearson r={round(c, 3)} (threshold: |r| ≥ 0.90).",
+                        "evidence":    f"These fields are {round(abs(c) * 100):.0f}% correlated — consider consolidating or removing one.",
                     })
                     _corr_added += 1
                     if _corr_added >= 2:
@@ -3371,7 +3372,7 @@ def _email_header(title: str, dataset_filename: str) -> list[str]:
     if title:
         lines.append(f"Report:   {title}")
     if dataset_filename and dataset_filename != title:
-        lines.append(f"Dataset:  {dataset_filename}")
+        lines.append(f"Dataset:  {format_dataset_display_name(dataset_filename)}")
     lines.append(f"Date:     {now}")
     lines.append(_EMAIL_HDR)
     return lines
@@ -3420,7 +3421,7 @@ def _email_business_kpis(sections: list[dict]) -> list[str]:
         return []
     lines: list[str] = ["KEY METRICS", ""]
     for kpi in kpis[:4]:
-        label = kpi.get("label", "")
+        label = format_kpi_display_label(kpi.get("label", ""))
         value = kpi.get("value_formatted") or str(kpi.get("value", "—"))
         delta = kpi.get("delta")
         dir_  = kpi.get("delta_direction", "")
@@ -3798,6 +3799,6 @@ def format_report_as_email_body(report: dict, filename: str) -> str:
     """
     return render_report_as_plain_text(
         report,
-        title=filename,
+        title=format_dataset_display_name(filename),
         dataset_filename=filename,
     )

@@ -139,6 +139,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id, get_user_email
     from core.tools.report_generator import generate_dataset_report, render_report_as_plain_text
     from core.email import send_real_email
+    from core.output.kpi_formatter import format_dataset_display_name
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     base = {
@@ -200,14 +201,13 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             selected_sections=selected_sections,
             intent_text=plan.get("intent") or "",
         )
+    _display_name = format_dataset_display_name(dataset["filename"])
     body = render_report_as_plain_text(
         report,
-        title=dataset["filename"],
+        title=_display_name,
         dataset_filename=dataset["filename"],
     )
-    _stem    = dataset["filename"].rsplit(".", 1)[0]
-    _display = _stem.replace("_", " ").replace("-", " ").title()
-    subject  = f"ToolSmithAI Intelligence Report — {_display}"
+    subject  = f"ToolSmithAI Intelligence Report — {format_dataset_display_name(dataset['filename'])}"
 
     to_address = recipient or get_user_email(user_id)
     if to_address is None:
