@@ -76,7 +76,13 @@ from data.workspace_service import (
     link_workspace_workflow,
 )
 from data.invite_service import create_invite, consume_invite
-from data.export_log_service import create_export_log, list_export_logs_for_user, list_all_export_logs
+from data.export_log_service import (
+    create_export_log,
+    list_export_logs_for_user,
+    list_all_export_logs,
+    count_all_export_logs,
+    get_export_log_summary,
+)
 
 
 def _compute_histogram(series, n_bins: int = 10) -> list:
@@ -4158,15 +4164,44 @@ def list_admin_export_logs_route(
     offset: int = Query(default=0, ge=0),
     export_format: str | None = None,
     status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     try:
+        _fmt    = export_format or None
+        _status = status or None
+        _dfrom  = date_from or None
+        _dto    = date_to or None
+        _uid    = user_id or None
         logs = list_all_export_logs(
             limit=limit,
             offset=offset,
-            export_format=export_format or None,
-            status=status or None,
+            export_format=_fmt,
+            status=_status,
+            date_from=_dfrom,
+            date_to=_dto,
+            user_id=_uid,
         )
-        return {"status": "success", "data": logs, "count": len(logs)}
+        total = count_all_export_logs(
+            export_format=_fmt,
+            status=_status,
+            date_from=_dfrom,
+            date_to=_dto,
+            user_id=_uid,
+        )
+        return {"status": "success", "data": logs, "count": len(logs), "total": total}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/admin/export-logs/summary")
+def admin_export_logs_summary_route(
+    user: AuthenticatedUser = Depends(require_role("admin")),
+) -> dict:
+    try:
+        summary = get_export_log_summary()
+        return {"status": "success", "data": summary}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 

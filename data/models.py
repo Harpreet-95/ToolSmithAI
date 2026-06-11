@@ -453,4 +453,10 @@ def init_db() -> None:
             )
     conn.commit()
 
+    # Idempotent migration: status index on export_logs for filter-by-status queries.
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_export_logs_status ON export_logs (status)"
+    )
+    conn.commit()
+
     conn.close()
