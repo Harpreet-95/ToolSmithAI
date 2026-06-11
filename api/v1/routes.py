@@ -3032,36 +3032,217 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     pdf.ln(2)
                 except Exception:
                     pass
-        elif sec_type == "chart":
-            chart      = section.get("chart", {})
-            chart_type = _s(chart.get("chart_type", "bar"))
-            labels     = chart.get("labels", [])
-            pdf.set_font("Sans", "I", 8)
-            pdf.set_text_color(*b['text_chart'])
-            pdf.cell(0, 4, f"Chart type: {chart_type}  |  {len(labels)} data points",
-                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            pdf.ln(1)
-            for s_entry in chart.get("series", []):
-                try:
-                    s_name = _s(str(s_entry.get("name", "")))
-                    s_data = s_entry.get("data", [])
-                    for i, label in enumerate(labels):
-                        val = s_data[i] if i < len(s_data) else None
-                        if val is None:
-                            val_str = "-"
-                        elif isinstance(val, float) and val == int(val):
-                            val_str = f"{int(val):,}"
-                        elif isinstance(val, (int, float)):
-                            val_str = f"{val:,}"
-                        else:
-                            val_str = _s(str(val))
-                        suffix = f"  [{s_name}]" if s_name else ""
-                        pdf.set_font("Sans", "", 9)
+        elif sec_type == 'chart':
+            _ch      = section.get('chart', {})
+            _ct      = _s(str(_ch.get('chart_type', '')))
+            _lbls    = _ch.get('labels', [])
+            _series  = _ch.get('series', [])
+            _expl    = _s(str(section.get('explanation', '')))
+            _s0_data = _series[0].get('data', []) if _series else []
+            _s0_name = _s(str(_series[0].get('name', ''))) if _series else ''
+            _has_neg = any(isinstance(_v, (int, float)) and _v < 0
+                           for _v in _s0_data if _v is not None)
+            if _ct in ('bar',) and _series and _lbls and not _has_neg:
+                # ---- Visual bar chart ----
+                _BAR_CH  = 48
+                _BAR_CW  = 160
+                _BAR_CX  = 20
+                _BAR_CAP = 12
+                _BPAD    = 8
+                _dlbls   = [_s(str(_l)) for _l in _lbls[:_BAR_CAP]]
+                _dvals   = [_v if isinstance(_v, (int, float)) else 0
+                            for _v in _s0_data[:_BAR_CAP]]
+                if _dlbls and _dvals:
+                    _NB     = len(_dlbls)
+                    _maxval = max(_dvals) if _dvals else 0
+                    _maxval = _maxval if _maxval > 0 else 1
+                    if pdf.get_y() + _BAR_CH + _BPAD + 8 > pdf.h - 25:
+                        pdf.add_page()
+                    _cy0  = pdf.get_y()
+                    _cbot = _cy0 + _BAR_CH
+                    # Axis lines
+                    pdf.set_draw_color(*b['rule_light'])
+                    pdf.set_line_width(0.3)
+                    pdf.line(_BAR_CX, _cbot, _BAR_CX + _BAR_CW, _cbot)
+                    pdf.line(_BAR_CX, _cy0, _BAR_CX, _cbot)
+                    # Max-value scale label
+                    pdf.set_font('Sans', '', 5.5)
+                    pdf.set_text_color(*b['text_muted'])
+                    pdf.set_xy(_BAR_CX + 1, _cy0)
+                    pdf.cell(25, 4, '{:,.0f}'.format(_maxval))
+                    # Draw bars
+                    _bw = _BAR_CW / _NB
+                    for _bi in range(_NB):
+                        _bx = _BAR_CX + _bi * _bw
+                        _bh = (_dvals[_bi] / _maxval) * _BAR_CH
+                        _by = _cbot - _bh
+                        pdf.set_fill_color(*b['primary'])
+                        pdf.rect(_bx + 0.5, _by, _bw - 1.0, _bh, style='F')
+                        if _bh > 5 and _by > _cy0 + 4:
+                            try:
+                                _dv = _dvals[_bi]
+                                _vl = '{:,.0f}'.format(int(_dv)) if isinstance(_dv, float) and _dv == int(_dv) else '{:,.1f}'.format(_dv)
+                                pdf.set_font('Sans', '', 5.5)
+                                pdf.set_text_color(*b['text_muted'])
+                                pdf.set_xy(_bx, _by - 4.5)
+                                pdf.cell(_bw, 4, _vl, align='C')
+                            except Exception:
+                                pass
+                    # X-axis labels
+                    _lmax = 6 if _NB > 6 else 10
+                    _lfsz = 5.5 if _NB > 8 else 6.5
+                    for _bi, _dl in enumerate(_dlbls):
+                        _bx = _BAR_CX + _bi * _bw
+                        pdf.set_font('Sans', '', _lfsz)
+                        pdf.set_text_color(*b['text_muted'])
+                        pdf.set_xy(_bx, _cbot + 1.5)
+                        _lt = _dl[:_lmax] + ('...' if len(_dl) > _lmax else '')
+                        pdf.cell(_bw, 4, _lt, align='C')
+                    # Legend / caption
+                    pdf.set_xy(_BAR_CX, _cbot + _BPAD)
+                    if _s0_name:
+                        pdf.set_font('Sans', 'I', 7)
+                        pdf.set_text_color(*b['text_chart'])
+                        pdf.cell(0, 4, _s0_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if len(_lbls) > _BAR_CAP:
+                        pdf.set_font('Sans', 'I', 7)
+                        pdf.set_text_color(*b['text_muted'])
+                        pdf.cell(0, 4, 'Showing first ' + str(_BAR_CAP) + ' of ' + str(len(_lbls)) + ' categories.',
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _expl:
+                        pdf.set_font('Sans', 'I', 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                elif _expl:
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            elif _ct == 'line' and _series and _lbls and not _has_neg:
+                # ---- Visual line chart ----
+                _LC_CH  = 45
+                _LC_CW  = 160
+                _LC_CX  = 20
+                _LC_PAD = 9
+                _llbls  = [_s(str(_l)) for _l in _lbls]
+                _NL     = len(_llbls)
+                _lvals  = [_s0_data[_i] if _i < len(_s0_data) and isinstance(_s0_data[_i], (int, float)) else None
+                           for _i in range(_NL)]
+                _lnz    = [_v for _v in _lvals if isinstance(_v, (int, float))]
+                _lmaxv  = max(_lnz) if _lnz else 1
+                _lmaxv  = _lmaxv if _lmaxv > 0 else 1
+                if pdf.get_y() + _LC_CH + _LC_PAD + 6 > pdf.h - 25:
+                    pdf.add_page()
+                _lcy0  = pdf.get_y()
+                _lcbot = _lcy0 + _LC_CH
+                # Axis lines
+                pdf.set_draw_color(*b['rule_light'])
+                pdf.set_line_width(0.3)
+                pdf.line(_LC_CX, _lcbot, _LC_CX + _LC_CW, _lcbot)
+                pdf.line(_LC_CX, _lcy0, _LC_CX, _lcbot)
+                # Max-value scale label
+                pdf.set_font('Sans', '', 5.5)
+                pdf.set_text_color(*b['text_muted'])
+                pdf.set_xy(_LC_CX + 1, _lcy0)
+                pdf.cell(25, 4, '{:,.0f}'.format(_lmaxv))
+                # Precompute point positions
+                _lxs = [(_LC_CX + _pi * _LC_CW / (_NL - 1)) if _NL > 1 else (_LC_CX + _LC_CW / 2)
+                        for _pi in range(_NL)]
+                _lys = [(_lcy0 + _LC_CH * (1.0 - _lvals[_pi] / _lmaxv)) if isinstance(_lvals[_pi], (int, float)) else None
+                        for _pi in range(_NL)]
+                # Line segments (skip gaps at None points)
+                pdf.set_draw_color(*b['primary'])
+                pdf.set_line_width(0.6)
+                for _pi in range(1, _NL):
+                    if _lys[_pi - 1] is not None and _lys[_pi] is not None:
+                        try:
+                            pdf.line(_lxs[_pi - 1], _lys[_pi - 1], _lxs[_pi], _lys[_pi])
+                        except Exception:
+                            pass
+                # Point markers
+                pdf.set_fill_color(*b['primary'])
+                for _pi in range(_NL):
+                    if _lys[_pi] is not None:
+                        try:
+                            pdf.ellipse(_lxs[_pi] - 1, _lys[_pi] - 1, 2, 2, style='F')
+                        except Exception:
+                            pass
+                # X-axis labels (every Kth to avoid overlap)
+                _K = 1 if _NL <= 8 else (2 if _NL <= 16 else 4)
+                for _pi, _ll in enumerate(_llbls):
+                    if _pi % _K == 0:
+                        _px = _lxs[_pi]
+                        pdf.set_font('Sans', '', 5.5)
+                        pdf.set_text_color(*b['text_muted'])
+                        pdf.set_xy(_px - 8, _lcbot + 1.5)
+                        pdf.cell(16, 4, _ll[:8], align='C')
+                # Legend / caption
+                pdf.set_xy(_LC_CX, _lcbot + _LC_PAD)
+                if _s0_name:
+                    pdf.set_font('Sans', 'I', 7)
+                    pdf.set_text_color(*b['text_chart'])
+                    pdf.cell(0, 4, _s0_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                if _expl:
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            elif _ct in ('pie', 'donut') and _series and _lbls:
+                # ---- Pie / donut: percentage breakdown (improved text fallback) ----
+                _pd_data  = [_v if isinstance(_v, (int, float)) else 0 for _v in _s0_data]
+                _pd_total = sum(_pd_data) or 1
+                pdf.set_font('Sans', 'I', 8)
+                pdf.set_text_color(*b['text_chart'])
+                pdf.cell(0, 4, _ct.title() + ' chart - share breakdown:',
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+                for _pi, (_pl, _pv) in enumerate(zip(_lbls[:12], _pd_data[:12])):
+                    try:
+                        _ppct = _pv / _pd_total * 100
+                        _pv_s = '{:,.0f}'.format(int(_pv)) if isinstance(_pv, float) and _pv == int(_pv) else '{:,.1f}'.format(_pv)
+                        _prow = str(_pi + 1) + '. ' + _s(str(_pl)) + ': ' + _pv_s + '  (' + '{:.1f}'.format(_ppct) + '%)'
+                        pdf.set_font('Sans', '', 8.5)
                         pdf.set_text_color(*b['text_body'])
-                        pdf.multi_cell(0, 5, f"  {_s(str(label))}: {val_str}{suffix}",
-                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-                except Exception:
-                    pass
+                        pdf.multi_cell(0, 5, _prow, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+                if _expl:
+                    pdf.ln(1)
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            else:
+                # ---- Text fallback: correlation_matrix, unknown types, malformed / empty ----
+                if _ct:
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_chart'])
+                    pdf.cell(0, 4, _ct + '  |  ' + str(len(_lbls)) + ' data points',
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                for _se in _series:
+                    try:
+                        _sn = _s(str(_se.get('name', '')))
+                        _sd = _se.get('data', [])
+                        for _si, _slbl in enumerate(_lbls):
+                            _sv = _sd[_si] if _si < len(_sd) else None
+                            if _sv is None:
+                                _sv_s = '-'
+                            elif isinstance(_sv, float) and _sv == int(_sv):
+                                _sv_s = '{:,}'.format(int(_sv))
+                            elif isinstance(_sv, (int, float)):
+                                _sv_s = '{:,.2f}'.format(_sv)
+                            else:
+                                _sv_s = _s(str(_sv))
+                            _sfx = '  [' + _sn + ']' if _sn else ''
+                            pdf.set_font('Sans', '', 9)
+                            pdf.set_text_color(*b['text_body'])
+                            pdf.multi_cell(0, 5, '  ' + _s(str(_slbl)) + ': ' + _sv_s + _sfx,
+                                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+                if _expl:
+                    pdf.ln(1)
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         elif sec_type == 'business_kpis':
             _TREND_SYM = {'up': '[+]', 'down': '[-]', 'neutral': '[=]', 'stable': '[=]'}
             _TREND_RGB = {

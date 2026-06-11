@@ -1047,6 +1047,146 @@ with TestClient(app) as client:
           'set_subject metadata missing from PDF')
 
 
+    # -----------------------------------------------------------------------
+    print('\n[T33] bar chart section: visual bar chart renders in PDF')
+    # -----------------------------------------------------------------------
+    _t33_content = {
+        'sections': [
+            {
+                'type': 'chart',
+                'heading': 'Revenue by Region',
+                'explanation': 'North America leads with the highest revenue contribution.',
+                'chart': {
+                    'chart_type': 'bar',
+                    'labels': ['North America', 'EMEA', 'APAC', 'LATAM', 'Other'],
+                    'series': [{'name': 'Revenue', 'data': [4200000, 2500000, 1800000, 800000, 400000]}],
+                },
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T33 test section.']},
+        ]
+    }
+    rid33 = save_report(user_id=USER_ID, title='Phase5-T33-bar-chart',
+                        task_type='generate_dataset_report', content=_t33_content)
+    r33 = client.get(f'/v1/reports/{rid33}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r33.status_code}  bytes={len(r33.content)}')
+    check('T33-01', 'HTTP 200 for bar chart PDF export',
+          r33.status_code == 200, f'got {r33.status_code}')
+    check('T33-02', 'bar chart export log status=success',
+          bool(_query_export_logs(report_id=rid33)) and _query_export_logs(report_id=rid33)[-1]['status'] == 'success',
+          'status not success')
+    check('T33-03', 'bar chart PDF > 48000 bytes (visual content + TTF rendered)',
+          len(r33.content) > 48000, f'len={len(r33.content)}')
+
+    # -----------------------------------------------------------------------
+    print('\n[T34] line chart section: visual line chart renders in PDF')
+    # -----------------------------------------------------------------------
+    _t34_content = {
+        'sections': [
+            {
+                'type': 'chart',
+                'heading': 'Monthly Volume Trend',
+                'explanation': 'Consistent upward trend observed over the 12-month period.',
+                'chart': {
+                    'chart_type': 'line',
+                    'labels': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                               'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+                    'series': [{'name': 'Volume', 'data': [120, 131, 145, 152, 161, 175,
+                                                            182, 191, 203, 215, 228, 241]}],
+                },
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T34 test section.']},
+        ]
+    }
+    rid34 = save_report(user_id=USER_ID, title='Phase5-T34-line-chart',
+                        task_type='generate_dataset_report', content=_t34_content)
+    r34 = client.get(f'/v1/reports/{rid34}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r34.status_code}  bytes={len(r34.content)}')
+    check('T34-01', 'HTTP 200 for line chart PDF export',
+          r34.status_code == 200, f'got {r34.status_code}')
+    check('T34-02', 'line chart export log status=success',
+          bool(_query_export_logs(report_id=rid34)) and _query_export_logs(report_id=rid34)[-1]['status'] == 'success',
+          'status not success')
+
+    # -----------------------------------------------------------------------
+    print('\n[T35] unsupported chart type (correlation_matrix): text fallback, no crash')
+    # -----------------------------------------------------------------------
+    _t35_content = {
+        'sections': [
+            {
+                'type': 'chart',
+                'heading': 'Feature Correlation',
+                'explanation': 'Correlation between key business metrics.',
+                'chart': {
+                    'chart_type': 'correlation_matrix',
+                    'columns': ['Revenue', 'Margin', 'Units'],
+                    'matrix': [[1.0, 0.72, 0.85], [0.72, 1.0, 0.61], [0.85, 0.61, 1.0]],
+                },
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T35 test section.']},
+        ]
+    }
+    rid35 = save_report(user_id=USER_ID, title='Phase5-T35-correlation-fallback',
+                        task_type='generate_dataset_report', content=_t35_content)
+    r35 = client.get(f'/v1/reports/{rid35}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r35.status_code}  bytes={len(r35.content)}')
+    check('T35-01', 'HTTP 200 for correlation_matrix (unsupported type) PDF export',
+          r35.status_code == 200, f'got {r35.status_code}')
+    check('T35-02', 'correlation_matrix text fallback export log status=success',
+          bool(_query_export_logs(report_id=rid35)) and _query_export_logs(report_id=rid35)[-1]['status'] == 'success',
+          'status not success')
+
+    # -----------------------------------------------------------------------
+    print('\n[T36] malformed/empty chart dict: graceful fallback, no crash')
+    # -----------------------------------------------------------------------
+    _t36_content = {
+        'sections': [
+            {
+                'type': 'chart',
+                'heading': 'Malformed Chart',
+                'explanation': '',
+                'chart': {},
+            },
+            {
+                'type': 'chart',
+                'heading': 'Empty Series Chart',
+                'explanation': 'No data available.',
+                'chart': {'chart_type': 'bar', 'labels': [], 'series': []},
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T36 test section.']},
+        ]
+    }
+    rid36 = save_report(user_id=USER_ID, title='Phase5-T36-malformed-chart',
+                        task_type='generate_dataset_report', content=_t36_content)
+    r36 = client.get(f'/v1/reports/{rid36}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r36.status_code}  bytes={len(r36.content)}')
+    check('T36-01', 'HTTP 200 for malformed chart (no crash)',
+          r36.status_code == 200, f'got {r36.status_code}')
+    check('T36-02', 'malformed chart export log status=success',
+          bool(_query_export_logs(report_id=rid36)) and _query_export_logs(report_id=rid36)[-1]['status'] == 'success',
+          'status not success')
+
+    # -----------------------------------------------------------------------
+    print('\n[T37] Phase 5 regression: PDF metadata, XLSX, Phase 4 handlers still work')
+    # -----------------------------------------------------------------------
+    rid37 = _create_report(USER_ID, 'Phase 5 Regression Check')
+    r37_pdf  = client.get(f'/v1/reports/{rid37}/export?format=pdf',
+                          headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    r37_xlsx = client.get(f'/v1/reports/{rid37}/export?format=xlsx',
+                          headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    PDF HTTP {r37_pdf.status_code}  XLSX HTTP {r37_xlsx.status_code}')
+    check('T37-01', 'PDF export still works after Phase 5 (T1 regression)',
+          r37_pdf.status_code == 200, f'got {r37_pdf.status_code}')
+    check('T37-02', 'XLSX export still works after Phase 5 (T12 regression)',
+          r37_xlsx.status_code == 200, f'got {r37_xlsx.status_code}')
+    check('T37-03', 'PDF set_subject metadata preserved (T18 regression)',
+          r37_pdf.status_code == 200 and b'Executive Intelligence Report' in r37_pdf.content,
+          'set_subject metadata missing')
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
