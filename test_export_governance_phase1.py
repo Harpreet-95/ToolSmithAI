@@ -793,6 +793,260 @@ with TestClient(app) as client:
           "spreadsheetml" in r25_xlsx.headers.get("content-type", ""),
           repr(r25_xlsx.headers.get("content-type")))
 
+    # -----------------------------------------------------------------------
+    print('\n[T26] business_kpis section: structured KPI data renders in PDF')
+    # -----------------------------------------------------------------------
+    _t26_content = {
+        'sections': [
+            {
+                'type': 'business_kpis',
+                'heading': 'Key Performance Indicators',
+                'dataset_label': 'Sales Financial Analytics',
+                'kpis': [
+                    {'label': 'Total Revenue', 'value': 4200000, 'value_formatted': '$4.2M',
+                     'trend': 'up', 'description': 'Record quarter.', 'delta': 12.3,
+                     'delta_direction': 'increase', 'status': 'good', 'confidence': 0.92},
+                    {'label': 'Gross Margin', 'value': 0.342, 'value_formatted': '34.2%',
+                     'trend': 'stable', 'description': 'Flat vs prior period.', 'delta': None,
+                     'delta_direction': None, 'status': 'neutral', 'confidence': 0.88},
+                ],
+                'items': ['Total Revenue: $4.2M', 'Gross Margin: 34.2%'],
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T26 test section.']},
+        ]
+    }
+    rid26 = save_report(user_id=USER_ID, title='Phase4-T26-business_kpis',
+                        task_type='generate_dataset_report', content=_t26_content)
+    r26 = client.get(f'/v1/reports/{rid26}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r26.status_code}  bytes={len(r26.content)}')
+    check('T26-01', 'HTTP 200 for business_kpis PDF export',
+          r26.status_code == 200, f'got {r26.status_code}')
+    check('T26-02', 'business_kpis PDF has content bytes',
+          len(r26.content) > 0, f'len={len(r26.content)}')
+    _logs26 = _query_export_logs(report_id=rid26)
+    check('T26-03', "business_kpis export log status='success'",
+          bool(_logs26) and _logs26[-1]['status'] == 'success',
+          repr(_logs26[-1]['status'] if _logs26 else 'no log'))
+
+    # -----------------------------------------------------------------------
+    print('\n[T27] segmentation_insights section: segment breakdown renders in PDF')
+    # -----------------------------------------------------------------------
+    _t27_content = {
+        'sections': [
+            {
+                'type': 'segmentation_insights',
+                'heading': 'Segmentation Analysis',
+                'segments': [
+                    {
+                        'metric': 'Revenue', 'dimension': 'Region',
+                        'insight_summary': 'North America leads with 42% of total revenue.',
+                        'recommended_action': 'Invest in high-performing regions.',
+                        'top_segments': [
+                            {'label': 'North America', 'value': 1764000, 'pct_of_total': 42.0, 'rank': 1},
+                            {'label': 'EMEA',          'value': 1050000, 'pct_of_total': 25.0, 'rank': 2},
+                            {'label': 'APAC',          'value':  840000, 'pct_of_total': 20.0, 'rank': 3},
+                        ],
+                        'confidence': 0.85,
+                    },
+                ],
+                'items': ['North America leads with 42% of total revenue.'],
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T27 test section.']},
+        ]
+    }
+    rid27 = save_report(user_id=USER_ID, title='Phase4-T27-segmentation',
+                        task_type='generate_dataset_report', content=_t27_content)
+    r27 = client.get(f'/v1/reports/{rid27}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r27.status_code}  bytes={len(r27.content)}')
+    check('T27-01', 'HTTP 200 for segmentation_insights PDF export',
+          r27.status_code == 200, f'got {r27.status_code}')
+    check('T27-02', 'segmentation_insights PDF has content bytes',
+          len(r27.content) > 0, f'len={len(r27.content)}')
+    _logs27 = _query_export_logs(report_id=rid27)
+    check('T27-03', "segmentation_insights export log status='success'",
+          bool(_logs27) and _logs27[-1]['status'] == 'success',
+          repr(_logs27[-1]['status'] if _logs27 else 'no log'))
+
+    # -----------------------------------------------------------------------
+    print('\n[T28] drilldown_table section: columnar table renders in PDF')
+    # -----------------------------------------------------------------------
+    _t28_content = {
+        'sections': [
+            {
+                'type': 'drilldown_table',
+                'heading': 'Revenue Drilldown by Product',
+                'tables': [
+                    {
+                        'metric': 'Revenue', 'dimension': 'Product',
+                        'columns': ['Product', 'Total', 'Share %'],
+                        'rows': [
+                            {'label': 'Enterprise Suite', 'value': 2100000, 'avg': 10500,
+                             'count': 200, 'pct_of_total': 50.0, 'rank': 1},
+                            {'label': 'Professional',     'value': 1260000, 'avg': 6300,
+                             'count': 200, 'pct_of_total': 30.0, 'rank': 2},
+                            {'label': 'Starter',          'value':  840000, 'avg': 4200,
+                             'count': 200, 'pct_of_total': 20.0, 'rank': 3},
+                        ],
+                        'summary': 'Enterprise Suite drives 50% of revenue.',
+                        'confidence': 0.88,
+                    },
+                ],
+                'items': ['Enterprise Suite drives 50% of revenue.'],
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T28 test section.']},
+        ]
+    }
+    rid28 = save_report(user_id=USER_ID, title='Phase4-T28-drilldown',
+                        task_type='generate_dataset_report', content=_t28_content)
+    r28 = client.get(f'/v1/reports/{rid28}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r28.status_code}  bytes={len(r28.content)}')
+    check('T28-01', 'HTTP 200 for drilldown_table PDF export',
+          r28.status_code == 200, f'got {r28.status_code}')
+    check('T28-02', 'drilldown_table PDF has content bytes',
+          len(r28.content) > 0, f'len={len(r28.content)}')
+    _logs28 = _query_export_logs(report_id=rid28)
+    check('T28-03', "drilldown_table export log status='success'",
+          bool(_logs28) and _logs28[-1]['status'] == 'success',
+          repr(_logs28[-1]['status'] if _logs28 else 'no log'))
+
+    # -----------------------------------------------------------------------
+    print('\n[T29] forecast section: narrative items and projected outlook render in PDF')
+    # -----------------------------------------------------------------------
+    _t29_content = {
+        'sections': [
+            {
+                'type': 'forecast',
+                'heading': 'Forecast',
+                'forecast_ready': True,
+                'target_column': 'date',
+                'method': 'linear_trend_with_moving_average',
+                'horizon_periods': 3,
+                'items': [
+                    'Data source: 24 monthly records from 2022-01 to 2023-12.',
+                    'Method: Linear trend with moving average.',
+                    'Trend: Upward with consistent 4.2% monthly growth.',
+                    'Projection range: 142 to 167 records per period.',
+                ],
+                'chart': {
+                    'chart_type': 'forecast',
+                    'labels': ['2023-10', '2023-11', '2023-12',
+                               '2024-01 (F)', '2024-02 (F)', '2024-03 (F)'],
+                    'historical': [120, 131, 138, None, None, None],
+                    'forecast':   [None, None, None, 142.0, 151.5, 161.0],
+                    'upper_band': [None, None, None, 154.0, 163.5, 173.0],
+                    'lower_band': [None, None, None, 130.0, 139.5, 149.0],
+                    'forecast_start_index': 3,
+                    'date_column': 'date',
+                },
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T29 test section.']},
+        ]
+    }
+    rid29 = save_report(user_id=USER_ID, title='Phase4-T29-forecast',
+                        task_type='generate_dataset_report', content=_t29_content)
+    r29 = client.get(f'/v1/reports/{rid29}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r29.status_code}  bytes={len(r29.content)}')
+    check('T29-01', 'HTTP 200 for forecast PDF export',
+          r29.status_code == 200, f'got {r29.status_code}')
+    check('T29-02', 'forecast PDF has content bytes',
+          len(r29.content) > 0, f'len={len(r29.content)}')
+    _logs29 = _query_export_logs(report_id=rid29)
+    check('T29-03', "forecast export log status='success'",
+          bool(_logs29) and _logs29[-1]['status'] == 'success',
+          repr(_logs29[-1]['status'] if _logs29 else 'no log'))
+
+    # -----------------------------------------------------------------------
+    print('\n[T30] ai_dashboard section: key insight and risk blocks render in PDF')
+    # -----------------------------------------------------------------------
+    _t30_content = {
+        'sections': [
+            {
+                'type': 'ai_dashboard',
+                'heading': 'Executive Intelligence',
+                'most_important_insight': 'Revenue spike Q3: 45% increase in enterprise segment.',
+                'highest_risk': 'Customer churn rate elevated above threshold in EMEA region.',
+                'recommended_action': 'Investigate EMEA retention drivers and launch campaign.',
+                'watchlist': ['EMEA churn +8.2%', 'Enterprise deals -3 vs target', 'Pipeline 0.8x'],
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T30 test section.']},
+        ]
+    }
+    rid30 = save_report(user_id=USER_ID, title='Phase4-T30-ai_dashboard',
+                        task_type='generate_dataset_report', content=_t30_content)
+    r30 = client.get(f'/v1/reports/{rid30}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r30.status_code}  bytes={len(r30.content)}')
+    check('T30-01', 'HTTP 200 for ai_dashboard PDF export',
+          r30.status_code == 200, f'got {r30.status_code}')
+    check('T30-02', 'ai_dashboard PDF has content bytes (was empty before Phase 4)',
+          len(r30.content) > 40000, f'len={len(r30.content)} (expected >40000 for non-empty PDF)')
+    _logs30 = _query_export_logs(report_id=rid30)
+    check('T30-03', "ai_dashboard export log status='success'",
+          bool(_logs30) and _logs30[-1]['status'] == 'success',
+          repr(_logs30[-1]['status'] if _logs30 else 'no log'))
+
+    # -----------------------------------------------------------------------
+    print('\n[T31] insight_priority section: severity-ranked insights render in PDF')
+    # -----------------------------------------------------------------------
+    _t31_content = {
+        'sections': [
+            {
+                'type': 'insight_priority',
+                'heading': 'Prioritized Insights',
+                'insights': [
+                    {'title': 'Revenue Spike Detected', 'severity': 'high',
+                     'evidence': '45% YoY increase in enterprise Q3.',
+                     'recommended_action': 'Investigate root drivers immediately.',
+                     'confidence': 'high'},
+                    {'title': 'EMEA Churn Risk', 'severity': 'medium',
+                     'evidence': 'Churn rate elevated in EMEA by 8.2%.',
+                     'recommended_action': 'Launch targeted retention campaign.',
+                     'confidence': 'medium'},
+                    {'title': 'Pipeline Gap Q4', 'severity': 'low',
+                     'evidence': 'Q4 pipeline coverage at 0.8x target.',
+                     'recommended_action': 'Add 5 qualified deals before quarter end.',
+                     'confidence': 'medium'},
+                ],
+            },
+            {'type': 'text', 'heading': 'Overview', 'items': ['T31 test section.']},
+        ]
+    }
+    rid31 = save_report(user_id=USER_ID, title='Phase4-T31-insight_priority',
+                        task_type='generate_dataset_report', content=_t31_content)
+    r31 = client.get(f'/v1/reports/{rid31}/export?format=pdf',
+                     headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    HTTP {r31.status_code}  bytes={len(r31.content)}')
+    check('T31-01', 'HTTP 200 for insight_priority PDF export',
+          r31.status_code == 200, f'got {r31.status_code}')
+    check('T31-02', 'insight_priority PDF has content bytes (was empty before Phase 4)',
+          len(r31.content) > 40000, f'len={len(r31.content)} (expected >40000 for non-empty PDF)')
+    _logs31 = _query_export_logs(report_id=rid31)
+    check('T31-03', "insight_priority export log status='success'",
+          bool(_logs31) and _logs31[-1]['status'] == 'success',
+          repr(_logs31[-1]['status'] if _logs31 else 'no log'))
+
+    # -----------------------------------------------------------------------
+    print('\n[T32] Phase 4 regression: prior PDF/XLSX/metadata tests still pass')
+    # -----------------------------------------------------------------------
+    rid32 = _create_report(USER_ID, 'Phase 4 Regression Check')
+    r32_pdf  = client.get(f'/v1/reports/{rid32}/export?format=pdf',
+                          headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    r32_xlsx = client.get(f'/v1/reports/{rid32}/export?format=xlsx',
+                          headers={'Authorization': f'Bearer {_jwt(USER_ID)}'})
+    print(f'    PDF HTTP {r32_pdf.status_code}  XLSX HTTP {r32_xlsx.status_code}')
+    check('T32-01', 'PDF export still works after Phase 4 (T1 regression)',
+          r32_pdf.status_code == 200, f'got {r32_pdf.status_code}')
+    check('T32-02', 'XLSX export still works after Phase 4 (T12 regression)',
+          r32_xlsx.status_code == 200, f'got {r32_xlsx.status_code}')
+    check('T32-03', 'PDF metadata set_subject preserved (T18 regression)',
+          r32_pdf.status_code == 200 and b'Executive Intelligence Report' in r32_pdf.content,
+          'set_subject metadata missing from PDF')
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
