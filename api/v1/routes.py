@@ -2565,14 +2565,38 @@ def _build_pdf_bytes(report: dict) -> bytes:
     from fpdf.enums import XPos, YPos
     b = _PDF_BRANDING
 
+    class _ToolSmithPDF(FPDF):
+        FONT = 'Sans'
+
+        def __init__(self):
+            super().__init__()
+            import os
+            _W = 'C:/Windows/Fonts'
+            _STYLES = {
+                '':  [os.path.join(_W, 'arial.ttf'),
+                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+                'B': [os.path.join(_W, 'arialbd.ttf'),
+                      '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'],
+                'I': [os.path.join(_W, 'ariali.ttf'),
+                      '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf'],
+            }
+            _fallback = None
+            for _style, _paths in _STYLES.items():
+                for _p in _paths:
+                    if os.path.isfile(_p):
+                        self.add_font(self.FONT, _style, _p)
+                        if _style == '':
+                            _fallback = _p
+                        break
+                else:
+                    if _fallback and _style != '':
+                        self.add_font(self.FONT, _style, _fallback)
+
     def _s(text) -> str:
-        """Sanitise text to Latin-1 for core-font compatibility."""
-        return (str(text)
-                .replace("—", "-").replace("–", "-")
-                .replace("’", "'").replace("‘", "'")
-                .replace("“", '"').replace("”", '"')
-                .replace("·", ".").replace("→", "->")
-                .encode("latin-1", errors="replace").decode("latin-1"))
+        return str(text)
 
     title      = _s(report.get("title", "Untitled Report"))
     task_type  = report.get("task_type", "")
@@ -2585,7 +2609,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
         "email_dataset_report":    "Emailed Dataset Report",
     }.get(task_type, task_type.replace("_", " ").title()))
 
-    pdf = FPDF()
+    pdf = _ToolSmithPDF()
     pdf.set_title(title)
     pdf.set_author('ToolSmithAI')
     pdf.set_creator('ToolSmithAI')
@@ -2595,10 +2619,10 @@ def _build_pdf_bytes(report: dict) -> bytes:
     pdf.add_page()
 
     # Header row: brand left, timestamp right
-    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_font("Sans", "B", 11)
     pdf.set_text_color(*b['primary'])
     pdf.cell(80, 7, "ToolSmithAI")
-    pdf.set_font("Helvetica", "", 8)
+    pdf.set_font("Sans", "", 8)
     pdf.set_text_color(*b['text_stamp'])
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     pdf.cell(0, 7, f"Exported {stamp}", align="R",
@@ -2611,7 +2635,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
     pdf.ln(7)
 
     # Report title
-    pdf.set_font("Helvetica", "B", 16)
+    pdf.set_font("Sans", "B", 16)
     pdf.set_text_color(*b['title_dark'])
     pdf.multi_cell(0, 9, title)
     pdf.ln(3)
@@ -2623,10 +2647,10 @@ def _build_pdf_bytes(report: dict) -> bytes:
         ("Dataset", dataset),
         ("Created", created),
     ]:
-        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_font("Sans", "B", 9)
         pdf.set_text_color(*b['meta_label'])
         pdf.cell(26, 6, f"{label}:")
-        pdf.set_font("Helvetica", "", 9)
+        pdf.set_font("Sans", "", 9)
         pdf.set_text_color(*b['text_body'])
         pdf.cell(0, 6, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
@@ -2645,17 +2669,17 @@ def _build_pdf_bytes(report: dict) -> bytes:
         sec_type = section.get("type", "text")
         heading  = _s(section.get("heading", ""))
 
-        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_font("Sans", "B", 8)
         pdf.set_text_color(*b['primary'])
         pdf.cell(0, 5, heading.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(1)
 
         if sec_type == "text":
             for item in section.get("items", []):
-                pdf.set_font("Helvetica", "B", 9)
+                pdf.set_font("Sans", "B", 9)
                 pdf.set_text_color(*b['primary'])
                 pdf.cell(6, 5, "->")
-                pdf.set_font("Helvetica", "", 9)
+                pdf.set_font("Sans", "", 9)
                 pdf.set_text_color(*b['text_body'])
                 pdf.multi_cell(0, 5, _s(item), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         elif sec_type == "kpi":
@@ -2680,7 +2704,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     line = f"{trend_marker}  {label}: {val_str}"
                     if desc:
                         line += f"   ({desc})"
-                    pdf.set_font("Helvetica", "", 9)
+                    pdf.set_font("Sans", "", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.multi_cell(0, 5, _s(line), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 except Exception:
@@ -2691,7 +2715,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
             risks         = section.get("risks", [])
             opportunities = section.get("opportunities", [])
             if summary:
-                pdf.set_font("Helvetica", "", 9)
+                pdf.set_font("Sans", "", 9)
                 pdf.set_text_color(*b['text_body'])
                 pdf.multi_cell(0, 5, summary, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.ln(2)
@@ -2701,12 +2725,12 @@ def _build_pdf_bytes(report: dict) -> bytes:
                 ('Opportunities', opportunities,  b['success']),
             ]:
                 if items:
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb)
                     pdf.cell(0, 5, cat_label.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     for item in items:
                         try:
-                            pdf.set_font("Helvetica", "", 9)
+                            pdf.set_font("Sans", "", 9)
                             pdf.set_text_color(*b['text_body'])
                             pdf.multi_cell(0, 5, _s(f"  • {item}"),
                                            new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2724,21 +2748,21 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     confidence = _s(str(rec.get("confidence", "")))
                     rgb        = _PRIORITY_RGB.get(priority, (100,116,139))
                     # Priority label + title on one line
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb)
                     pdf.cell(22, 5, f"[{priority.upper()}]")
-                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_font("Sans", "B", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if reason:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_secondary'])
                         pdf.multi_cell(0, 4.5, f"  {reason}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     meta_parts = []
                     if action:     meta_parts.append(f"Action: {action}")
                     if confidence: meta_parts.append(f"Confidence: {confidence}")
                     if meta_parts:
-                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_font("Sans", "I", 7.5)
                         pdf.set_text_color(*b['text_light'])
                         pdf.cell(0, 4, f"  {' | '.join(meta_parts)}",
                                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2751,7 +2775,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
             bw_start = _s(str(bw.get("start", "") or "")[:19].replace("T", " "))
             bw_end   = _s(str(bw.get("end",   "") or "")[:19].replace("T", " "))
             if bw_count or bw_start:
-                pdf.set_font("Helvetica", "I", 7.5)
+                pdf.set_font("Sans", "I", 7.5)
                 pdf.set_text_color(*b['text_light'])
                 pdf.cell(0, 4,
                          f"Baseline: {bw_count} snapshot(s)  {bw_start} -> {bw_end}",
@@ -2776,16 +2800,16 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     sym       = _DR_DIR_SYM.get(direction, "[~]")
                     pct_str   = (f"+{pct}%" if isinstance(pct, (int, float)) and pct > 0
                                  else f"{pct}%" if pct is not None else "?%")
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb)
                     pdf.cell(10, 5, sym)
-                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_font("Sans", "B", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.cell(0, 5,
                              f"{metric}   {pct_str}  (baseline: {base_val}, current: {curr_val})",
                              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if desc:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_secondary'])
                         pdf.multi_cell(0, 4.5, f"  {desc}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2795,7 +2819,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
         elif sec_type == "historical_comparison":
             baseline_ts = _s(str(section.get("baseline_timestamp", "") or "")[:19].replace("T", " "))
             if baseline_ts:
-                pdf.set_font("Helvetica", "I", 7.5)
+                pdf.set_font("Sans", "I", 7.5)
                 pdf.set_text_color(*b['text_light'])
                 pdf.cell(0, 4, f"Baseline: {baseline_ts} UTC",
                          new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2820,16 +2844,16 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     chg_str   = (f"+{change}" if isinstance(change, (int, float)) and change > 0
                                  else str(change) if change is not None else "0")
                     # Metric line: [icon] metric   curr → prev  (delta)
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb)
                     pdf.cell(10, 5, icon)
-                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_font("Sans", "B", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.cell(0, 5,
                              f"{metric}   {curr_val} (prev: {prev_val}, change: {chg_str})",
                              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if desc:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_secondary'])
                         pdf.multi_cell(0, 4.5, f"  {desc}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2853,7 +2877,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
             lv_rgb = _PR_LV_RGB.get(pr_level, (100, 116, 139))
             # Score + level line
             score_str = str(pr_score) if pr_score is not None else "-"
-            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_font("Sans", "B", 10)
             pdf.set_text_color(*lv_rgb)
             pdf.cell(0, 6, f"Score: {score_str} / 100  [{pr_level.upper()} READINESS]",
                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2867,18 +2891,18 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     name    = _s(str(sig.get("name",        "")))
                     desc    = _s(str(sig.get("description", "")))
                     ev      = _s(str(sig.get("evidence",    "")))
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*st_rgb)
                     pdf.cell(12, 5, st_sym)
-                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_font("Sans", "B", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.multi_cell(0, 5, name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if desc:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_secondary'])
                         pdf.multi_cell(0, 4.5, f"  {desc}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if ev:
-                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_font("Sans", "I", 7.5)
                         pdf.set_text_color(*b['text_light'])
                         pdf.multi_cell(0, 4, f"  Evidence: {ev}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2889,12 +2913,12 @@ def _build_pdf_bytes(report: dict) -> bytes:
             next_steps = section.get("next_steps", [])
             if next_steps:
                 pdf.ln(1)
-                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_font("Sans", "B", 8)
                 pdf.set_text_color(*b['primary'])
                 pdf.cell(0, 5, "NEXT STEPS", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 for step in next_steps:
                     try:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_body'])
                         pdf.multi_cell(0, 4.5, f"  -> {_s(str(step))}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2924,27 +2948,27 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     rgb_dir     = _DIR_RGB.get(direction, (100, 116, 139))
                     rgb_str     = _STR_RGB.get(strength,  (100, 116, 139))
                     # Direction + strength prefix on one line
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb_dir)
                     pdf.cell(22, 5, dir_symbol)
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb_str)
                     pdf.cell(20, 5, f"[{strength.upper()}]")
-                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_font("Sans", "B", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if category:
-                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_font("Sans", "I", 7.5)
                         pdf.set_text_color(*b['text_light'])
                         pdf.cell(0, 4, f"  Category: {category}",
                                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if description:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_secondary'])
                         pdf.multi_cell(0, 4.5, f"  {description}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if evidence:
-                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_font("Sans", "I", 7.5)
                         pdf.set_text_color(*b['text_light'])
                         pdf.multi_cell(0, 4, f"  Evidence: {evidence}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2965,24 +2989,24 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     description = _s(str(anomaly.get("description", "")))
                     evidence    = _s(str(anomaly.get("evidence", "")))
                     rgb         = _SEV_RGB.get(severity, (100, 116, 139))
-                    pdf.set_font("Helvetica", "B", 8)
+                    pdf.set_font("Sans", "B", 8)
                     pdf.set_text_color(*rgb)
                     pdf.cell(22, 5, f"[{severity.upper()}]")
-                    pdf.set_font("Helvetica", "B", 9)
+                    pdf.set_font("Sans", "B", 9)
                     pdf.set_text_color(*b['text_body'])
                     pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if category:
-                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_font("Sans", "I", 7.5)
                         pdf.set_text_color(*b['text_light'])
                         pdf.cell(0, 4, f"  Category: {category}",
                                  new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if description:
-                        pdf.set_font("Helvetica", "", 8)
+                        pdf.set_font("Sans", "", 8)
                         pdf.set_text_color(*b['text_secondary'])
                         pdf.multi_cell(0, 4.5, f"  {description}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                     if evidence:
-                        pdf.set_font("Helvetica", "I", 7.5)
+                        pdf.set_font("Sans", "I", 7.5)
                         pdf.set_text_color(*b['text_light'])
                         pdf.multi_cell(0, 4, f"  Evidence: {evidence}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2993,7 +3017,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
             chart      = section.get("chart", {})
             chart_type = _s(chart.get("chart_type", "bar"))
             labels     = chart.get("labels", [])
-            pdf.set_font("Helvetica", "I", 8)
+            pdf.set_font("Sans", "I", 8)
             pdf.set_text_color(*b['text_chart'])
             pdf.cell(0, 4, f"Chart type: {chart_type}  |  {len(labels)} data points",
                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -3013,7 +3037,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
                         else:
                             val_str = _s(str(val))
                         suffix = f"  [{s_name}]" if s_name else ""
-                        pdf.set_font("Helvetica", "", 9)
+                        pdf.set_font("Sans", "", 9)
                         pdf.set_text_color(*b['text_body'])
                         pdf.multi_cell(0, 5, f"  {_s(str(label))}: {val_str}{suffix}",
                                        new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -3022,7 +3046,7 @@ def _build_pdf_bytes(report: dict) -> bytes:
         else:
             # Unknown future section types: safe string fallback, never crash.
             for item in section.get("items", []):
-                pdf.set_font("Helvetica", "", 9)
+                pdf.set_font("Sans", "", 9)
                 pdf.set_text_color(*b['text_body'])
                 pdf.multi_cell(0, 5, _s(str(item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
