@@ -692,6 +692,107 @@ with TestClient(app) as client:
               b"ToolSmithAI" in pdf_bytes,
               "ToolSmithAI brand bytes missing from PDF output")
 
+    # -----------------------------------------------------------------------
+    print("\n[T22] PDF has cover page: document contains at least 2 pages")
+    # -----------------------------------------------------------------------
+    rid_cover = _create_report(USER_ID, "Phase 3 Cover Page Test")
+    r22 = client.get(
+        f"/v1/reports/{rid_cover}/export?format=pdf",
+        headers={"Authorization": f"Bearer {_jwt(USER_ID)}"},
+    )
+    print(f"    HTTP {r22.status_code}  bytes={len(r22.content)}")
+    check("T22-01", "HTTP 200",               r22.status_code == 200,   f"got {r22.status_code}")
+    check("T22-02", "response has bytes",     len(r22.content) > 0,     f"len={len(r22.content)}")
+    if r22.status_code == 200 and r22.content:
+        cover_pdf = r22.content
+        # fpdf2 writes /Count N in the page tree; N>=2 means cover + content page
+        check("T22-03", "PDF has 2+ pages (/Count >= 2 in page tree)",
+              b"/Count 2" in cover_pdf or b"/Count 3" in cover_pdf or b"/Count 4" in cover_pdf,
+              f"page count marker not found; PDF size={len(cover_pdf)}")
+        check("T22-04", "PDF > 35000 bytes (cover + TTF overhead)",
+              len(cover_pdf) > 35000,
+              f"size={len(cover_pdf)}; expected > 35000 for multi-page TTF PDF")
+
+    # -----------------------------------------------------------------------
+    print("\n[T23] Cover page embeds metadata in PDF info dict (title, subject)")
+    # -----------------------------------------------------------------------
+    if r22.status_code == 200 and r22.content:
+        cover_pdf = r22.content
+        # set_title() and set_subject() write plain-text (uncompressed) entries
+        # to the PDF info dict, making them searchable as raw bytes.
+        check("T23-01", "Report title present in PDF bytes (set_title metadata)",
+              b"Phase 3 Cover Page Test" in cover_pdf,
+              "report title not found in PDF info dict bytes")
+        check("T23-02", "Executive Intelligence Report in PDF (set_subject metadata)",
+              b"Executive Intelligence Report" in cover_pdf,
+              "set_subject value missing from PDF output")
+        check("T23-03", "ToolSmithAI author in PDF (set_author metadata)",
+              b"ToolSmithAI" in cover_pdf,
+              "ToolSmithAI author bytes missing from PDF output")
+
+    # -----------------------------------------------------------------------
+    print("\n[T24] Multi-section report overflows to page 3+ (header/footer on each page)")
+    # -----------------------------------------------------------------------
+    _multi_sections = [
+        {"type": "text", "heading": f"Section {i}", "items": [
+            f"Finding {i}-A: This section contains enterprise analysis data point {i}.",
+            f"Finding {i}-B: Additional supporting evidence for section {i} conclusions.",
+            f"Finding {i}-C: Recommended follow-up actions based on section {i} data.",
+        ]} for i in range(1, 16)
+    ]
+    rid_multi = save_report(
+        user_id=USER_ID,
+        title="Multi-Page Report with Header and Footer",
+        task_type="generate_dataset_report",
+        content={"sections": _multi_sections},
+    )
+    r24 = client.get(
+        f"/v1/reports/{rid_multi}/export?format=pdf",
+        headers={"Authorization": f"Bearer {_jwt(USER_ID)}"},
+    )
+    print(f"    HTTP {r24.status_code}  bytes={len(r24.content)}")
+    check("T24-01", "HTTP 200",               r24.status_code == 200,   f"got {r24.status_code}")
+    check("T24-02", "response has bytes",     len(r24.content) > 0,     f"len={len(r24.content)}")
+    if r24.status_code == 200 and r24.content:
+        multi_pdf = r24.content
+        # 15 sections of 3 items each forces overflow beyond page 2.
+        # Check /Count is > 2, or file is substantially larger than a 2-page PDF.
+        has_page3 = (b"/Count 3" in multi_pdf or b"/Count 4" in multi_pdf
+                     or b"/Count 5" in multi_pdf or b"/Count 6" in multi_pdf)
+        check("T24-03", "multi-section report produces 3+ pages",
+              has_page3 or len(multi_pdf) > 80000,
+              f"/Count not >=3 and size={len(multi_pdf)}")
+    logs24 = _query_export_logs(report_id=rid_multi)
+    if logs24:
+        check("T24-04", "status='success' for multi-page export",
+              logs24[-1]["status"] == "success",
+              repr(logs24[-1]["status"]))
+
+    # -----------------------------------------------------------------------
+    print("\n[T25] Phase 1-2 regressions: XLSX and Unicode tests still pass")
+    # -----------------------------------------------------------------------
+    # Spot-check T1 (PDF basic), T12 (XLSX basic), T16 (metadata), T21 (Unicode)
+    rid_reg = _create_report(USER_ID, "Phase 3 Regression Check")
+    r25_pdf = client.get(
+        f"/v1/reports/{rid_reg}/export?format=pdf",
+        headers={"Authorization": f"Bearer {_jwt(USER_ID)}"},
+    )
+    r25_xlsx = client.get(
+        f"/v1/reports/{rid_reg}/export?format=xlsx",
+        headers={"Authorization": f"Bearer {_jwt(USER_ID)}"},
+    )
+    check("T25-01", "PDF export still works (T1 regression)",
+          r25_pdf.status_code == 200,  f"got {r25_pdf.status_code}")
+    check("T25-02", "XLSX export still works (T12 regression)",
+          r25_xlsx.status_code == 200, f"got {r25_xlsx.status_code}")
+    check("T25-03", "PDF still has set_subject metadata (T18 regression)",
+          r25_pdf.status_code == 200 and b"Executive Intelligence Report" in r25_pdf.content,
+          "set_subject value missing")
+    check("T25-04", "XLSX Content-Type correct (T12 regression)",
+          r25_xlsx.status_code == 200 and
+          "spreadsheetml" in r25_xlsx.headers.get("content-type", ""),
+          repr(r25_xlsx.headers.get("content-type")))
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

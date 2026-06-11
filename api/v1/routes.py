@@ -2567,9 +2567,13 @@ def _build_pdf_bytes(report: dict) -> bytes:
 
     class _ToolSmithPDF(FPDF):
         FONT = 'Sans'
+        NB   = '{nb}'
 
-        def __init__(self):
+        def __init__(self, report_title='', generated_stamp=''):
             super().__init__()
+            self._report_title    = report_title
+            self._generated_stamp = generated_stamp
+            self.alias_nb_pages(self.NB)
             import os
             _W = 'C:/Windows/Fonts'
             _STYLES = {
@@ -2595,6 +2599,62 @@ def _build_pdf_bytes(report: dict) -> bytes:
                     if _fallback and _style != '':
                         self.add_font(self.FONT, _style, _fallback)
 
+        def header(self):
+            if self.page_no() == 1:
+                return
+            self.set_font(self.FONT, 'B', 9)
+            self.set_text_color(*_PDF_BRANDING['primary'])
+            self.cell(60, 6, 'ToolSmithAI')
+            ttl = self._report_title[:47] + '...' if len(self._report_title) > 50 else self._report_title
+            self.set_font(self.FONT, '', 8)
+            self.set_text_color(*_PDF_BRANDING['text_muted'])
+            self.cell(0, 6, ttl, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.set_draw_color(*_PDF_BRANDING['rule_light'])
+            self.set_line_width(0.3)
+            self.line(20, self.get_y(), 190, self.get_y())
+            self.ln(3)
+
+        def footer(self):
+            if self.page_no() == 1:
+                return
+            self.set_y(-15)
+            self.set_draw_color(*_PDF_BRANDING['rule_light'])
+            self.set_line_width(0.3)
+            self.line(20, self.get_y(), 190, self.get_y())
+            self.ln(2)
+            self.set_font(self.FONT, '', 7)
+            self.set_text_color(*_PDF_BRANDING['text_stamp'])
+            self.cell(80, 5, f'Generated {self._generated_stamp}')
+            self.cell(0, 5, f'Page {self.page_no()} of {self.NB}', align='R',
+                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        def _draw_cover(self, title, dataset, status, created):
+            self.set_y(70)
+            self.set_font(self.FONT, 'B', 22)
+            self.set_text_color(*_PDF_BRANDING['primary'])
+            self.cell(0, 12, 'ToolSmithAI', align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.set_font(self.FONT, 'I', 11)
+            self.set_text_color(*_PDF_BRANDING['text_secondary'])
+            self.cell(0, 7, 'Executive Intelligence Report', align='C',
+                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.ln(6)
+            self.set_draw_color(*_PDF_BRANDING['primary_light'])
+            self.set_line_width(0.5)
+            self.line(40, self.get_y(), 170, self.get_y())
+            self.ln(8)
+            self.set_font(self.FONT, 'B', 16)
+            self.set_text_color(*_PDF_BRANDING['title_dark'])
+            self.multi_cell(0, 9, title, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.ln(8)
+            for _lbl, _val in [
+                ('Dataset',   dataset),
+                ('Status',    status),
+                ('Generated', created),
+            ]:
+                self.set_font(self.FONT, '', 9)
+                self.set_text_color(*_PDF_BRANDING['text_secondary'])
+                self.cell(0, 6, f'{_lbl}:  {_val}', align='C',
+                          new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     def _s(text) -> str:
         return str(text)
 
@@ -2609,7 +2669,8 @@ def _build_pdf_bytes(report: dict) -> bytes:
         "email_dataset_report":    "Emailed Dataset Report",
     }.get(task_type, task_type.replace("_", " ").title()))
 
-    pdf = _ToolSmithPDF()
+    stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    pdf   = _ToolSmithPDF(report_title=title, generated_stamp=stamp)
     pdf.set_title(title)
     pdf.set_author('ToolSmithAI')
     pdf.set_creator('ToolSmithAI')
@@ -2617,50 +2678,8 @@ def _build_pdf_bytes(report: dict) -> bytes:
     pdf.set_margins(20, 20, 20)
     pdf.set_auto_page_break(auto=True, margin=25)
     pdf.add_page()
-
-    # Header row: brand left, timestamp right
-    pdf.set_font("Sans", "B", 11)
-    pdf.set_text_color(*b['primary'])
-    pdf.cell(80, 7, "ToolSmithAI")
-    pdf.set_font("Sans", "", 8)
-    pdf.set_text_color(*b['text_stamp'])
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    pdf.cell(0, 7, f"Exported {stamp}", align="R",
-             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-    # Accent rule under header
-    pdf.set_draw_color(*b['primary'])
-    pdf.set_line_width(0.5)
-    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
-    pdf.ln(7)
-
-    # Report title
-    pdf.set_font("Sans", "B", 16)
-    pdf.set_text_color(*b['title_dark'])
-    pdf.multi_cell(0, 9, title)
-    pdf.ln(3)
-
-    # Metadata rows
-    for label, value in [
-        ("Type",    type_label),
-        ("Status",  status),
-        ("Dataset", dataset),
-        ("Created", created),
-    ]:
-        pdf.set_font("Sans", "B", 9)
-        pdf.set_text_color(*b['meta_label'])
-        pdf.cell(26, 6, f"{label}:")
-        pdf.set_font("Sans", "", 9)
-        pdf.set_text_color(*b['text_body'])
-        pdf.cell(0, 6, value, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-    pdf.ln(5)
-
-    # Divider before sections
-    pdf.set_draw_color(*b['rule_light'])
-    pdf.set_line_width(0.3)
-    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
-    pdf.ln(6)
+    pdf._draw_cover(title, dataset, status, created)
+    pdf.add_page()
 
     # Report sections — dispatched on section.type for v2 compatibility.
     # Sections without 'type' (v1 saved reports) default to 'text'.
