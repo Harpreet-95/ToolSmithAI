@@ -2565,6 +2565,73 @@ def delete_report_route(report_id: int, user: AuthenticatedUser = Depends(requir
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
+def _compute_readiness_score(by_type: dict) -> tuple:
+    """Compute 0-100 executive readiness score from existing section data."""
+    score = 0
+    kpi_sec  = (by_type.get('kpi') or [{}])[0]
+    kpi_list = kpi_sec.get('kpis', []) or []
+    kpi_map  = {k.get('label', ''): k for k in kpi_list}
+
+    comp_val = (kpi_map.get('Data Completeness') or {}).get('value')
+    if comp_val is not None:
+        try:
+            c = float(comp_val)
+            if c >= 95:   score += 20
+            elif c >= 80: score += 10
+        except (TypeError, ValueError):
+            pass
+
+    anom_sec  = (by_type.get('anomaly') or [{}])[0]
+    _SENTINEL = 'No Major Anomalies Detected'
+    high_ct   = sum(
+        1 for a in (anom_sec.get('anomalies') or [])
+        if str(a.get('severity', '')).lower() == 'high'
+        and a.get('title', '') != _SENTINEL
+    )
+    if high_ct == 0:   score += 20
+    elif high_ct == 1: score += 12
+    elif high_ct == 2: score += 4
+
+    rec_val = (kpi_map.get('Total Records') or {}).get('value')
+    if rec_val is not None:
+        try:
+            r = int(float(rec_val))
+            if r >= 10000:  score += 20
+            elif r >= 1000: score += 15
+            elif r >= 100:  score += 8
+        except (TypeError, ValueError):
+            pass
+
+    feat_val = (kpi_map.get('Total Features') or {}).get('value')
+    if feat_val is not None:
+        try:
+            f = int(float(feat_val))
+            if f >= 10:  score += 20
+            elif f >= 5: score += 14
+            elif f >= 2: score += 8
+        except (TypeError, ValueError):
+            pass
+
+    rec_sec = (by_type.get('recommendation') or [{}])[0]
+    recs    = rec_sec.get('recommendations') or []
+    if recs:
+        all_confs   = [str(r.get('confidence', '')).lower() for r in recs]
+        hi_pri_recs = [r for r in recs if str(r.get('priority', '')).lower() == 'high']
+        if hi_pri_recs:
+            hi_confs = [str(r.get('confidence', '')).lower() for r in hi_pri_recs]
+            score += 20 if all(c == 'high' for c in hi_confs) else 12
+        elif any(c == 'high' for c in all_confs):
+            score += 12
+        else:
+            score += 6
+
+    if score >= 90:   label = 'STRONG'
+    elif score >= 75: label = 'GOOD'
+    elif score >= 50: label = 'MODERATE'
+    else:             label = 'ATTENTION NEEDED'
+    return (score, label)
+
+
 def _build_pdf_bytes(report: dict) -> bytes:
     """Generate a clean PDF from a saved report dict. Uses fpdf2 (pure Python, no browser)."""
     from fpdf import FPDF
@@ -2661,6 +2728,431 @@ def _build_pdf_bytes(report: dict) -> bytes:
                 self.set_text_color(*_PDF_BRANDING['text_secondary'])
                 self.cell(0, 6, f'{_lbl}:  {_val}', align='C',
                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        def _draw_executive_snapshot(self, sections, b):
+            from fpdf.enums import XPos, YPos
+
+            # ── build lookup dict ─────────────────────────────────────────────
+            _by = {}
+            for _sec in sections:
+                _t = _sec.get('type') or 'text'
+                _by.setdefault(_t, []).append(_sec)
+
+            def _trunc(text, n):
+                s = str(text or '')
+                if len(s) <= n:
+                    return s
+                cut = s[:n].rsplit(' ', 1)
+                return (cut[0] if len(cut) > 1 else s[:n]) + '…'
+
+            def _first(lst):
+                return (lst or [{}])[0]
+
+            # ── section data ──────────────────────────────────────────────────
+            _ai     = _first(_by.get('ai_dashboard'))
+            _ai_ins = str(_ai.get('most_important_insight', '') or '')
+            _ai_rsk = str(_ai.get('highest_risk', '') or '')
+            _ai_act = str(_ai.get('recommended_action', '') or '')
+            _ai_wl  = list(_ai.get('watchlist', None) or [])
+
+            _exec    = _first(_by.get('executive_summary'))
+            _ex_summ = str(_exec.get('summary', '') or '')
+
+            _anom_raw = (_first(_by.get('anomaly')).get('anomalies') or [])
+            _SENTINEL = 'No Major Anomalies Detected'
+            _anoms    = [a for a in _anom_raw if a.get('title', '') != _SENTINEL]
+
+            _rec_sec = _first(_by.get('recommendation'))
+            _recs    = list(_rec_sec.get('recommendations', None) or [])
+
+            _ip_sec  = _first(_by.get('insight_priority'))
+            _ip_ins  = list(_ip_sec.get('insights', None) or [])
+
+            _kpi_sec  = _first(_by.get('kpi'))
+            _kpi_list = list(_kpi_sec.get('kpis', None) or [])
+            _kpi_map  = {k.get('label', ''): k for k in _kpi_list}
+
+            _bkpi_sec   = _first(_by.get('business_kpis'))
+            _bkpi_cards = list(_bkpi_sec.get('kpis', None) or [])
+            _bkpi_lbl   = str(_bkpi_sec.get('dataset_label', '') or '')
+
+            # ── KPI card selection ────────────────────────────────────────────
+            _STRUCT_ORDER = ['Data Completeness', 'Total Records',
+                             'Total Features', 'Columns with Gaps']
+            if _bkpi_cards:
+                _snap_kpis = list(_bkpi_cards[:4])
+                if len(_snap_kpis) < 4:
+                    _used = {c.get('label', '') for c in _snap_kpis}
+                    for _lbl2 in _STRUCT_ORDER:
+                        if len(_snap_kpis) >= 4:
+                            break
+                        if _lbl2 in _kpi_map and _lbl2 not in _used:
+                            _snap_kpis.append(_kpi_map[_lbl2])
+                            _used.add(_lbl2)
+            else:
+                _snap_kpis = [_kpi_map[l] for l in _STRUCT_ORDER if l in _kpi_map][:4]
+
+            # ── key insight ───────────────────────────────────────────────────
+            _FB_INS = 'No critical anomalies detected'
+            _FB_RSK = 'No high-severity risks identified'
+            _FB_ACT = 'Review report sections for detailed insights'
+
+            if _ai_ins and _FB_INS not in _ai_ins:
+                _insight = _trunc(_ai_ins, 160)
+            elif _ip_ins:
+                _insight = _trunc(_ip_ins[0].get('title', ''), 160)
+            elif _anoms:
+                _d = _anoms[0].get('description', '') or _anoms[0].get('title', '')
+                _insight = _trunc(_d, 160)
+            elif _ex_summ:
+                _insight = _trunc(_ex_summ.split('. ')[0], 160)
+            else:
+                _insight = 'Analysis complete. Review the report sections below for detailed findings.'
+
+            # ── top risk ──────────────────────────────────────────────────────
+            _hi_anoms = [a for a in _anoms if str(a.get('severity', '')).lower() == 'high']
+            _SEV_RGB  = {
+                'high':   b['danger'],
+                'medium': b['warning'],
+                'low':    b['neutral'],
+                'clear':  b['success'],
+            }
+
+            if _hi_anoms:
+                _a0          = _hi_anoms[0]
+                _risk_title  = _trunc(_a0.get('title', ''), 100)
+                _risk_detail = _trunc(_a0.get('evidence', '') or _a0.get('description', ''), 120)
+                _risk_sev    = 'high'
+            elif _ai_rsk and _FB_RSK not in _ai_rsk:
+                _risk_title  = _trunc(_ai_rsk, 100)
+                _risk_detail = ''
+                _risk_sev    = 'medium'
+            elif _ip_ins and str(_ip_ins[0].get('severity', '')).lower() == 'high':
+                _risk_title  = _trunc(_ip_ins[0].get('title', ''), 100)
+                _risk_detail = _trunc(_ip_ins[0].get('evidence', ''), 120)
+                _risk_sev    = 'high'
+            elif _anoms:
+                _a0          = _anoms[0]
+                _risk_title  = _trunc(_a0.get('title', ''), 100)
+                _risk_detail = ''
+                _risk_sev    = str(_a0.get('severity', 'low')).lower()
+            else:
+                _risk_title  = 'No high-severity risks detected.'
+                _risk_detail = ''
+                _risk_sev    = 'clear'
+
+            _risk_rgb = _SEV_RGB.get(_risk_sev, b['neutral'])
+
+            # ── recommended action ────────────────────────────────────────────
+            _ACT_RGB = {
+                'HIGH':      b['danger'],
+                'MEDIUM':    b['warning'],
+                'LOW':       b['neutral'],
+                'SUGGESTED': b['primary'],
+            }
+            _hi_recs = [r for r in _recs if str(r.get('priority', '')).lower() == 'high']
+
+            if _hi_recs:
+                _r0           = _hi_recs[0]
+                _act_title    = _trunc(_r0.get('title', ''), 80)
+                _act_reason   = _trunc(_r0.get('reason', ''), 140)
+                _act_priority = 'HIGH'
+            elif _ai_act and _FB_ACT not in _ai_act:
+                _act_title    = _trunc(_ai_act, 80)
+                _act_reason   = ''
+                _act_priority = 'SUGGESTED'
+            elif _recs:
+                _r0           = _recs[0]
+                _act_title    = _trunc(_r0.get('title', ''), 80)
+                _act_reason   = _trunc(_r0.get('reason', ''), 140)
+                _act_priority = str(_r0.get('priority', '')).upper()
+            elif _ip_ins:
+                _act_title    = _trunc(_ip_ins[0].get('recommended_action', ''), 80)
+                _act_reason   = ''
+                _act_priority = 'SUGGESTED'
+            else:
+                _act_title    = 'Review the full report for detailed recommended next steps.'
+                _act_reason   = ''
+                _act_priority = ''
+
+            _act_rgb = _ACT_RGB.get(_act_priority, b['neutral'])
+
+            # ── readiness ─────────────────────────────────────────────────────
+            _r_score, _r_label = _compute_readiness_score(_by)
+            _SCORE_RGB = {
+                'STRONG':           b['success'],
+                'GOOD':             b['success'],
+                'MODERATE':         b['warning'],
+                'ATTENTION NEEDED': b['danger'],
+            }
+            _r_rgb  = _SCORE_RGB.get(_r_label, b['neutral'])
+            _c_card = _kpi_map.get('Data Completeness') or {}
+            _c_val  = _c_card.get('value')
+            _c_str  = f"{float(_c_val):.1f}%" if _c_val is not None else '—'
+            _c_stat = str(_c_card.get('status', '') or '')
+            _c_rgb  = {
+                'good':    b['success'],
+                'warning': b['warning'],
+                'risk':    b['danger'],
+            }.get(_c_stat, b['text_light'])
+
+            _wl_items = [_trunc(str(x), 60) for x in (_ai_wl[:2] if _ai_wl else [])]
+
+            # ── layout ────────────────────────────────────────────────────────
+            _L = 20    # left margin x (mm)
+            _W = 170   # usable width (mm)
+
+            self.set_auto_page_break(auto=False)
+            try:
+                _y = self.get_y()
+
+                # ── 1. BANNER ─────────────────────────────────────────────────
+                _bh = 14
+                self.set_fill_color(*b['primary_light'])
+                self.rect(_L, _y, _W, _bh, style='F')
+                self.set_draw_color(*b['primary'])
+                self.set_line_width(0.5)
+                self.line(_L, _y, _L + _W, _y)
+
+                _tag = _bkpi_lbl or 'Dataset Report'
+                self.set_font(self.FONT, 'B', 10)
+                self.set_text_color(*b['primary'])
+                self.set_xy(_L + 4, _y + 3)
+                self.cell(_W - 8, 6, 'EXECUTIVE SNAPSHOT')
+                self.set_font(self.FONT, '', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L + 4, _y + 3)
+                self.cell(_W - 8, 6, _tag, align='R')
+
+                _y += _bh + 4
+
+                # ── 2. KPI CARD GRID ──────────────────────────────────────────
+                if _snap_kpis:
+                    _nc  = len(_snap_kpis)
+                    _gap = 4.0
+                    _cw  = (_W - _gap * (_nc - 1)) / _nc
+                    _ch  = 33.0
+                    _sw  = 2.5
+                    _TREND_SYM = {'up': '▲', 'down': '▼', 'neutral': '—'}
+                    _STAT_RGB  = {
+                        'good':    b['success'],
+                        'warning': b['warning'],
+                        'risk':    b['danger'],
+                    }
+                    for _ci, _card in enumerate(_snap_kpis):
+                        try:
+                            _cx = _L + _ci * (_cw + _gap)
+                            _cy = _y
+
+                            _c_lbl = str(_card.get('label', '') or '')[:28].upper()
+                            _c_vf  = str(_card.get('value_formatted', '') or '')
+                            if not _c_vf:
+                                _cv   = _card.get('value')
+                                _cfmt = str(_card.get('format', 'number') or 'number')
+                                try:
+                                    if _cv is None:           _c_vf = '—'
+                                    elif _cfmt == 'percent':  _c_vf = f"{float(_cv):.1f}%"
+                                    elif _cfmt == 'currency': _c_vf = f"${float(_cv):,.0f}"
+                                    elif _cfmt == 'number':   _c_vf = f"{int(float(_cv)):,}"
+                                    else:                     _c_vf = str(_cv)
+                                except (TypeError, ValueError):
+                                    _c_vf = str(_cv or '—')
+                            _c_vf = _c_vf[:16]
+
+                            _c_status = str(_card.get('status', '') or '').lower()
+                            _c_trend  = str(_card.get('trend',  '') or '').lower()
+                            _c_delta  = _card.get('delta')
+                            _c_srgb   = _STAT_RGB.get(_c_status, b['neutral'])
+                            _c_tsym   = _TREND_SYM.get(_c_trend, '—')
+                            _c_trgb   = (b['success'] if _c_trend == 'up' else
+                                         b['danger']  if _c_trend == 'down' else b['neutral'])
+
+                            self.set_fill_color(*b['bg_row_alt'])
+                            self.set_draw_color(*b['rule_light'])
+                            self.set_line_width(0.3)
+                            self.rect(_cx, _cy, _cw, _ch, style='FD')
+                            self.set_fill_color(*_c_srgb)
+                            self.set_draw_color(*_c_srgb)
+                            self.rect(_cx, _cy, _sw, _ch, style='F')
+
+                            _tx = _cx + _sw + 2.5
+                            _tw = _cw - _sw - 3.5
+
+                            self.set_font(self.FONT, 'B', 7)
+                            self.set_text_color(*b['text_secondary'])
+                            self.set_xy(_tx, _cy + 3)
+                            self.cell(_tw, 4.5, _c_lbl)
+
+                            self.set_font(self.FONT, 'B', 12)
+                            self.set_text_color(*b['text_dark'])
+                            self.set_xy(_tx, _cy + 9)
+                            self.cell(_tw, 8, _c_vf)
+
+                            try:
+                                _ds = (f"{_c_tsym} {float(_c_delta):+.1f}%"
+                                       if _c_delta is not None else _c_tsym)
+                            except (TypeError, ValueError):
+                                _ds = _c_tsym
+                            self.set_font(self.FONT, 'B', 7.5)
+                            self.set_text_color(*_c_trgb)
+                            self.set_xy(_tx, _cy + 23)
+                            self.cell(_tw, 5, _ds)
+                        except Exception:
+                            pass
+
+                    _y += _ch + 5
+
+                # ── 3. KEY INSIGHT ────────────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['primary'])
+                self.set_xy(_L, _y)
+                self.cell(_W, 5, 'KEY INSIGHT', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                _y += 5
+
+                self.set_font(self.FONT, '', 9)
+                self.set_text_color(*b['text_body'])
+                self.set_xy(_L, _y)
+                self.multi_cell(_W, 5.5, _insight, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                _y = self.get_y() + 4
+
+                # ── 4. TOP RISK ───────────────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                _rx = _L + 5.5
+                _rw = _W - 5.5
+                _y_risk = _y
+
+                _sev_tag = 'CLEAR' if _risk_sev == 'clear' else _risk_sev.upper()
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*_risk_rgb)
+                self.set_xy(_rx, _y + 1)
+                self.cell(22, 5, f'[{_sev_tag}]')
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_rx + 22, _y + 1)
+                self.cell(_rw - 22, 5, 'TOP RISK')
+
+                self.set_font(self.FONT, 'B', 9)
+                self.set_text_color(*b['text_dark'])
+                self.set_xy(_rx, _y + 7)
+                self.multi_cell(_rw, 5, _risk_title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                if _risk_detail:
+                    self.set_font(self.FONT, 'I', 7.5)
+                    self.set_text_color(*b['text_light'])
+                    self.set_xy(_rx, self.get_y())
+                    self.multi_cell(_rw, 4.5, _risk_detail, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                _y_risk_end = max(self.get_y() + 2, _y_risk + 16)
+                self.set_fill_color(*_risk_rgb)
+                self.set_draw_color(*_risk_rgb)
+                self.rect(_L, _y_risk, 2.5, _y_risk_end - _y_risk, style='F')
+                _y = _y_risk_end + 4
+
+                # ── 5. RECOMMENDED ACTION ─────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                _ax = _L + 5.5
+                _aw = _W - 5.5
+                _y_act = _y
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['primary'])
+                self.set_xy(_ax, _y + 1)
+                self.cell(70, 5, 'RECOMMENDED ACTION')
+
+                if _act_priority:
+                    self.set_font(self.FONT, 'B', 7.5)
+                    self.set_text_color(*_act_rgb)
+                    self.set_xy(_ax, _y + 1)
+                    self.cell(_aw, 5, f'[{_act_priority}]', align='R')
+
+                self.set_font(self.FONT, 'B', 9)
+                self.set_text_color(*b['text_body'])
+                self.set_xy(_ax, _y + 7)
+                self.multi_cell(_aw, 5, _act_title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                if _act_reason:
+                    self.set_font(self.FONT, '', 8)
+                    self.set_text_color(*b['text_secondary'])
+                    self.set_xy(_ax, self.get_y())
+                    self.multi_cell(_aw, 4.5, _act_reason, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                _y_act_end = max(self.get_y() + 2, _y_act + 16)
+                self.set_fill_color(*_act_rgb)
+                self.set_draw_color(*_act_rgb)
+                self.rect(_L, _y_act, 2.5, _y_act_end - _y_act, style='F')
+                _y = _y_act_end + 4
+
+                # ── 6. READINESS ROW ──────────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                _lw2 = 82
+                _rw2 = _W - _lw2 - 6
+                _wx  = _L + _lw2 + 6
+                _y0  = _y
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L, _y0)
+                self.cell(_lw2, 5, 'DATA READINESS')
+
+                if _wl_items:
+                    self.set_font(self.FONT, 'B', 8)
+                    self.set_text_color(*b['text_dark'])
+                    self.set_xy(_wx, _y0)
+                    self.cell(_rw2, 5, 'WATCHLIST')
+
+                _y0 += 5
+
+                self.set_font(self.FONT, 'B', 10)
+                self.set_text_color(*_r_rgb)
+                self.set_xy(_L, _y0)
+                self.cell(68, 7, _r_label)
+                self.set_font(self.FONT, '', 9)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L + 70, _y0)
+                self.cell(_lw2 - 70, 7, f'{_r_score}/100')
+
+                _wy = _y0
+                for _wl in _wl_items:
+                    self.set_font(self.FONT, '', 8)
+                    self.set_text_color(*b['text_body'])
+                    self.set_xy(_wx, _wy)
+                    self.cell(4, 5, '•')
+                    self.set_xy(_wx + 4, _wy)
+                    self.multi_cell(_rw2 - 4, 5, _wl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    _wy += 5
+
+                _y0 += 7
+
+                self.set_font(self.FONT, '', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L, _y0)
+                self.cell(30, 5, 'Completeness:')
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*_c_rgb)
+                self.set_xy(_L + 30, _y0)
+                self.cell(_lw2 - 30, 5, _c_str)
+
+            finally:
+                self.set_auto_page_break(auto=True, margin=25)
+
     def _s(text) -> str:
         return str(text)
 
@@ -2685,6 +3177,8 @@ def _build_pdf_bytes(report: dict) -> bytes:
     pdf.set_auto_page_break(auto=True, margin=25)
     pdf.add_page()
     pdf._draw_cover(title, dataset, status, created)
+    pdf.add_page()
+    pdf._draw_executive_snapshot(sections, b)
     pdf.add_page()
 
     # Report sections — dispatched on section.type for v2 compatibility.
