@@ -45,6 +45,7 @@ def send_real_email(
     subject: str,
     body: str,
     *,
+    html_body: str | None = None,
     user_id: str | None = None,
     report_id: int | None = None,
     email_type: str = "report",
@@ -102,6 +103,8 @@ def send_real_email(
     msg["From"] = SMTP_FROM_EMAIL
     msg["To"] = to
     msg.attach(MIMEText(body, "plain"))
+    if html_body:
+        msg.attach(MIMEText(html_body, "html"))
 
     last_error: str = ""
     max_attempts = MAX_STEP_RETRIES + 1

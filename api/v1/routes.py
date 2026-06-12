@@ -4718,20 +4718,34 @@ def email_report_route(
         )
     try:
         from core.email import send_real_email
-        from core.tools.report_generator import render_report_as_plain_text
+        from core.tools.report_generator import (
+            render_report_as_html_email,
+            render_report_as_plain_text,
+        )
         report = get_report_by_id(report_id, str(user.user_id))
         if report is None:
             return JSONResponse(status_code=404, content=build_error_response("Report not found"))
-        subject  = f"ToolSmithAI Intelligence Report — {report.get('title', 'Report')}"
-        body     = render_report_as_plain_text(
-            report.get("content") or {},
-            title=report.get("title", ""),
-            dataset_filename=report.get("dataset_filename") or "",
-            report_url=f"{FRONTEND_BASE_URL}/reports/{report_id}",
+        subject      = f"ToolSmithAI Intelligence Report — {report.get('title', 'Report')}"
+        _content     = report.get("content") or {}
+        _title       = report.get("title", "")
+        _dataset     = report.get("dataset_filename") or ""
+        _report_url  = f"{FRONTEND_BASE_URL}/reports/{report_id}"
+        body         = render_report_as_plain_text(
+            _content,
+            title=_title,
+            dataset_filename=_dataset,
+            report_url=_report_url,
         )
-        result   = send_real_email(to=to, subject=subject, body=body,
-                                   user_id=str(user.user_id), report_id=report_id,
-                                   email_type="report")
+        html_body    = render_report_as_html_email(
+            _content,
+            title=_title,
+            dataset_filename=_dataset,
+            report_url=_report_url,
+        )
+        result       = send_real_email(to=to, subject=subject, body=body,
+                                       html_body=html_body,
+                                       user_id=str(user.user_id), report_id=report_id,
+                                       email_type="report")
         sent     = result["sent"]
         reason   = result.get("reason", "")
         # ENABLE_REAL_EMAIL=false returns sent=False with a "disabled" reason.
