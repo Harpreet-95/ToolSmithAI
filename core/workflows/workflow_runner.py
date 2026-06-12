@@ -207,22 +207,19 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
         title=_display_name,
         dataset_filename=dataset["filename"],
     )
-    subject  = f"ToolSmithAI Intelligence Report — {format_dataset_display_name(dataset['filename'])}"
+    subject = f"ToolSmithAI Intelligence Report — {format_dataset_display_name(dataset['filename'])}"
 
     to_address = recipient or get_user_email(user_id)
-    if to_address is None:
-        email_delivery = {
-            "sent": False,
-            "reason": "No recipient email address. Please provide a recipient or ensure your account has an email.",
-        }
-    else:
-        email_delivery = send_real_email(to=to_address, subject=subject, body=body, user_id=user_id, email_type="report")
 
-    # Only save when the report was freshly generated — if it came from ctx it was
-    # already saved by the preceding generate_dataset_report step.
+    # Resolve report_id BEFORE sending so the email_log row is fully attributed.
+    # When the report came from context it was already saved by the preceding
+    # generate_dataset_report step; its report_id was stored in ctx["report_id"].
+    # When freshly generated here, save first then send.
     report_id = None
     report_save_warning = None
-    if not report_from_ctx:
+    if report_from_ctx:
+        report_id = (ctx or {}).get("report_id")
+    else:
         try:
             from data.report_service import save_report
             try:
@@ -262,6 +259,18 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             logger.warning("Report save failed: %s", exc)
             report_save_warning = "Report was generated but could not be saved. Please try again."
 
+    # Send email now that report_id is known — log row will be fully attributed.
+    if to_address is None:
+        email_delivery = {
+            "sent": False,
+            "reason": "No recipient email address. Please provide a recipient or ensure your account has an email.",
+        }
+    else:
+        email_delivery = send_real_email(
+            to=to_address, subject=subject, body=body,
+            user_id=user_id, report_id=report_id, email_type="report",
+        )
+
     if to_address is not None:
         try:
             from data.notification_service import create_notification
@@ -272,10 +281,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
                 create_notification(
                     user_id=user_id,
                     title="Report emailed",
-                    message=(
-                        f"Report emailed to {to_address}." if simulated
-                        else f"Report emailed to {to_address}."
-                    ),
+                    message=f"Report emailed to {to_address}.",
                     type="email",
                     status="success",
                     related_report_id=report_id,
@@ -475,6 +481,7 @@ def _update_context(ctx: dict, step_type: str, result: dict) -> None:
         ctx["dataset_analysis"] = result.get("dataset_analysis")
     elif step_type == "generate_dataset_report":
         ctx["dataset_report"] = result.get("dataset_report")
+        ctx["report_id"] = result.get("report_id")
 
 
 def _mark_remaining_skipped(step_statuses: list, from_index: int) -> None:
@@ -802,7 +809,7 @@ def run_workflow_by_name(name: str, user_id: str | None = None) -> dict:
         return handle_input(intent, user_id=user_id)["data"]
 
     plan = _build_plan(workflow)
-    result = run_plan(plan)
+    result = run_plan(plan, user_id=user_id)
     _log_and_charge(plan, result, workflow["id"], user_id)
     return result
 
@@ -820,6 +827,6 @@ def run_workflow_by_id(workflow_id: int, user_id: str | None = None) -> dict:
         return result
 
     plan = _build_plan(workflow)
-    result = run_plan(plan)
+    result = run_plan(plan, user_id=user_id)
     _log_and_charge(plan, result, workflow["id"], user_id)
     return result

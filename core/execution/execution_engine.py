@@ -19,8 +19,7 @@ def handle_fetch_report_data(params: dict) -> dict:
     }
 
 
-def handle_send_email(params: dict) -> dict:
-    from core.config import ENABLE_REAL_EMAIL
+def handle_send_email(params: dict, user_id: str | None = None) -> dict:
     from core.email import send_real_email
 
     to = params.get("to")
@@ -28,12 +27,8 @@ def handle_send_email(params: dict) -> dict:
     intent = params.get("intent", "")
     task_type = params.get("task_type", "send_email")
 
-    if not ENABLE_REAL_EMAIL:
-        return {
-            "to": to,
-            "subject": subject,
-            "message": "Email delivered successfully",
-        }
+    # No early return for ENABLE_REAL_EMAIL=false — send_real_email logs a
+    # "simulated" row so the email_logs audit trail is always complete.
 
     if not to:
         return {
@@ -51,7 +46,7 @@ def handle_send_email(params: dict) -> dict:
         "Your workflow ran successfully.\n\n"
         "— ToolSmithAI"
     )
-    result = send_real_email(to=to, subject=subject, body=body)
+    result = send_real_email(to=to, subject=subject, body=body, user_id=user_id)
     return {
         "to": to,
         "subject": subject,
@@ -87,11 +82,13 @@ DISPATCH_TABLE = {
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _dispatch(step: dict) -> dict:
+def _dispatch(step: dict, user_id: str | None = None) -> dict:
     key = f"{step['tool']}.{step['operation']}"
     handler = DISPATCH_TABLE.get(key)
     if handler is not None:
-        # Built-in static tool — original path, entirely unchanged
+        # Built-in static tool — pass user_id only to email handler
+        if key == "email_sender.send_email":
+            return handler(step.get("params") or {}, user_id=user_id)
         return handler(step.get("params") or {})
 
     # Dynamic tool path — only active when ENABLE_DYNAMIC_TOOL_EXECUTION=true
@@ -101,7 +98,7 @@ def _dispatch(step: dict) -> dict:
         tool_def = TOOL_REGISTRY.get(step.get("tool") or "")
         if tool_def and tool_def.get("source") == "dynamic":
             from core.primitives.executor import run_primitive
-            return run_primitive(tool_def, step)
+            return run_primitive(tool_def, step, user_id=user_id)
 
     raise ValueError(
         f"No handler registered for '{key}'. "
@@ -118,7 +115,7 @@ def _is_transient(exc: Exception) -> bool:
     return not isinstance(exc, (ValueError, TypeError))
 
 
-def _run_step(step: dict) -> dict:
+def _run_step(step: dict, user_id: str | None = None) -> dict:
     base = {
         "step_id": step.get("step_id"),
         "tool": step.get("tool"),
@@ -127,7 +124,7 @@ def _run_step(step: dict) -> dict:
     last_exc: Exception | None = None
     for attempt in range(MAX_STEP_RETRIES + 1):
         try:
-            output = _dispatch(step)
+            output = _dispatch(step, user_id=user_id)
             return {**base, "status": "success", "output": output, "error": None}
         except Exception as exc:
             last_exc = exc
@@ -147,7 +144,7 @@ def _run_step(step: dict) -> dict:
 # Public interface
 # ---------------------------------------------------------------------------
 
-def run_plan(plan: dict) -> dict:
+def run_plan(plan: dict, user_id: str | None = None) -> dict:
     started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     step_results = []
     plan_id = plan.get("plan_id")
@@ -162,7 +159,7 @@ def run_plan(plan: dict) -> dict:
     for step in steps:
         step_id = step.get("step_id")
         step_start = time.perf_counter()
-        result = _run_step(step)
+        result = _run_step(step, user_id=user_id)
         step_elapsed_ms = (time.perf_counter() - step_start) * 1000
         print(f"[PerformanceTracker] step_id='{step_id}' completed in {step_elapsed_ms:.2f} ms", flush=True)
         result["duration_ms"] = step_elapsed_ms

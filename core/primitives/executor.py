@@ -264,7 +264,7 @@ def _exec_transform_json(config: dict, params: dict) -> dict:
     return result
 
 
-def _exec_send_email(config: dict, params: dict) -> dict:
+def _exec_send_email(config: dict, params: dict, user_id: str | None = None) -> dict:
     """Send an email using the configured SMTP infrastructure.
 
     config keys (all overridable by params):
@@ -272,7 +272,6 @@ def _exec_send_email(config: dict, params: dict) -> dict:
       subject  (str) — email subject
       body     (str) — plain-text body with {identifier} placeholders
     """
-    from core.config import ENABLE_REAL_EMAIL
     from core.email import send_real_email
 
     merged = {**config, **params}
@@ -280,13 +279,13 @@ def _exec_send_email(config: dict, params: dict) -> dict:
     subject = _safe_template(str(merged.get("subject") or "ToolSmithAI Notification"), params)
     body    = _safe_template(str(merged.get("body") or f"Notification: {subject}"), params)
 
-    if not ENABLE_REAL_EMAIL:
-        return {"to": to, "subject": subject, "message": "Email processed."}
+    # No early return for ENABLE_REAL_EMAIL=false — send_real_email logs a
+    # "simulated" row so the email_logs audit trail is always complete.
 
     if not to:
         return {"to": None, "subject": subject, "sent": False, "message": "No recipient address."}
 
-    result = send_real_email(to=to, subject=subject, body=body)
+    result = send_real_email(to=to, subject=subject, body=body, user_id=user_id)
     return {
         "to": to,
         "subject": subject,
@@ -345,13 +344,14 @@ _PRIMITIVE_HANDLERS: dict = {
 }
 
 
-def run_primitive(tool_def: dict, step: dict) -> dict:
+def run_primitive(tool_def: dict, step: dict, user_id: str | None = None) -> dict:
     """Execute a dynamic tool's primitive. Never runs arbitrary code.
 
     Args:
         tool_def: registry entry for the tool; must have source="dynamic",
                   primitive_type, and primitive_config populated by _load_registry.
         step:     execution step dict with operation and params.
+        user_id:  caller's user id — forwarded to send_email for log attribution.
 
     Raises:
         ValueError: invalid config, blocked URL, unknown primitive, etc.
@@ -376,4 +376,6 @@ def run_primitive(tool_def: dict, step: dict) -> dict:
         )
 
     params = step.get("params") or {}
+    if primitive_type == "send_email":
+        return _exec_send_email(primitive_config, params, user_id=user_id)
     return _PRIMITIVE_HANDLERS[primitive_type](primitive_config, params)
