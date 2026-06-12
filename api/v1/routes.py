@@ -83,6 +83,11 @@ from data.export_log_service import (
     count_all_export_logs,
     get_export_log_summary,
 )
+from data.email_log_service import (
+    list_all_email_logs,
+    count_all_email_logs,
+    get_email_log_summary,
+)
 
 
 def _compute_histogram(series, n_bins: int = 10) -> list:
@@ -4695,6 +4700,55 @@ def admin_export_logs_summary_route(
 ) -> dict:
     try:
         summary = get_export_log_summary()
+        return {"status": "success", "data": summary}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/admin/email-logs")
+def list_admin_email_logs_route(
+    user: AuthenticatedUser = Depends(require_role("admin")),
+    limit: int = Query(default=100, le=500),
+    offset: int = Query(default=0, ge=0),
+    email_type: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    user_id: str | None = None,
+) -> dict:
+    try:
+        _type   = email_type or None
+        _status = status or None
+        _dfrom  = date_from or None
+        _dto    = date_to or None
+        _uid    = user_id or None
+        logs = list_all_email_logs(
+            limit=limit,
+            offset=offset,
+            email_type=_type,
+            status=_status,
+            date_from=_dfrom,
+            date_to=_dto,
+            user_id=_uid,
+        )
+        total = count_all_email_logs(
+            email_type=_type,
+            status=_status,
+            date_from=_dfrom,
+            date_to=_dto,
+            user_id=_uid,
+        )
+        return {"status": "success", "data": logs, "count": len(logs), "total": total}
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
+
+
+@router.get("/admin/email-logs/summary")
+def admin_email_logs_summary_route(
+    user: AuthenticatedUser = Depends(require_role("admin")),
+) -> dict:
+    try:
+        summary = get_email_log_summary()
         return {"status": "success", "data": summary}
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
