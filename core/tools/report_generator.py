@@ -1,3 +1,4 @@
+import html
 import json
 import logging
 import math
@@ -3702,6 +3703,129 @@ def _email_footer(report_url: str, readiness_sections: list[dict]) -> list[str]:
     return lines
 
 
+# ── Canonical Executive Snapshot extractor ───────────────────────────────────
+
+
+def build_executive_snapshot(
+    report_content: dict,
+    *,
+    title: str = "",
+    dataset_filename: str = "",
+    created_at: str | None = None,
+) -> dict:
+    """Extract the canonical Executive Snapshot from a report content dict.
+
+    Pure, deterministic, side-effect-free. No AI generation, no database
+    access, no network calls. Gracefully degrades when sections are absent.
+
+    Shared by PDF, HTML email, and all future executive surfaces. Rendering
+    is the caller's responsibility — this function only extracts and normalises.
+
+    Args:
+        report_content: Dict with a "sections" key — the decoded content_json
+                        from get_report_by_id() / generate_dataset_report().
+        title: Report display title (from the report row, not from sections).
+        dataset_filename: Source dataset filename (from the report row).
+        created_at: Report creation timestamp string, or None.
+
+    Returns:
+        Dict with normalised snapshot fields. Never raises.
+    """
+    try:
+        sections: list[dict] = report_content.get("sections") or []
+
+        by_type: dict[str, list[dict]] = {}
+        for sec in sections:
+            t = sec.get("type") or "text"
+            by_type.setdefault(t, []).append(sec)
+
+        # ── KPI cards ─────────────────────────────────────────────────────────
+        # Standard kpi section is checked first; business_kpis supplements it.
+        # Both store cards under "kpis" or "metrics". Capped at 6, deduplicated
+        # by label to prevent the same metric appearing from both sources.
+        kpi_cards: list[dict] = []
+        seen_labels: set[str] = set()
+
+        for section_type in ("kpi", "business_kpis"):
+            if len(kpi_cards) >= 6:
+                break
+            for sec in by_type.get(section_type, []):
+                if len(kpi_cards) >= 6:
+                    break
+                for card in (sec.get("kpis") or sec.get("metrics") or []):
+                    if len(kpi_cards) >= 6:
+                        break
+                    label = (card.get("label") or "").strip()
+                    if not label or label in seen_labels:
+                        continue
+                    seen_labels.add(label)
+                    kpi_cards.append({
+                        "label":           label,
+                        "value":           card.get("value"),
+                        "value_formatted": (
+                            card.get("value_formatted")
+                            or str(card.get("value", "—"))
+                        ),
+                        "status":          card.get("status") or "neutral",
+                        "trend":           card.get("trend") or "neutral",
+                        "delta":           card.get("delta"),
+                        "delta_direction": card.get("delta_direction") or "neutral",
+                    })
+
+        # ── Predictive readiness ──────────────────────────────────────────────
+        readiness_score: int | None = None
+        readiness_level: str | None = None
+        readiness_secs = by_type.get("predictive_readiness", [])
+        if readiness_secs:
+            r = readiness_secs[0]
+            try:
+                raw = r.get("readiness_score")
+                readiness_score = int(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                readiness_score = None
+            readiness_level = r.get("readiness_level") or None
+
+        # ── AI Dashboard fields ───────────────────────────────────────────────
+        # Known placeholder strings are suppressed so consumers receive either a
+        # genuine value or an empty string — never an uninformative fallback.
+        key_insight = top_risk = recommended_action = ""
+        ai_secs = by_type.get("ai_dashboard", [])
+        if ai_secs:
+            ai = ai_secs[0]
+            raw_insight = (ai.get("most_important_insight") or "").strip()
+            raw_risk    = (ai.get("highest_risk")           or "").strip()
+            raw_action  = (ai.get("recommended_action")     or "").strip()
+            key_insight        = "" if raw_insight in ("", _AI_DASH_FALLBACK_INSIGHT) else raw_insight
+            top_risk           = "" if raw_risk    in ("", _AI_DASH_FALLBACK_RISK)    else raw_risk
+            recommended_action = "" if raw_action  in ("", _AI_DASH_FALLBACK_ACTION)  else raw_action
+
+        return {
+            "kpi_cards":          kpi_cards,
+            "readiness_score":    readiness_score,
+            "readiness_level":    readiness_level,
+            "key_insight":        key_insight,
+            "top_risk":           top_risk,
+            "recommended_action": recommended_action,
+            "report_title":       title,
+            "dataset_name":       dataset_filename,
+            "created_at":         created_at,
+        }
+
+    except Exception:
+        logger.exception("build_executive_snapshot: unexpected error — returning empty snapshot")
+        return {
+            "kpi_cards":          [],
+            "readiness_score":    None,
+            "readiness_level":    None,
+            "key_insight":        "",
+            "top_risk":           "",
+            "recommended_action": "",
+            "report_title":       title,
+            "dataset_name":       dataset_filename,
+            "created_at":         created_at,
+        }
+
+
 # ── Canonical plain-text email renderer ───────────────────────────────────────
 
 
@@ -3788,6 +3912,329 @@ def render_report_as_plain_text(
             f"Report: {title or 'Dataset Report'}\n"
             f"Dataset: {dataset_filename}\n\n"
             "Powered by ToolSmithAI."
+        )
+
+
+# ── Canonical HTML email renderer ────────────────────────────────────────────
+
+
+def render_report_as_html_email(
+    report_content: dict,
+    *,
+    title: str = "",
+    dataset_filename: str = "",
+    report_url: str = "",
+) -> str:
+    """Canonical HTML renderer for executive report emails.
+
+    Produces an enterprise-grade, inline-CSS HTML email suitable for CEO /
+    COO / CFO inboxes.  Calls build_executive_snapshot() as the single source
+    of truth — no fields are re-extracted from report_content directly.
+
+    Layout (top → bottom):
+        Header   — brand name · report title · dataset name
+        KPIs     — up to 6 metric cards (2-per-row, pixel-width table cells)
+        Readiness— table-based progress bar + score + level label
+        Signals  — key insight / top risk / recommended action (accent stripes)
+        CTA      — "View Full Report" button (omitted when report_url is empty)
+        Footer   — ToolSmithAI branding tagline
+
+    Compatibility guarantees:
+        • Table-based layout — no CSS Grid, no Flexbox
+        • Inline CSS only — no <style> blocks (Gmail strips them)
+        • No JavaScript
+        • Arial / Helvetica font stack — no external font requests
+        • 600 px max-width container
+        • border-radius degrades gracefully in Outlook (visual only)
+
+    Args:
+        report_content:   Dict with a "sections" key from get_report_by_id() /
+                          generate_dataset_report().
+        title:            Report display title.
+        dataset_filename: Source dataset filename.
+        report_url:       Deep link into the web UI; CTA omitted when empty.
+
+    Returns:
+        Complete HTML string.  Never raises.
+    """
+    try:
+        _e = html.escape  # entity-escape every user-controlled value
+
+        # Snapshot is the single source of executive data — never re-extract.
+        snap = build_executive_snapshot(
+            report_content,
+            title=title,
+            dataset_filename=dataset_filename,
+        )
+
+        report_title_s  = _e(snap["report_title"] or title or "Dataset Report")
+        dataset_name_s  = _e(snap["dataset_name"] or dataset_filename or "")
+        kpi_cards       = snap["kpi_cards"]
+        readiness_score = snap["readiness_score"]
+        readiness_level = snap["readiness_level"]
+        key_insight_s   = _e(snap["key_insight"])
+        top_risk_s      = _e(snap["top_risk"])
+        recommended_s   = _e(snap["recommended_action"])
+
+        # ── Palette (mirrors _PDF_BRANDING hex equivalents) ───────────────────
+        _C = {
+            "bg_outer":     "#F8FAFC",
+            "bg_white":     "#FFFFFF",
+            "header_bg":    "#16162C",
+            "header_muted": "#8B9DC3",
+            "primary":      "#6366F1",
+            "success":      "#10B981",
+            "warning":      "#F59E0B",
+            "danger":       "#F87171",
+            "text_dark":    "#1E2A3A",
+            "text_body":    "#2C3650",
+            "text_muted":   "#64748B",
+            "border":       "#E2E8F0",
+        }
+
+        _STATUS_C = {
+            "good":    _C["success"],
+            "warning": _C["warning"],
+            "risk":    _C["danger"],
+        }
+
+        # ── Inner helper: single KPI card <td> ────────────────────────────────
+        def _kpi_cell(card: dict) -> str:
+            lbl   = _e(str(card.get("label") or ""))
+            val   = _e(str(card.get("value_formatted") or card.get("value") or "—"))
+            stt_c = _STATUS_C.get(card.get("status", ""), _C["text_muted"])
+            delta     = card.get("delta")
+            delta_dir = str(card.get("delta_direction") or "")
+            delta_html = ""
+            if delta is not None:
+                try:
+                    arrow = {"up": "&#x2191;", "down": "&#x2193;"}.get(delta_dir, "&#x2192;")
+                    delta_html = (
+                        f'<p style="margin:5px 0 0 0;font-family:Arial,Helvetica,sans-serif;'
+                        f'font-size:11px;color:{stt_c};">'
+                        f'{arrow}&nbsp;{abs(float(delta)):.1f}%</p>'
+                    )
+                except (TypeError, ValueError):
+                    pass
+            return (
+                f'<td width="258" valign="top" '
+                f'style="background-color:{_C["bg_white"]};'
+                f'border:1px solid {_C["border"]};'
+                f'border-radius:6px;padding:16px 18px;">'
+                f'<p style="margin:0 0 5px 0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:10px;text-transform:uppercase;letter-spacing:0.8px;'
+                f'color:{_C["text_muted"]};">{lbl}</p>'
+                f'<p style="margin:0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:22px;font-weight:bold;line-height:1.2;'
+                f'color:{_C["text_dark"]};">{val}</p>'
+                + delta_html
+                + "</td>"
+            )
+
+        # ── Inner helper: intelligence signal row ─────────────────────────────
+        def _signal_row(label: str, body_s: str, accent: str) -> str:
+            return (
+                f'<tr>'
+                f'<td width="4" bgcolor="{accent}" '
+                f'style="border-radius:2px 0 0 2px;">&nbsp;</td>'
+                f'<td width="16">&nbsp;</td>'
+                f'<td valign="top" style="padding:14px 0;">'
+                f'<p style="margin:0 0 3px 0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:10px;text-transform:uppercase;letter-spacing:0.8px;'
+                f'color:{_C["text_muted"]};">{label}</p>'
+                f'<p style="margin:0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:13px;line-height:1.6;'
+                f'color:{_C["text_body"]};">{body_s}</p>'
+                f'</td></tr>'
+                f'<tr><td height="1" colspan="3" '
+                f'bgcolor="{_C["border"]}">&nbsp;</td></tr>'
+            )
+
+        # ── Section: KPI cards ─────────────────────────────────────────────────
+        kpi_section = ""
+        if kpi_cards:
+            rows = []
+            for i in range(0, len(kpi_cards), 2):
+                pair = kpi_cards[i:i + 2]
+                r = "<tr>" + _kpi_cell(pair[0])
+                if len(pair) == 2:
+                    r += '<td width="20">&nbsp;</td>' + _kpi_cell(pair[1])
+                else:
+                    r += '<td width="20">&nbsp;</td><td width="258">&nbsp;</td>'
+                r += "</tr>"
+                if i + 2 < len(kpi_cards):
+                    r += '<tr><td height="12" colspan="3">&nbsp;</td></tr>'
+                rows.append(r)
+            kpi_section = (
+                '<tr><td style="padding:28px 32px 0 32px;">'
+                f'<p style="margin:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:10px;text-transform:uppercase;letter-spacing:1.2px;'
+                f'color:{_C["text_muted"]};">KEY METRICS</p>'
+                '<table width="536" cellpadding="0" cellspacing="0" border="0">'
+                + "".join(rows)
+                + "</table></td></tr>"
+            )
+
+        # ── Section: Readiness score bar ──────────────────────────────────────
+        readiness_section = ""
+        if readiness_score is not None:
+            score_val = max(0, min(100, readiness_score))
+            filled_px = round(score_val * 536 / 100)
+            empty_px  = 536 - filled_px
+            score_c   = (
+                _C["success"] if score_val >= 70
+                else _C["warning"] if score_val >= 40
+                else _C["danger"]
+            )
+            level_s = _e((readiness_level or "").title())
+            bar = (
+                f'<td width="{filled_px}" height="8" bgcolor="{score_c}" '
+                f'style="border-radius:4px 0 0 4px;font-size:0;">&nbsp;</td>'
+            )
+            if empty_px > 0:
+                r_right = "0 4px 4px 0" if filled_px > 0 else "4px"
+                bar += (
+                    f'<td width="{empty_px}" height="8" bgcolor="{_C["border"]}" '
+                    f'style="border-radius:{r_right};font-size:0;">&nbsp;</td>'
+                )
+            level_part = (
+                f'&nbsp;&nbsp;&#x22C5;&nbsp;&nbsp;{level_s}' if level_s else ""
+            )
+            readiness_section = (
+                '<tr><td style="padding:24px 32px 0 32px;">'
+                f'<p style="margin:0 0 10px 0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:10px;text-transform:uppercase;letter-spacing:1.2px;'
+                f'color:{_C["text_muted"]};">PREDICTIVE READINESS</p>'
+                '<table width="536" cellpadding="0" cellspacing="0" border="0">'
+                f'<tr>{bar}</tr>'
+                "</table>"
+                f'<p style="margin:8px 0 0 0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:13px;color:{_C["text_body"]};">'
+                f'<strong style="font-size:18px;color:{score_c};">{score_val}</strong>'
+                f'<span style="color:{_C["text_muted"]};">'
+                f"&nbsp;/ 100{level_part}</span></p>"
+                "</td></tr>"
+            )
+
+        # ── Section: Intelligence signals ─────────────────────────────────────
+        signal_rows = ""
+        if key_insight_s:
+            signal_rows += _signal_row("Key Insight", key_insight_s, _C["primary"])
+        if top_risk_s:
+            signal_rows += _signal_row("Top Risk", top_risk_s, _C["danger"])
+        if recommended_s:
+            signal_rows += _signal_row("Recommended Action", recommended_s, _C["success"])
+
+        signals_section = ""
+        if signal_rows:
+            signals_section = (
+                '<tr><td style="padding:24px 32px 0 32px;">'
+                f'<p style="margin:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;'
+                f'font-size:10px;text-transform:uppercase;letter-spacing:1.2px;'
+                f'color:{_C["text_muted"]};">EXECUTIVE INTELLIGENCE</p>'
+                '<table width="536" cellpadding="0" cellspacing="0" border="0">'
+                + signal_rows
+                + "</table></td></tr>"
+            )
+
+        # ── Section: CTA button ────────────────────────────────────────────────
+        cta_section = ""
+        if report_url and report_url.startswith(("http://", "https://", "/")):
+            safe_url = _e(report_url)
+            cta_section = (
+                '<tr><td style="padding:28px 32px;">'
+                '<table width="536" cellpadding="0" cellspacing="0" border="0"><tr>'
+                f'<td align="center" bgcolor="{_C["primary"]}" '
+                f'style="border-radius:6px;">'
+                f'<a href="{safe_url}" target="_blank" '
+                f'style="display:block;padding:14px 24px;'
+                f'font-family:Arial,Helvetica,sans-serif;font-size:14px;'
+                f'font-weight:bold;color:#FFFFFF;text-decoration:none;'
+                f'letter-spacing:0.3px;">View Full Report</a>'
+                f'</td>'
+                "</tr></table></td></tr>"
+            )
+
+        # ── Assemble document ─────────────────────────────────────────────────
+        body_inner = (
+            kpi_section
+            + readiness_section
+            + signals_section
+            + (cta_section or '<tr><td height="24">&nbsp;</td></tr>')
+        )
+
+        header_dataset = (
+            f'<p style="margin:6px 0 0 0;font-family:Arial,Helvetica,sans-serif;'
+            f'font-size:13px;color:{_C["header_muted"]};">{dataset_name_s}</p>'
+            if dataset_name_s else ""
+        )
+
+        return "\n".join(p for p in [
+            "<!DOCTYPE html>",
+            '<html lang="en">',
+            "<head>",
+            '<meta charset="utf-8">',
+            '<meta name="viewport" content="width=device-width,initial-scale=1.0">',
+            '<meta http-equiv="X-UA-Compatible" content="IE=edge">',
+            f"<title>{report_title_s}</title>",
+            "</head>",
+            (f'<body style="margin:0;padding:0;background-color:{_C["bg_outer"]};'
+             f'-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">'),
+            # Outer wrapper — centres content on wide viewports
+            (f'<table width="100%" cellpadding="0" cellspacing="0" border="0" '
+             f'bgcolor="{_C["bg_outer"]}" role="presentation">'),
+            f'<tr><td align="center" style="padding:24px 0;">',
+            # Inner 600 px container
+            ('<table width="600" cellpadding="0" cellspacing="0" border="0" '
+             'style="max-width:600px;" role="presentation">'),
+            # HEADER
+            "<tr>",
+            (f'<td bgcolor="{_C["header_bg"]}" '
+             f'style="padding:28px 32px;border-radius:8px 8px 0 0;">'),
+            (f'<p style="margin:0;font-family:Arial,Helvetica,sans-serif;'
+             f'font-size:10px;text-transform:uppercase;letter-spacing:2px;'
+             f'color:{_C["header_muted"]};">'
+             f'ToolSmithAI&nbsp;&nbsp;&#x22C5;&nbsp;&nbsp;Executive Intelligence</p>'),
+            (f'<p style="margin:10px 0 0 0;font-family:Arial,Helvetica,sans-serif;'
+             f'font-size:22px;font-weight:bold;line-height:1.2;'
+             f'color:#FFFFFF;">{report_title_s}</p>'),
+            header_dataset,
+            "</td></tr>",
+            # BODY
+            "<tr>",
+            f'<td bgcolor="{_C["bg_white"]}" style="padding-bottom:12px;">',
+            ('<table width="100%" cellpadding="0" cellspacing="0" border="0" '
+             'role="presentation">'),
+            body_inner,
+            "</table>",
+            "</td></tr>",
+            # FOOTER
+            "<tr>",
+            (f'<td bgcolor="{_C["bg_outer"]}" '
+             f'style="padding:18px 32px;border-top:1px solid {_C["border"]};">'),
+            (f'<p style="margin:0;font-family:Arial,Helvetica,sans-serif;'
+             f'font-size:11px;color:{_C["text_muted"]};text-align:center;">'
+             f'Powered by <strong style="color:{_C["text_body"]};">ToolSmithAI</strong>'
+             f'&nbsp;&nbsp;&#x22C5;&nbsp;&nbsp;Automated Intelligence Report</p>'),
+            "</td></tr>",
+            # Close wrappers
+            "</table>",
+            "</td></tr>",
+            "</table>",
+            "</body>",
+            "</html>",
+        ] if p)
+
+    except Exception:
+        logger.exception("render_report_as_html_email: unexpected error — returning fallback")
+        safe_t = html.escape(title or "Dataset Report")
+        return (
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            f"<title>{safe_t}</title></head>"
+            "<body style=\"font-family:Arial,Helvetica,sans-serif;padding:20px;color:#1E2A3A;\">"
+            f"<h2>{safe_t}</h2>"
+            "<p style=\"color:#64748B;\">Powered by ToolSmithAI.</p>"
+            "</body></html>"
         )
 
 
