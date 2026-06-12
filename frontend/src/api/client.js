@@ -559,3 +559,17 @@ export async function getEngineRun(runId, token) {
   });
   return parseResponse(res);
 }
+
+export async function getAdminExportLogs(token, params = {}) {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v != null && v !== '') qs.set(k, v)
+  }
+  const res = await fetch(`/v1/admin/export-logs?${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getAdminExportLogSummary(token) {
+  const res = await fetch('/v1/admin/export-logs/summary', { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}

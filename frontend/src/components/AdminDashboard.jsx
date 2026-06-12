@@ -1,9 +1,12 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
+import ChartSection from './ChartSection'
 import {
   getMyData, getScheduledWorkflows, getReports, getWorkflows,
   getNotifications, markNotificationRead, deleteNotification,
   retryExecution, rerunExecution, runScheduleNow, getUsage, getDynamicTools,
   createAdminInvite,
+  getAdminExportLogs,
+  getAdminExportLogSummary,
 } from '../api/client'
 
 const DynamicToolComposer = lazy(() => import('./DynamicToolComposer'))
@@ -94,6 +97,10 @@ const ADMIN_NAV = [
   {
     id: 'audit', label: 'Audit & Governance',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>,
+  },
+  {
+    id: 'export-activity', label: 'Export Activity',
+    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
   },
 ]
 
@@ -541,6 +548,225 @@ function UserManagementPanel({ C }) {
   )
 }
 
+// ─── Export Activity panel ────────────────────────────────────────────────────
+function ExportActivityPanel({ C, token, onSessionExpired }) {
+  const PAGE_SIZE = 25
+  const S = makeS(C)
+
+  const [summary,        setSummary]        = useState(null)
+  const [summaryLoading, setSummaryLoading] = useState(true)
+  const [summaryErr,     setSummaryErr]     = useState(null)
+  const [logs,           setLogs]           = useState([])
+  const [logsLoading,    setLogsLoading]    = useState(true)
+  const [logsErr,        setLogsErr]        = useState(null)
+  const [filterFormat,   setFilterFormat]   = useState('')
+  const [filterStatus,   setFilterStatus]   = useState('')
+  const [page,           setPage]           = useState(0)
+  const [total,          setTotal]          = useState(0)
+
+  const is401 = err => err?.message?.startsWith('401')
+
+  useEffect(() => {
+    let cancelled = false
+
+    setSummaryLoading(true)
+    setSummaryErr(null)
+    getAdminExportLogSummary(token)
+      .then(res => { if (!cancelled) setSummary(res?.data ?? null) })
+      .catch(err => {
+        if (is401(err)) { onSessionExpired(); return }
+        if (!cancelled) setSummaryErr(err.message || 'Failed to load summary')
+      })
+      .finally(() => { if (!cancelled) setSummaryLoading(false) })
+
+    setLogsLoading(true)
+    setLogsErr(null)
+    const params = { limit: PAGE_SIZE, offset: page * PAGE_SIZE }
+    if (filterFormat) params.export_format = filterFormat
+    if (filterStatus) params.status = filterStatus
+    getAdminExportLogs(token, params)
+      .then(res => {
+        if (!cancelled) {
+          setLogs(res?.data ?? [])
+          setTotal(res?.total ?? 0)
+        }
+      })
+      .catch(err => {
+        if (is401(err)) { onSessionExpired(); return }
+        if (!cancelled) setLogsErr(err.message || 'Failed to load export logs')
+      })
+      .finally(() => { if (!cancelled) setLogsLoading(false) })
+
+    return () => { cancelled = true }
+  }, [token, filterFormat, filterStatus, page]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleFormatChange(e) { setFilterFormat(e.target.value); setPage(0) }
+  function handleStatusChange(e) { setFilterStatus(e.target.value); setPage(0) }
+
+  const byFormat  = summary?.exports_by_format ?? {}
+  const hasChart  = Object.keys(byFormat).length > 0
+  const chartData = {
+    chart_type: 'bar',
+    title: 'Exports by Format',
+    labels: Object.keys(byFormat),
+    series: [{ name: 'Exports', data: Object.values(byFormat) }],
+  }
+
+  const mostUsed = Object.keys(byFormat).length > 0
+    ? Object.entries(byFormat).sort((a, b) => b[1] - a[1])[0][0].toUpperCase()
+    : '—'
+
+  const from    = total === 0 ? 0 : page * PAGE_SIZE + 1
+  const to      = Math.min((page + 1) * PAGE_SIZE, total)
+  const hasPrev = page > 0
+  const hasNext = to < total
+
+  function fmtSize(bytes) {
+    if (bytes == null) return '—'
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  const FORMAT_COLORS = {
+    pdf:  { color: '#ef4444', bg: '#ef44441a' },
+    xlsx: { color: '#10b981', bg: '#10b9811a' },
+    csv:  { color: '#f59e0b', bg: '#f59e0b1a' },
+    json: { color: '#6366f1', bg: '#6366f11a' },
+  }
+  const fmtBadge  = fmt => { const f = (fmt || '').toLowerCase(); const c = FORMAT_COLORS[f] ?? { color: C.textSec, bg: C.borderAlt }; return S.badge(c.color, c.bg) }
+  const statBadge = st  => st === 'success' ? S.badge(C.success, C.successSoft) : S.badge(C.danger, C.dangerSoft)
+
+  const kpis = [
+    { label: 'Total Exports',    value: summaryLoading ? '…' : (summary?.total_exports   ?? '—'), color: C.accent  },
+    { label: 'Success Rate',     value: summaryLoading ? '…' : (summary ? `${summary.success_rate}%` : '—'), color: C.success },
+    { label: 'Failed Exports',   value: summaryLoading ? '…' : (summary?.failed_exports  ?? '—'), color: C.danger  },
+    { label: 'Most Used Format', value: summaryLoading ? '…' : mostUsed,                          color: '#8b5cf6' },
+  ]
+
+  const selStyle = {
+    background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px',
+    color: C.text, fontSize: '0.82rem', padding: '8px 12px',
+    outline: 'none', fontFamily: FONT, cursor: 'pointer',
+  }
+
+  const COLS = '1.8fr 1fr 0.7fr 1.8fr 0.65fr 0.7fr'
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <SectionHeading C={C} title="Export Activity" subtitle="Admin view of all user export events — format distribution, volume, and governance" />
+
+      {summaryErr && (
+        <div style={{ background: C.dangerSoft, border: `1px solid ${C.danger}30`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.8rem', color: C.danger }}>
+          {summaryErr}
+        </div>
+      )}
+
+      {/* KPI cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: '12px' }}>
+        {kpis.map(({ label, value, color }) => (
+          <div key={label} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '16px 18px' }}>
+            <div style={{ fontSize: '0.65rem', fontWeight: '700', color: C.textMuted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '8px' }}>{label}</div>
+            <div style={{ fontSize: '1.6rem', fontWeight: '700', color, letterSpacing: '-0.5px' }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Format distribution chart */}
+      {!summaryLoading && hasChart && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '16px 18px' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: '700', color: C.textSec, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '14px' }}>Export Volume by Format</div>
+          <ChartSection chart={chartData} C={C} />
+        </div>
+      )}
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div>
+          <div style={{ fontSize: '0.67rem', fontWeight: '700', color: C.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '5px' }}>Format</div>
+          <select value={filterFormat} onChange={handleFormatChange} style={selStyle}>
+            <option value="">All</option>
+            <option value="pdf">PDF</option>
+            <option value="xlsx">XLSX</option>
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </div>
+        <div>
+          <div style={{ fontSize: '0.67rem', fontWeight: '700', color: C.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '5px' }}>Status</div>
+          <select value={filterStatus} onChange={handleStatusChange} style={selStyle}>
+            <option value="">All</option>
+            <option value="success">Success</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Logs table */}
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '16px 18px' }}>
+        {/* Header row */}
+        <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: '8px', paddingBottom: '8px', borderBottom: `1px solid ${C.border}` }}>
+          {['Timestamp', 'User', 'Format', 'Filename', 'Size', 'Status'].map(col => (
+            <div key={col} style={{ fontSize: '0.64rem', fontWeight: '700', color: C.textMuted, letterSpacing: '0.07em', textTransform: 'uppercase' }}>{col}</div>
+          ))}
+        </div>
+
+        {logsErr && (
+          <div style={{ marginTop: '12px', background: C.dangerSoft, border: `1px solid ${C.danger}30`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.8rem', color: C.danger }}>
+            {logsErr}
+          </div>
+        )}
+
+        {logsLoading && !logsErr && (
+          <div style={{ textAlign: 'center', padding: '28px 0', fontSize: '0.8rem', color: C.textMuted }}>Loading export logs…</div>
+        )}
+
+        {!logsLoading && !logsErr && logs.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '28px 0', fontSize: '0.8rem', color: C.textMuted }}>No export records match the current filters.</div>
+        )}
+
+        {!logsLoading && !logsErr && logs.map(row => (
+          <div key={row.id} style={{ display: 'grid', gridTemplateColumns: COLS, gap: '8px', padding: '9px 0', borderBottom: `1px solid ${C.border}`, alignItems: 'center' }}>
+            <div style={{ fontSize: '0.75rem', color: C.textSec }}>{fmtDate(row.created_at)}</div>
+            <div style={{ fontSize: '0.75rem', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.user_id ?? undefined}>
+              {(row.user_id || '—').slice(0, 18)}{(row.user_id?.length ?? 0) > 18 ? '…' : ''}
+            </div>
+            <div><span style={fmtBadge(row.export_format)}>{(row.export_format || '?').toUpperCase()}</span></div>
+            <div style={{ fontSize: '0.75rem', color: C.textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.filename ?? undefined}>
+              {row.filename ?? '—'}
+            </div>
+            <div style={{ fontSize: '0.75rem', color: C.textSec }}>{fmtSize(row.file_size_bytes)}</div>
+            <div><span style={statBadge(row.status)}>{row.status || '?'}</span></div>
+          </div>
+        ))}
+      </div>
+
+      {/* Pagination */}
+      {total > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+          <span style={{ fontSize: '0.78rem', color: C.textSec }}>Showing {from}–{to} of {total.toLocaleString()}</span>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              onClick={() => setPage(p => p - 1)}
+              disabled={!hasPrev}
+              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 14px', fontSize: '0.78rem', color: hasPrev ? C.text : C.textMuted, cursor: hasPrev ? 'pointer' : 'not-allowed', fontFamily: FONT }}
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setPage(p => p + 1)}
+              disabled={!hasNext}
+              style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '6px 14px', fontSize: '0.78rem', color: hasNext ? C.text : C.textMuted, cursor: hasNext ? 'pointer' : 'not-allowed', fontFamily: FONT }}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Notification dropdown ────────────────────────────────────────────────────
 function NotifDropdown({ C, notifications, loading, onMarkRead, onDelete }) {
   const unread = notifications.filter(n => !n.read).length
@@ -862,6 +1088,14 @@ export default function AdminDashboard({ token, user, onLogout, onSessionExpired
               history={history}
               toolList={toolList}
               reportList={reportList}
+            />
+          )}
+
+          {activeNav === 'export-activity' && (
+            <ExportActivityPanel
+              C={C}
+              token={token}
+              onSessionExpired={onSessionExpired}
             />
           )}
         </main>
