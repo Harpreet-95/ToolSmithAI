@@ -10,6 +10,7 @@ from core.intelligence.segmentation_engine import (
     build_drilldown_table_section,
 )
 from core.output.kpi_formatter import format_kpi_display_label, format_dataset_display_name
+from core.config import FRONTEND_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -4191,6 +4192,7 @@ def render_report_as_html_email(
             "<tr>",
             (f'<td bgcolor="{_C["header_bg"]}" '
              f'style="padding:28px 32px;border-radius:8px 8px 0 0;">'),
+            f'<img src="{FRONTEND_BASE_URL}/toolsmith-logo-transparent.png" alt="ToolSmithAI" width="40" height="40" style="display:block;margin:0 0 10px 0;border:0;" />',
             (f'<p style="margin:0;font-family:Arial,Helvetica,sans-serif;'
              f'font-size:10px;text-transform:uppercase;letter-spacing:2px;'
              f'color:{_C["header_muted"]};">'

@@ -31,7 +31,7 @@ def send_verification_email(email: str, token: str, user_id: str | None = None) 
     )
     result = send_real_email(
         to=email,
-        subject="Verify your ToolSmith account",
+        subject="Verify your ToolSmithAI account",
         body=(
             f"Click the link below to verify your email address:\n\n"
             f"{url}\n\n"
@@ -80,6 +80,7 @@ def send_admin_invite_email(
         <table width="560" cellpadding="0" cellspacing="0" style="background:#1a1d2e;border-radius:12px;overflow:hidden;border:1px solid #2d3148;">
           <tr>
             <td style="background:linear-gradient(135deg,#6366f1,#4f46e5);padding:32px 40px;text-align:center;">
+              <img src="{FRONTEND_BASE_URL}/toolsmith-logo-transparent.png" alt="ToolSmithAI" width="52" height="52" style="display:block;margin:0 auto 10px;border:0;" />
               <div style="font-size:1.5rem;font-weight:800;color:#ffffff;letter-spacing:0.02em;">ToolSmithAI</div>
               <div style="font-size:0.85rem;color:#c7d2fe;margin-top:4px;letter-spacing:0.05em;text-transform:uppercase;font-weight:600;">Admin Invitation</div>
             </td>
