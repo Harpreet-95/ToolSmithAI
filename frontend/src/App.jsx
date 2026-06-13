@@ -5091,6 +5091,7 @@ function App() {
   function handleLogout() {
     localStorage.removeItem('ts_token')
     localStorage.removeItem('ts_user')
+    sessionStorage.removeItem('admin_greeted')
     setToken(null)
     setUser(null)
   }
