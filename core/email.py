@@ -1,6 +1,8 @@
+import base64
 import smtplib
 import time
 from datetime import datetime, timezone
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -48,6 +50,8 @@ def send_real_email(
     body: str,
     *,
     html_body: str | None = None,
+    attachment_bytes: bytes | None = None,
+    attachment_filename: str | None = None,
     user_id: str | None = None,
     report_id: int | None = None,
     email_type: str = "report",
@@ -118,6 +122,13 @@ def send_real_email(
                 }
                 if html_body:
                     params["html"] = html_body
+                if attachment_bytes and attachment_filename:
+                    params["attachments"] = [
+                        {
+                            "filename": attachment_filename,
+                            "content": base64.b64encode(attachment_bytes).decode("ascii"),
+                        }
+                    ]
                 _resend.Emails.send(params)
 
                 _update_log("sent", attempt, sent_at=datetime.now(timezone.utc).isoformat())
@@ -141,13 +152,28 @@ def send_real_email(
         _update_log("failed", 0, reason)
         return {"sent": False, "reason": reason}
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = SMTP_FROM_EMAIL
-    msg["To"] = to
-    msg.attach(MIMEText(body, "plain"))
-    if html_body:
-        msg.attach(MIMEText(html_body, "html"))
+    if attachment_bytes and attachment_filename:
+        outer = MIMEMultipart("mixed")
+        outer["Subject"] = subject
+        outer["From"] = SMTP_FROM_EMAIL
+        outer["To"] = to
+        inner = MIMEMultipart("alternative")
+        inner.attach(MIMEText(body, "plain"))
+        if html_body:
+            inner.attach(MIMEText(html_body, "html"))
+        outer.attach(inner)
+        part = MIMEApplication(attachment_bytes, Name=attachment_filename)
+        part["Content-Disposition"] = f'attachment; filename="{attachment_filename}"'
+        outer.attach(part)
+        msg = outer
+    else:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_FROM_EMAIL
+        msg["To"] = to
+        msg.attach(MIMEText(body, "plain"))
+        if html_body:
+            msg.attach(MIMEText(html_body, "html"))
 
     last_error: str = ""
     max_attempts = MAX_STEP_RETRIES + 1
