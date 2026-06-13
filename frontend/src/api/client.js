@@ -100,6 +100,19 @@ export async function registerAdmin({ name, email, password, invite_token }) {
   return parseResponse(res);
 }
 
+export async function changePassword(token, { currentPassword, newPassword, confirmPassword }) {
+  const res = await fetch('/v1/auth/change-password', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    }),
+  });
+  return parseResponse(res);
+}
+
 export async function createScheduledWorkflow(inputText, token, datasetId = null, refreshBeforeRun = false) {
   const body = { input_text: inputText };
   if (datasetId != null) body.dataset_id = datasetId;

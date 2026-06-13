@@ -54,7 +54,7 @@ from core.config import (
     RETENTION_DAYS,
     ENABLE_AUTO_APPROVE_ENGINE_TOOLS,
 )
-from data.audit import delete_audit_log_entries, purge_old_audit_db, purge_old_audit_log_file
+from data.audit import delete_audit_log_entries, log_audit_event, purge_old_audit_db, purge_old_audit_log_file
 from data.db import get_connection
 from data.execution_history import enrich_execution_record, get_execution_by_id, get_repeated_intent_suggestions, get_workflow_success_insights, purge_old_execution_history
 from data.usage_service import count_usage_events, list_usage_events
@@ -314,6 +314,12 @@ class CreateInviteRequest(BaseModel):
     email: EmailStr
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
 # ---------------------------------------------------------------------------
 # Auth endpoints
 # ---------------------------------------------------------------------------
@@ -514,6 +520,49 @@ def verify_email(token: str) -> dict:
         conn.close()
 
     return {"status": "success", "message": "Email verified"}
+
+
+@router.post("/auth/change-password")
+def change_password(
+    request: ChangePasswordRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    if not request.current_password or not request.new_password or not request.confirm_password:
+        return JSONResponse(status_code=400, content=build_error_response("All fields are required"))
+    if request.new_password != request.confirm_password:
+        return JSONResponse(status_code=400, content=build_error_response("Passwords do not match"))
+    if len(request.new_password) < 8:
+        return JSONResponse(status_code=400, content=build_error_response("New password must be at least 8 characters"))
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user.user_id,)
+        ).fetchone()
+        if row is None:
+            return JSONResponse(status_code=404, content=build_error_response("User not found"))
+
+        if not verify_password(request.current_password, row["password_hash"]):
+            log_audit_event(
+                {"task_type": "password_change", "original_input": "change_password_attempt", "status": "failed"},
+                user_id=user.user_id,
+            )
+            return JSONResponse(status_code=401, content=build_error_response("Current password is incorrect"))
+
+        if verify_password(request.new_password, row["password_hash"]):
+            return JSONResponse(status_code=400, content=build_error_response("New password must differ from your current password"))
+
+        new_hash = hash_password(request.new_password)
+        conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user.user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log_audit_event(
+        {"task_type": "password_change", "original_input": "change_password_request", "status": "success"},
+        user_id=user.user_id,
+    )
+    return {"status": "success", "data": {"message": "Password changed successfully"}}
 
 
 # ---------------------------------------------------------------------------

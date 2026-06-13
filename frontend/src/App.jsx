@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { interpretTask, registerUser, loginUser, verifyEmail, registerAdmin, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
+import { interpretTask, registerUser, loginUser, verifyEmail, registerAdmin, changePassword, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
 
@@ -787,6 +787,12 @@ function LoginView({ onSignIn, sessionExpired }) {
 
           {mode === 'login' ? (<>
 
+          {/* Brand lockup */}
+          <div style={{ textAlign: 'center', marginBottom: '22px' }}>
+            <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '48px', display: 'block', margin: '0 auto 8px' }} />
+            <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
+          </div>
+
           {/* Welcome Back */}
           <h2 style={{
             margin: 0,
@@ -1090,6 +1096,12 @@ function LoginView({ onSignIn, sessionExpired }) {
           </div>
 
           </>) : (<>
+
+          {/* Brand lockup */}
+          <div style={{ textAlign: 'center', marginBottom: '22px' }}>
+            <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '48px', display: 'block', margin: '0 auto 8px' }} />
+            <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
+          </div>
 
           {/* Create your account */}
           <h2 style={{
@@ -2204,6 +2216,12 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 
   const [activeNav,       setActiveNav]       = useState('ai-workspace')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [cpCurrent,   setCpCurrent]   = useState('')
+  const [cpNew,       setCpNew]       = useState('')
+  const [cpConfirm,   setCpConfirm]   = useState('')
+  const [cpLoading,   setCpLoading]   = useState(false)
+  const [cpSuccess,   setCpSuccess]   = useState(false)
+  const [cpError,     setCpError]     = useState(null)
   const [usage,        setUsage]        = useState(null)
   const [usageLoading,   setUsageLoading]   = useState(false)
   const [history,        setHistory]        = useState([])
@@ -5022,6 +5040,67 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                   </div>
                 ))}
               </div>
+
+              <div style={{ ...S.card, marginTop: '14px' }}>
+                <h3 style={{ margin: '0 0 14px', fontSize: '0.75rem', fontWeight: '500', color: C.textSec, letterSpacing: '0.01em' }}>Security</h3>
+                {cpSuccess && (
+                  <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '8px', background: C.successSoft, color: C.success, fontSize: '0.78rem', fontWeight: '500' }}>
+                    Password changed successfully.
+                  </div>
+                )}
+                {cpError && (
+                  <div style={{ marginBottom: '12px', padding: '10px 14px', borderRadius: '8px', background: C.dangerSoft, color: C.danger, fontSize: '0.78rem' }}>
+                    {cpError}
+                  </div>
+                )}
+                {[
+                  { label: 'Current password', val: cpCurrent, set: setCpCurrent },
+                  { label: 'New password',     val: cpNew,     set: setCpNew },
+                  { label: 'Confirm new',      val: cpConfirm, set: setCpConfirm },
+                ].map(({ label, val, set }) => (
+                  <div key={label} style={{ marginBottom: '10px' }}>
+                    <label style={{ display: 'block', fontSize: '0.7rem', color: C.textMuted, fontWeight: '600', marginBottom: '6px', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</label>
+                    <input
+                      type="password"
+                      value={val}
+                      onChange={e => { set(e.target.value); setCpSuccess(false); setCpError(null) }}
+                      style={{ ...S.input }}
+                      autoComplete="new-password"
+                    />
+                  </div>
+                ))}
+                <button
+                  disabled={cpLoading}
+                  onClick={async () => {
+                    setCpError(null)
+                    setCpSuccess(false)
+                    if (!cpCurrent || !cpNew || !cpConfirm) { setCpError('All fields are required.'); return }
+                    if (cpNew !== cpConfirm) { setCpError('New passwords do not match.'); return }
+                    if (cpNew.length < 8) { setCpError('New password must be at least 8 characters.'); return }
+                    setCpLoading(true)
+                    try {
+                      await changePassword(token, { currentPassword: cpCurrent, newPassword: cpNew, confirmPassword: cpConfirm })
+                      setCpSuccess(true)
+                      setCpCurrent('')
+                      setCpNew('')
+                      setCpConfirm('')
+                    } catch (err) {
+                      if (is401(err) && err.message.includes('Current password')) {
+                        setCpError('Current password is incorrect.')
+                      } else if (is401(err)) {
+                        onSessionExpired()
+                      } else {
+                        setCpError(err.message?.replace(/^\d+:\s*/, '') || 'Failed to change password.')
+                      }
+                    } finally {
+                      setCpLoading(false)
+                    }
+                  }}
+                  style={{ marginTop: '6px', width: '100%', background: C.accent, color: '#fff', border: 'none', borderRadius: '8px', padding: '10px 0', fontSize: '0.83rem', fontWeight: '600', cursor: cpLoading ? 'not-allowed' : 'pointer', opacity: cpLoading ? 0.7 : 1, fontFamily: FONT }}
+                >
+                  {cpLoading ? 'Changing…' : 'Change Password'}
+                </button>
+              </div>
             </>}
 
             {/* ── Workspaces ───────────────────────────────────────── */}
@@ -5109,7 +5188,10 @@ function VerifyEmail() {
         boxShadow: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)',
         textAlign: 'center',
       }}>
-        <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '72px', marginBottom: '24px' }} />
+        <div style={{ marginBottom: '24px' }}>
+          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '56px', display: 'block', margin: '0 auto 8px' }} />
+          <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
+        </div>
 
         {status === 'loading' && (
           <>
@@ -5288,7 +5370,10 @@ function RegisterAdminView({ onSignIn }) {
     return (
       <div style={cardStyle}>
         <div style={{ ...innerStyle, textAlign: 'center' }}>
-          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '72px', marginBottom: '24px' }} />
+          <div style={{ marginBottom: '24px' }}>
+            <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '56px', display: 'block', margin: '0 auto 8px' }} />
+            <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
+          </div>
           <div style={{
             width: '52px', height: '52px', borderRadius: '50%',
             background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.28)',
@@ -5314,7 +5399,8 @@ function RegisterAdminView({ onSignIn }) {
     <div style={cardStyle}>
       <div style={innerStyle}>
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '64px', marginBottom: '18px' }} />
+          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '56px', display: 'block', margin: '0 auto 8px' }} />
+          <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px', marginBottom: '18px' }}>ToolSmithAI</div>
           <h2 style={{ fontSize: '22px', fontWeight: '700', color: '#eef0ff', margin: '0 0 8px' }}>
             Complete admin registration
           </h2>
