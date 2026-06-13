@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { interpretTask, registerUser, loginUser, verifyEmail, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
+import { interpretTask, registerUser, loginUser, verifyEmail, registerAdmin, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
 
@@ -5174,6 +5174,239 @@ function VerifyEmail() {
   )
 }
 
+// ─── Admin invite registration page ───────────────────────────────────────────
+function RegisterAdminView({ onSignIn }) {
+  const params    = new URLSearchParams(window.location.search)
+  const urlEmail  = params.get('email') || ''
+  const urlToken  = params.get('token') || ''
+
+  const [name,        setName]        = useState('')
+  const [password,    setPassword]    = useState('')
+  const [confirm,     setConfirm]     = useState('')
+  const [loading,     setLoading]     = useState(false)
+  const [fieldError,  setFieldError]  = useState('')
+  const [serverError, setServerError] = useState('')
+
+  // Render an immediate error card when the link is malformed — no form shown.
+  const missingParams = !urlEmail || !urlToken
+
+  const cardStyle = {
+    minHeight:  '100vh',
+    background: 'linear-gradient(145deg, #060818 0%, #0a0c1e 55%, #07091a 100%)',
+    display:    'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontFamily: FONT,
+  }
+
+  const innerStyle = {
+    width:        '100%',
+    maxWidth:     '420px',
+    margin:       '0 16px',
+    background:   'rgba(13,17,40,0.95)',
+    border:       '1px solid rgba(99,102,241,0.22)',
+    borderRadius: '18px',
+    padding:      '44px 36px 40px',
+    boxShadow:    '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)',
+  }
+
+  const labelStyle = {
+    display:    'block',
+    fontSize:   '13px',
+    fontWeight: '500',
+    color:      '#8891b8',
+    marginBottom: '6px',
+  }
+
+  const inputStyle = (disabled = false) => ({
+    width:        '100%',
+    height:       '44px',
+    background:   disabled ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.06)',
+    border:       '1px solid rgba(99,102,241,0.20)',
+    borderRadius: '9px',
+    color:        disabled ? '#6370a0' : '#eef0ff',
+    fontSize:     '14px',
+    padding:      '0 13px',
+    outline:      'none',
+    boxSizing:    'border-box',
+    cursor:       disabled ? 'not-allowed' : 'text',
+    fontFamily:   FONT,
+  })
+
+  const btnStyle = (active) => ({
+    width:       '100%',
+    height:      '46px',
+    background:  active
+      ? 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%)'
+      : 'rgba(99,102,241,0.30)',
+    color:       '#fff',
+    border:      'none',
+    borderRadius: '10px',
+    fontSize:    '15px',
+    fontWeight:  '600',
+    cursor:      active ? 'pointer' : 'not-allowed',
+    fontFamily:  FONT,
+    letterSpacing: '0.01em',
+    opacity:     loading ? 0.65 : 1,
+  })
+
+  function mapServerError(raw) {
+    const msg = raw.replace(/^\d+:\s*/, '').toLowerCase()
+    if (msg.includes('expired'))           return 'This invite link has expired. Contact an admin for a new invite.'
+    if (msg.includes('already been used')) return 'This invite has already been used.'
+    if (msg.includes('does not match'))    return 'This invite link is not valid for this email address.'
+    if (msg.includes('already registered')) return 'An account with this email already exists.'
+    if (msg.includes('invalid invite'))    return 'Invalid invite token.'
+    return raw.replace(/^\d+:\s*/, '') || 'Registration failed. Please try again.'
+  }
+
+  async function handleSubmit() {
+    setFieldError('')
+    setServerError('')
+
+    if (!name.trim())           { setFieldError('Name is required.'); return }
+    if (password.length < 6)    { setFieldError('Password must be at least 6 characters.'); return }
+    if (password !== confirm)   { setFieldError('Passwords do not match.'); return }
+
+    setLoading(true)
+    try {
+      const data = await registerAdmin({
+        name:         name.trim(),
+        email:        urlEmail,
+        password,
+        invite_token: urlToken,
+      })
+      onSignIn(data.access_token, data.user)
+    } catch (err) {
+      setServerError(mapServerError(err.message || ''))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (missingParams) {
+    return (
+      <div style={cardStyle}>
+        <div style={{ ...innerStyle, textAlign: 'center' }}>
+          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '72px', marginBottom: '24px' }} />
+          <div style={{
+            width: '52px', height: '52px', borderRadius: '50%',
+            background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.28)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px',
+          }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </div>
+          <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#eef0ff', margin: '0 0 10px' }}>Invalid invite link</h2>
+          <p style={{ color: '#a0b0cc', fontSize: '14px', margin: '0 0 28px' }}>
+            This link is missing required parameters. Use the exact link from your invite email.
+          </p>
+          <button onClick={() => { window.location.href = '/' }} style={btnStyle(true)}>
+            Back to sign in
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={cardStyle}>
+      <div style={innerStyle}>
+        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '64px', marginBottom: '18px' }} />
+          <h2 style={{ fontSize: '22px', fontWeight: '700', color: '#eef0ff', margin: '0 0 8px' }}>
+            Complete admin registration
+          </h2>
+          <p style={{ color: '#8891b8', fontSize: '13px', margin: 0 }}>
+            You've been invited to join ToolSmithAI as an admin.
+          </p>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Email — read-only, bound to invite */}
+          <div>
+            <label style={labelStyle}>Email</label>
+            <input
+              type="email"
+              value={urlEmail}
+              readOnly
+              style={inputStyle(true)}
+              tabIndex={-1}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Full name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              placeholder="Your name"
+              style={inputStyle()}
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              placeholder="At least 6 characters"
+              style={inputStyle()}
+            />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Confirm password</label>
+            <input
+              type="password"
+              value={confirm}
+              onChange={e => setConfirm(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+              placeholder="Repeat password"
+              style={inputStyle()}
+            />
+          </div>
+        </div>
+
+        {fieldError && (
+          <p style={{ color: '#f87171', fontSize: '13px', margin: '14px 0 0', textAlign: 'center' }}>
+            {fieldError}
+          </p>
+        )}
+        {serverError && (
+          <p style={{ color: '#f87171', fontSize: '13px', margin: '14px 0 0', textAlign: 'center' }}>
+            {serverError}
+          </p>
+        )}
+
+        <button
+          onClick={handleSubmit}
+          disabled={loading}
+          style={{ ...btnStyle(!loading), marginTop: '24px' }}
+        >
+          {loading ? 'Creating account…' : 'Create admin account'}
+        </button>
+
+        <p style={{ textAlign: 'center', margin: '20px 0 0', fontSize: '12px', color: '#545c82' }}>
+          Already have an account?{' '}
+          <span
+            onClick={() => { window.location.href = '/' }}
+            style={{ color: '#6366f1', cursor: 'pointer', textDecoration: 'underline' }}
+          >
+            Sign in
+          </span>
+        </p>
+      </div>
+    </div>
+  )
+}
+
 // ─── Root ──────────────────────────────────────────────────────────────────────
 function App() {
   const [token,          setToken]          = useState(() => localStorage.getItem('ts_token') || null)
@@ -5211,6 +5444,10 @@ function App() {
 
   if (window.location.pathname === '/verify-email') {
     return <VerifyEmail />
+  }
+
+  if (window.location.pathname === '/register-admin') {
+    return <RegisterAdminView onSignIn={handleSignIn} />
   }
 
   if (!token) {

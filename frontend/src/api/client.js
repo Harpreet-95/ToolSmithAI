@@ -91,6 +91,15 @@ export async function verifyEmail(token) {
   return parseResponse(res);
 }
 
+export async function registerAdmin({ name, email, password, invite_token }) {
+  const res = await fetch('/v1/auth/register-admin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, email, password, invite_token }),
+  });
+  return parseResponse(res);
+}
+
 export async function createScheduledWorkflow(inputText, token, datasetId = null, refreshBeforeRun = false) {
   const body = { input_text: inputText };
   if (datasetId != null) body.dataset_id = datasetId;
