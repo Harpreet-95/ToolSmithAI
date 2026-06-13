@@ -1,11 +1,12 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 from jose import JWTError, jwt
 
 from auth.api_key import AuthenticatedUser, _derive_user_id
 from core.config import ACCESS_TOKEN_EXPIRE_MINUTES, JWT_ALGORITHM, JWT_SECRET, KEY_ROLE_MAP
+from data.audit import log_audit_event
 
 
 def create_access_token(data: dict) -> str:
@@ -62,3 +63,12 @@ def require_jwt(authorization: str = Header(...)) -> AuthenticatedUser:
         role=payload.get("role", "user"),
         user_id=payload.get("sub", ""),
     )
+
+
+def require_role(role: str):
+    def dependency(user: AuthenticatedUser = Depends(require_auth)) -> AuthenticatedUser:
+        if user.role != role:
+            log_audit_event({"task_type": "auth_failure", "original_input": "role_violation", "status": "forbidden"})
+            raise HTTPException(status_code=403, detail=f"{role.capitalize()} access required")
+        return user
+    return dependency

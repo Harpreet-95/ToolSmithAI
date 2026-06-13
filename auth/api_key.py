@@ -3,10 +3,9 @@ import hmac
 import secrets
 from dataclasses import dataclass
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Header, HTTPException
 
 from core.config import KEY_ROLE_MAP, USER_ID_SALT
-from data.audit import log_audit_event
 
 
 @dataclass
@@ -35,10 +34,3 @@ def require_api_key(x_api_key: str = Header(...)) -> AuthenticatedUser:
     raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-def require_role(role: str):
-    def dependency(user: AuthenticatedUser = Depends(require_api_key)) -> AuthenticatedUser:
-        if user.role != role:
-            log_audit_event({"task_type": "auth_failure", "original_input": "role_violation", "status": "forbidden"})
-            raise HTTPException(status_code=403, detail=f"{role.capitalize()} access required")
-        return user
-    return dependency

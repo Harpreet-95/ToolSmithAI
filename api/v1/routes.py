@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
-from auth.api_key import AuthenticatedUser, require_api_key, require_role
-from auth.jwt_auth import create_access_token, require_auth, require_jwt
+from auth.api_key import AuthenticatedUser, require_api_key
+from auth.jwt_auth import create_access_token, require_auth, require_jwt, require_role
 from auth.password import hash_password, verify_password
 from core.email import send_verification_email
 from core.errors.error_response import build_error_response
