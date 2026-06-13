@@ -86,6 +86,11 @@ export async function loginUser(email, password) {
   return parseResponse(res);
 }
 
+export async function verifyEmail(token) {
+  const res = await fetch(`/v1/auth/verify-email?token=${encodeURIComponent(token)}`);
+  return parseResponse(res);
+}
+
 export async function createScheduledWorkflow(inputText, token, datasetId = null, refreshBeforeRun = false) {
   const body = { input_text: inputText };
   if (datasetId != null) body.dataset_id = datasetId;

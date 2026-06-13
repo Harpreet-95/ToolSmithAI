@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { interpretTask, registerUser, loginUser, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
+import { interpretTask, registerUser, loginUser, verifyEmail, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
 
@@ -5066,6 +5066,114 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   )
 }
 
+// ─── Email verification page ───────────────────────────────────────────────────
+function VerifyEmail() {
+  const [status, setStatus] = useState('loading') // 'loading' | 'success' | 'error'
+  const [errMsg,  setErrMsg]  = useState('')
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get('token')
+    if (!token) {
+      setStatus('error')
+      setErrMsg('No verification token found in the link.')
+      return
+    }
+    verifyEmail(token)
+      .then(() => setStatus('success'))
+      .catch((err) => {
+        setStatus('error')
+        setErrMsg(err.message.replace(/^\d+:\s*/, '') || 'Invalid or expired verification link.')
+      })
+  }, [])
+
+  const iconCircle = (color, bg) => ({
+    width: '52px', height: '52px', borderRadius: '50%',
+    background: bg, border: `1px solid ${color}`,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    margin: '0 auto 20px',
+  })
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(145deg, #060818 0%, #0a0c1e 55%, #07091a 100%)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: FONT,
+    }}>
+      <div style={{
+        width: '100%', maxWidth: '420px', margin: '0 16px',
+        background: 'rgba(13,17,40,0.95)',
+        border: `1px solid ${status === 'success' ? 'rgba(16,185,129,0.30)' : status === 'error' ? 'rgba(248,113,113,0.30)' : 'rgba(99,102,241,0.22)'}`,
+        borderRadius: '18px',
+        padding: '44px 36px 40px',
+        boxShadow: '0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)',
+        textAlign: 'center',
+      }}>
+        <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '72px', marginBottom: '24px' }} />
+
+        {status === 'loading' && (
+          <>
+            <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#eef0ff', margin: '0 0 12px' }}>Verifying your email…</h2>
+            <p style={{ color: '#a0b0cc', fontSize: '14px', margin: 0 }}>Please wait a moment.</p>
+          </>
+        )}
+
+        {status === 'success' && (
+          <>
+            <div style={iconCircle('rgba(16,185,129,0.30)', 'rgba(16,185,129,0.12)')}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+            <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#eef0ff', margin: '0 0 10px' }}>Email verified</h2>
+            <p style={{ color: '#a0b0cc', fontSize: '14px', margin: '0 0 28px' }}>
+              Email verified — you can now log in.
+            </p>
+            <button
+              onClick={() => { window.location.href = '/' }}
+              style={{
+                width: '100%', height: '46px',
+                background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%)',
+                color: '#fff', border: 'none', borderRadius: '10px',
+                fontSize: '15px', fontWeight: '600', cursor: 'pointer', fontFamily: FONT,
+                letterSpacing: '0.01em',
+              }}
+            >
+              Sign in
+            </button>
+          </>
+        )}
+
+        {status === 'error' && (
+          <>
+            <div style={iconCircle('rgba(248,113,113,0.28)', 'rgba(248,113,113,0.10)')}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </div>
+            <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#eef0ff', margin: '0 0 10px' }}>Verification failed</h2>
+            <p style={{ color: '#a0b0cc', fontSize: '14px', margin: '0 0 28px' }}>
+              {errMsg || 'Invalid or expired verification link.'}
+            </p>
+            <button
+              onClick={() => { window.location.href = '/' }}
+              style={{
+                width: '100%', height: '46px',
+                background: 'linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%)',
+                color: '#fff', border: 'none', borderRadius: '10px',
+                fontSize: '15px', fontWeight: '600', cursor: 'pointer', fontFamily: FONT,
+                letterSpacing: '0.01em',
+              }}
+            >
+              Back to sign in
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Root ──────────────────────────────────────────────────────────────────────
 function App() {
   const [token,          setToken]          = useState(() => localStorage.getItem('ts_token') || null)
@@ -5099,6 +5207,10 @@ function App() {
   function handleSessionExpired() {
     handleLogout()
     setSessionExpired(true)
+  }
+
+  if (window.location.pathname === '/verify-email') {
+    return <VerifyEmail />
   }
 
   if (!token) {
