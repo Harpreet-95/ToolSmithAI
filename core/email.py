@@ -5,9 +5,11 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from core.config import (
+    EMAIL_PROVIDER,
     ENABLE_REAL_EMAIL,
     FRONTEND_BASE_URL,
     MAX_STEP_RETRIES,
+    RESEND_API_KEY,
     RETRY_BACKOFF_SECONDS,
     SMTP_FROM_EMAIL,
     SMTP_HOST,
@@ -50,10 +52,11 @@ def send_real_email(
     report_id: int | None = None,
     email_type: str = "report",
 ) -> dict:
-    """Send an email via SMTP. Returns a result dict — never raises.
+    """Send an email via the configured provider. Returns a result dict — never raises.
 
-    Retries up to MAX_STEP_RETRIES times on SMTP failure. All attempts are
-    recorded in email_logs. Logging failures never block delivery.
+    Routes to Resend (EMAIL_PROVIDER=resend) or SMTP (default). Retries up to
+    MAX_STEP_RETRIES times on failure. All attempts are recorded in email_logs.
+    Logging failures never block delivery.
     """
     log_id: int | None = None
     try:
@@ -90,6 +93,46 @@ def send_real_email(
         _update_log("simulated", 0, reason)
         return {"sent": False, "reason": reason}
 
+    if EMAIL_PROVIDER == "resend":
+        if not RESEND_API_KEY:
+            reason = (
+                "Resend not configured. "
+                "Set RESEND_API_KEY in .env."
+            )
+            _update_log("failed", 0, reason)
+            return {"sent": False, "reason": reason}
+
+        import resend as _resend  # noqa: PLC0415
+        _resend.api_key = RESEND_API_KEY
+
+        last_error: str = ""
+        max_attempts = MAX_STEP_RETRIES + 1
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                params: dict = {
+                    "from": SMTP_FROM_EMAIL,
+                    "to": [to],
+                    "subject": subject,
+                    "text": body,
+                }
+                if html_body:
+                    params["html"] = html_body
+                _resend.Emails.send(params)
+
+                _update_log("sent", attempt, sent_at=datetime.now(timezone.utc).isoformat())
+                return {"sent": True, "to": to, "subject": subject}
+
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < max_attempts:
+                    _update_log("pending", attempt, last_error)
+                    time.sleep(RETRY_BACKOFF_SECONDS)
+
+        _update_log("failed", max_attempts, last_error)
+        return {"sent": False, "reason": last_error}
+
+    # SMTP path (default)
     if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM_EMAIL:
         reason = (
             "SMTP not configured. "

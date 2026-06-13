@@ -99,8 +99,14 @@ ALLOWED_ORIGINS: list[str] = [
 FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
 
 # ---------------------------------------------------------------------------
-# SMTP email delivery (all optional — guarded by ENABLE_REAL_EMAIL)
+# Email delivery
+# EMAIL_PROVIDER — "smtp" (default) or "resend"
+# RESEND_API_KEY — required when EMAIL_PROVIDER=resend
+# SMTP_* vars    — required when EMAIL_PROVIDER=smtp
+# All optional; guarded by ENABLE_REAL_EMAIL.
 # ---------------------------------------------------------------------------
+EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "smtp")
+RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
 SMTP_HOST: str = os.getenv("SMTP_HOST", "")
 SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
