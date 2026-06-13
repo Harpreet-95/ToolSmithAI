@@ -15,7 +15,7 @@ from pydantic import BaseModel, EmailStr
 from auth.api_key import AuthenticatedUser, require_api_key
 from auth.jwt_auth import create_access_token, require_auth, require_jwt, require_role
 from auth.password import hash_password, verify_password
-from core.email import send_verification_email
+from core.email import send_admin_invite_email, send_verification_email
 from core.tools.report_generator import _build_pdf_bytes
 from core.errors.error_response import build_error_response
 from core.input.input_handler import handle_input
@@ -797,12 +797,20 @@ def create_admin_invite_route(
         )
     try:
         result = create_invite(email=request.email, created_by=user.user_id)
-        return {"status": "success", "data": result}
     except Exception as exc:
         return JSONResponse(
             status_code=500,
             content=build_error_response("Failed to create invite", str(exc)),
         )
+    try:
+        send_admin_invite_email(
+            recipient_email=request.email,
+            invite_token=result["invite_token"],
+            created_by_user_id=user.user_id,
+        )
+    except Exception as exc:
+        print(f"[WARN] Admin invite email failed for {request.email}: {exc}")
+    return {"status": "success", "data": result}
 
 
 @router.post("/admin/purge")

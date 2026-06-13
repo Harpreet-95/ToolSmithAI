@@ -44,6 +44,95 @@ def send_verification_email(email: str, token: str, user_id: str | None = None) 
         print(f"[WARN] Verification email not delivered to {email}: {result.get('reason', 'unknown')}")
 
 
+def send_admin_invite_email(
+    recipient_email: str,
+    invite_token: str,
+    created_by_user_id: str | None = None,
+) -> None:
+    register_url = f"{FRONTEND_BASE_URL}/register-admin?email={recipient_email}&token={invite_token}"
+    print(
+        f"\n[DEV] Admin invite email for {recipient_email}\n"
+        f"      Token: {invite_token}\n"
+        f"      Register URL: {register_url}\n"
+    )
+    plain_body = (
+        "You have been invited to join ToolSmithAI as an Admin.\n\n"
+        "Use the invite token below to complete your registration.\n\n"
+        f"Invite Token:\n{invite_token}\n\n"
+        f"Register here:\n{register_url}\n\n"
+        "Important:\n"
+        "- This invite expires in 72 hours.\n"
+        "- This token is single-use. Once registered, it cannot be reused.\n\n"
+        "If you did not expect this invite, you can safely ignore this email.\n\n"
+        "— The ToolSmithAI Team"
+    )
+    html_body = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ToolSmithAI Admin Invite</title>
+</head>
+<body style="margin:0;padding:0;background:#0f1117;font-family:'Inter',Arial,sans-serif;color:#e2e8f0;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f1117;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background:#1a1d2e;border-radius:12px;overflow:hidden;border:1px solid #2d3148;">
+          <tr>
+            <td style="background:linear-gradient(135deg,#6366f1,#4f46e5);padding:32px 40px;text-align:center;">
+              <div style="font-size:1.5rem;font-weight:800;color:#ffffff;letter-spacing:0.02em;">ToolSmithAI</div>
+              <div style="font-size:0.85rem;color:#c7d2fe;margin-top:4px;letter-spacing:0.05em;text-transform:uppercase;font-weight:600;">Admin Invitation</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 40px;">
+              <p style="margin:0 0 16px;font-size:1rem;color:#e2e8f0;">You've been invited to join <strong style="color:#a5b4fc;">ToolSmithAI</strong> as an <strong style="color:#a5b4fc;">Admin</strong>.</p>
+              <p style="margin:0 0 24px;font-size:0.9rem;color:#94a3b8;">Use the invite token below to complete your registration. This token is <strong style="color:#f1f5f9;">single-use</strong> and <strong style="color:#f1f5f9;">expires in 72 hours</strong>.</p>
+              <div style="background:#0f1117;border:1px solid #4f46e5;border-radius:8px;padding:16px 20px;margin:0 0 24px;">
+                <div style="font-size:0.7rem;font-weight:700;color:#6366f1;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">Invite Token</div>
+                <div style="font-family:'Courier New',monospace;font-size:0.78rem;color:#e2e8f0;word-break:break-all;line-height:1.6;">{invite_token}</div>
+              </div>
+              <div style="text-align:center;margin:0 0 28px;">
+                <a href="{register_url}" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#ffffff;text-decoration:none;font-size:0.9rem;font-weight:700;padding:14px 32px;border-radius:8px;letter-spacing:0.02em;">Register as Admin</a>
+              </div>
+              <p style="margin:0 0 8px;font-size:0.8rem;color:#64748b;">Or copy and use this URL directly:</p>
+              <div style="background:#0f1117;border-radius:6px;padding:10px 14px;margin:0 0 24px;">
+                <a href="{register_url}" style="font-family:'Courier New',monospace;font-size:0.72rem;color:#6366f1;word-break:break-all;">{register_url}</a>
+              </div>
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background:#1e2035;border-radius:8px;padding:14px 18px;border-left:3px solid #f59e0b;">
+                    <div style="font-size:0.78rem;color:#fbbf24;font-weight:700;margin-bottom:4px;">Security Notice</div>
+                    <div style="font-size:0.78rem;color:#94a3b8;">This token is single-use and will be invalidated immediately after registration. If you did not expect this invitation, ignore this email.</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#13152a;padding:20px 40px;border-top:1px solid #2d3148;text-align:center;">
+              <div style="font-size:0.72rem;color:#475569;">ToolSmithAI &middot; This is an automated message. Do not reply.</div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+    result = send_real_email(
+        to=recipient_email,
+        subject="You're Invited to ToolSmithAI Admin Access",
+        body=plain_body,
+        html_body=html_body,
+        user_id=created_by_user_id,
+        report_id=None,
+        email_type="admin_invite",
+    )
+    if not result["sent"] and ENABLE_REAL_EMAIL:
+        print(f"[WARN] Admin invite email not delivered to {recipient_email}: {result.get('reason', 'unknown')}")
+
+
 def send_real_email(
     to: str,
     subject: str,
