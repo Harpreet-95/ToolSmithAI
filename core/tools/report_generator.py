@@ -4249,3 +4249,1532 @@ def format_report_as_email_body(report: dict, filename: str) -> str:
         title=format_dataset_display_name(filename),
         dataset_filename=filename,
     )
+
+
+_PDF_BRANDING = {
+    'brand_name':     'ToolSmithAI',
+    'primary':        (99,  102, 241),
+    'primary_dark':   (67,   56, 202),
+    'primary_light':  (224, 231, 255),
+    'success':        (16,  185, 129),
+    'warning':        (245, 158,  11),
+    'danger':         (248, 113, 113),
+    'neutral':        (100, 116, 139),
+    'text_dark':      (30,   42,  58),
+    'text_muted':     (100, 116, 139),
+    'bg_white':       (255, 255, 255),
+    'bg_row_alt':     (248, 250, 252),
+    # PDF-specific typography colours (preserve existing visual output exactly)
+    'title_dark':     (22,   22,  44),
+    'text_body':      (44,   54,  80),
+    'text_secondary': (88,  104, 130),
+    'text_light':     (140, 155, 180),
+    'text_stamp':     (160, 176, 204),
+    'text_chart':     (120, 130, 160),
+    'meta_label':     (100, 110, 140),
+    'rule_light':     (210, 220, 235),
+}
+
+
+def _compute_readiness_score(by_type: dict) -> tuple:
+    """Compute 0-100 executive readiness score from existing section data."""
+    score = 0
+    kpi_sec  = (by_type.get('kpi') or [{}])[0]
+    kpi_list = kpi_sec.get('kpis', []) or []
+    kpi_map  = {k.get('label', ''): k for k in kpi_list}
+
+    comp_val = (kpi_map.get('Data Completeness') or {}).get('value')
+    if comp_val is not None:
+        try:
+            c = float(comp_val)
+            if c >= 95:   score += 20
+            elif c >= 80: score += 10
+        except (TypeError, ValueError):
+            pass
+
+    anom_sec  = (by_type.get('anomaly') or [{}])[0]
+    _SENTINEL = 'No Major Anomalies Detected'
+    high_ct   = sum(
+        1 for a in (anom_sec.get('anomalies') or [])
+        if str(a.get('severity', '')).lower() == 'high'
+        and a.get('title', '') != _SENTINEL
+    )
+    if high_ct == 0:   score += 20
+    elif high_ct == 1: score += 12
+    elif high_ct == 2: score += 4
+
+    rec_val = (kpi_map.get('Total Records') or {}).get('value')
+    if rec_val is not None:
+        try:
+            r = int(float(rec_val))
+            if r >= 10000:  score += 20
+            elif r >= 1000: score += 15
+            elif r >= 100:  score += 8
+        except (TypeError, ValueError):
+            pass
+
+    feat_val = (kpi_map.get('Total Features') or {}).get('value')
+    if feat_val is not None:
+        try:
+            f = int(float(feat_val))
+            if f >= 10:  score += 20
+            elif f >= 5: score += 14
+            elif f >= 2: score += 8
+        except (TypeError, ValueError):
+            pass
+
+    rec_sec = (by_type.get('recommendation') or [{}])[0]
+    recs    = rec_sec.get('recommendations') or []
+    if recs:
+        all_confs   = [str(r.get('confidence', '')).lower() for r in recs]
+        hi_pri_recs = [r for r in recs if str(r.get('priority', '')).lower() == 'high']
+        if hi_pri_recs:
+            hi_confs = [str(r.get('confidence', '')).lower() for r in hi_pri_recs]
+            score += 20 if all(c == 'high' for c in hi_confs) else 12
+        elif any(c == 'high' for c in all_confs):
+            score += 12
+        else:
+            score += 6
+
+    if score >= 90:   label = 'STRONG'
+    elif score >= 75: label = 'GOOD'
+    elif score >= 50: label = 'MODERATE'
+    else:             label = 'ATTENTION NEEDED'
+    return (score, label)
+
+
+def _build_pdf_bytes(report: dict) -> bytes:
+    """Generate a clean PDF from a saved report dict. Uses fpdf2 (pure Python, no browser)."""
+    from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
+    b = _PDF_BRANDING
+
+    class _ToolSmithPDF(FPDF):
+        FONT = 'Sans'
+        NB   = '{nb}'
+
+        def __init__(self, report_title='', generated_stamp=''):
+            super().__init__()
+            self._report_title    = report_title
+            self._generated_stamp = generated_stamp
+            self.alias_nb_pages(self.NB)
+            import os
+            _W = 'C:/Windows/Fonts'
+            _STYLES = {
+                '':  [os.path.join(_W, 'arial.ttf'),
+                      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf'],
+                'B': [os.path.join(_W, 'arialbd.ttf'),
+                      '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf'],
+                'I': [os.path.join(_W, 'ariali.ttf'),
+                      '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf',
+                      '/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf'],
+            }
+            _fallback = None
+            for _style, _paths in _STYLES.items():
+                for _p in _paths:
+                    if os.path.isfile(_p):
+                        self.add_font(self.FONT, _style, _p)
+                        if _style == '':
+                            _fallback = _p
+                        break
+                else:
+                    if _fallback and _style != '':
+                        self.add_font(self.FONT, _style, _fallback)
+
+        def header(self):
+            if self.page_no() == 1:
+                return
+            self.set_font(self.FONT, 'B', 9)
+            self.set_text_color(*_PDF_BRANDING['primary'])
+            self.cell(60, 6, 'ToolSmithAI')
+            ttl = self._report_title[:47] + '...' if len(self._report_title) > 50 else self._report_title
+            self.set_font(self.FONT, '', 8)
+            self.set_text_color(*_PDF_BRANDING['text_muted'])
+            self.cell(0, 6, ttl, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.set_draw_color(*_PDF_BRANDING['rule_light'])
+            self.set_line_width(0.3)
+            self.line(20, self.get_y(), 190, self.get_y())
+            self.ln(3)
+
+        def footer(self):
+            if self.page_no() == 1:
+                return
+            self.set_y(-15)
+            self.set_draw_color(*_PDF_BRANDING['rule_light'])
+            self.set_line_width(0.3)
+            self.line(20, self.get_y(), 190, self.get_y())
+            self.ln(2)
+            self.set_font(self.FONT, '', 7)
+            self.set_text_color(*_PDF_BRANDING['text_stamp'])
+            self.cell(80, 5, f'Generated {self._generated_stamp}')
+            self.cell(0, 5, f'Page {self.page_no()} of {self.NB}', align='R',
+                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        def _draw_cover(self, title, dataset, status, created):
+            self.set_y(70)
+            self.set_font(self.FONT, 'B', 22)
+            self.set_text_color(*_PDF_BRANDING['primary'])
+            self.cell(0, 12, 'ToolSmithAI', align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.set_font(self.FONT, 'I', 11)
+            self.set_text_color(*_PDF_BRANDING['text_secondary'])
+            self.cell(0, 7, 'Executive Intelligence Report', align='C',
+                      new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.ln(6)
+            self.set_draw_color(*_PDF_BRANDING['primary_light'])
+            self.set_line_width(0.5)
+            self.line(40, self.get_y(), 170, self.get_y())
+            self.ln(8)
+            self.set_font(self.FONT, 'B', 16)
+            self.set_text_color(*_PDF_BRANDING['title_dark'])
+            self.multi_cell(0, 9, title, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            self.ln(8)
+            for _lbl, _val in [
+                ('Dataset',   dataset),
+                ('Status',    status),
+                ('Generated', created),
+            ]:
+                self.set_font(self.FONT, '', 9)
+                self.set_text_color(*_PDF_BRANDING['text_secondary'])
+                self.cell(0, 6, f'{_lbl}:  {_val}', align='C',
+                          new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        def _draw_executive_snapshot(self, sections, b):
+            from fpdf.enums import XPos, YPos
+
+            # ── build lookup dict ─────────────────────────────────────────────
+            _by = {}
+            for _sec in sections:
+                _t = _sec.get('type') or 'text'
+                _by.setdefault(_t, []).append(_sec)
+
+            def _trunc(text, n):
+                s = str(text or '')
+                if len(s) <= n:
+                    return s
+                cut = s[:n].rsplit(' ', 1)
+                return (cut[0] if len(cut) > 1 else s[:n]) + '…'
+
+            def _first(lst):
+                return (lst or [{}])[0]
+
+            # ── section data ──────────────────────────────────────────────────
+            _ai     = _first(_by.get('ai_dashboard'))
+            _ai_ins = str(_ai.get('most_important_insight', '') or '')
+            _ai_rsk = str(_ai.get('highest_risk', '') or '')
+            _ai_act = str(_ai.get('recommended_action', '') or '')
+            _ai_wl  = list(_ai.get('watchlist', None) or [])
+
+            _exec    = _first(_by.get('executive_summary'))
+            _ex_summ = str(_exec.get('summary', '') or '')
+
+            _anom_raw = (_first(_by.get('anomaly')).get('anomalies') or [])
+            _SENTINEL = 'No Major Anomalies Detected'
+            _anoms    = [a for a in _anom_raw if a.get('title', '') != _SENTINEL]
+
+            _rec_sec = _first(_by.get('recommendation'))
+            _recs    = list(_rec_sec.get('recommendations', None) or [])
+
+            _ip_sec  = _first(_by.get('insight_priority'))
+            _ip_ins  = list(_ip_sec.get('insights', None) or [])
+
+            _kpi_sec  = _first(_by.get('kpi'))
+            _kpi_list = list(_kpi_sec.get('kpis', None) or [])
+            _kpi_map  = {k.get('label', ''): k for k in _kpi_list}
+
+            _bkpi_sec   = _first(_by.get('business_kpis'))
+            _bkpi_cards = list(_bkpi_sec.get('kpis', None) or [])
+            _bkpi_lbl   = str(_bkpi_sec.get('dataset_label', '') or '')
+
+            # ── KPI card selection ────────────────────────────────────────────
+            _STRUCT_ORDER = ['Data Completeness', 'Total Records',
+                             'Total Features', 'Columns with Gaps']
+            if _bkpi_cards:
+                _snap_kpis = list(_bkpi_cards[:4])
+                if len(_snap_kpis) < 4:
+                    _used = {c.get('label', '') for c in _snap_kpis}
+                    for _lbl2 in _STRUCT_ORDER:
+                        if len(_snap_kpis) >= 4:
+                            break
+                        if _lbl2 in _kpi_map and _lbl2 not in _used:
+                            _snap_kpis.append(_kpi_map[_lbl2])
+                            _used.add(_lbl2)
+            else:
+                _snap_kpis = [_kpi_map[l] for l in _STRUCT_ORDER if l in _kpi_map][:4]
+
+            # ── key insight ───────────────────────────────────────────────────
+            _FB_INS = 'No critical anomalies detected'
+            _FB_RSK = 'No high-severity risks identified'
+            _FB_ACT = 'Review report sections for detailed insights'
+
+            if _ai_ins and _FB_INS not in _ai_ins:
+                _insight = _trunc(_ai_ins, 160)
+            elif _ip_ins:
+                _insight = _trunc(_ip_ins[0].get('title', ''), 160)
+            elif _anoms:
+                _d = _anoms[0].get('description', '') or _anoms[0].get('title', '')
+                _insight = _trunc(_d, 160)
+            elif _ex_summ:
+                _insight = _trunc(_ex_summ.split('. ')[0], 160)
+            else:
+                _insight = 'Analysis complete. Review the report sections below for detailed findings.'
+
+            # ── top risk ──────────────────────────────────────────────────────
+            _hi_anoms = [a for a in _anoms if str(a.get('severity', '')).lower() == 'high']
+            _SEV_RGB  = {
+                'high':   b['danger'],
+                'medium': b['warning'],
+                'low':    b['neutral'],
+                'clear':  b['success'],
+            }
+
+            if _hi_anoms:
+                _a0          = _hi_anoms[0]
+                _risk_title  = _trunc(_a0.get('title', ''), 100)
+                _risk_detail = _trunc(_a0.get('evidence', '') or _a0.get('description', ''), 120)
+                _risk_sev    = 'high'
+            elif _ai_rsk and _FB_RSK not in _ai_rsk:
+                _risk_title  = _trunc(_ai_rsk, 100)
+                _risk_detail = ''
+                _risk_sev    = 'medium'
+            elif _ip_ins and str(_ip_ins[0].get('severity', '')).lower() == 'high':
+                _risk_title  = _trunc(_ip_ins[0].get('title', ''), 100)
+                _risk_detail = _trunc(_ip_ins[0].get('evidence', ''), 120)
+                _risk_sev    = 'high'
+            elif _anoms:
+                _a0          = _anoms[0]
+                _risk_title  = _trunc(_a0.get('title', ''), 100)
+                _risk_detail = ''
+                _risk_sev    = str(_a0.get('severity', 'low')).lower()
+            else:
+                _risk_title  = 'No high-severity risks detected.'
+                _risk_detail = ''
+                _risk_sev    = 'clear'
+
+            _risk_rgb = _SEV_RGB.get(_risk_sev, b['neutral'])
+
+            # ── recommended action ────────────────────────────────────────────
+            _ACT_RGB = {
+                'HIGH':      b['danger'],
+                'MEDIUM':    b['warning'],
+                'LOW':       b['neutral'],
+                'SUGGESTED': b['primary'],
+            }
+            _hi_recs = [r for r in _recs if str(r.get('priority', '')).lower() == 'high']
+
+            if _hi_recs:
+                _r0           = _hi_recs[0]
+                _act_title    = _trunc(_r0.get('title', ''), 80)
+                _act_reason   = _trunc(_r0.get('reason', ''), 140)
+                _act_priority = 'HIGH'
+            elif _ai_act and _FB_ACT not in _ai_act:
+                _act_title    = _trunc(_ai_act, 80)
+                _act_reason   = ''
+                _act_priority = 'SUGGESTED'
+            elif _recs:
+                _r0           = _recs[0]
+                _act_title    = _trunc(_r0.get('title', ''), 80)
+                _act_reason   = _trunc(_r0.get('reason', ''), 140)
+                _act_priority = str(_r0.get('priority', '')).upper()
+            elif _ip_ins:
+                _act_title    = _trunc(_ip_ins[0].get('recommended_action', ''), 80)
+                _act_reason   = ''
+                _act_priority = 'SUGGESTED'
+            else:
+                _act_title    = 'Review the full report for detailed recommended next steps.'
+                _act_reason   = ''
+                _act_priority = ''
+
+            _act_rgb = _ACT_RGB.get(_act_priority, b['neutral'])
+
+            # ── readiness ─────────────────────────────────────────────────────
+            _r_score, _r_label = _compute_readiness_score(_by)
+            _SCORE_RGB = {
+                'STRONG':           b['success'],
+                'GOOD':             b['success'],
+                'MODERATE':         b['warning'],
+                'ATTENTION NEEDED': b['danger'],
+            }
+            _r_rgb  = _SCORE_RGB.get(_r_label, b['neutral'])
+            _c_card = _kpi_map.get('Data Completeness') or {}
+            _c_val  = _c_card.get('value')
+            _c_str  = f"{float(_c_val):.1f}%" if _c_val is not None else '—'
+            _c_stat = str(_c_card.get('status', '') or '')
+            _c_rgb  = {
+                'good':    b['success'],
+                'warning': b['warning'],
+                'risk':    b['danger'],
+            }.get(_c_stat, b['text_light'])
+
+            _wl_items = [_trunc(str(x), 60) for x in (_ai_wl[:2] if _ai_wl else [])]
+
+            # ── layout ────────────────────────────────────────────────────────
+            _L = 20    # left margin x (mm)
+            _W = 170   # usable width (mm)
+
+            self.set_auto_page_break(auto=False)
+            try:
+                _y = self.get_y()
+
+                # ── 1. BANNER ─────────────────────────────────────────────────
+                _bh = 14
+                self.set_fill_color(*b['primary_light'])
+                self.rect(_L, _y, _W, _bh, style='F')
+                self.set_draw_color(*b['primary'])
+                self.set_line_width(0.5)
+                self.line(_L, _y, _L + _W, _y)
+
+                _tag = _bkpi_lbl or 'Dataset Report'
+                self.set_font(self.FONT, 'B', 10)
+                self.set_text_color(*b['primary'])
+                self.set_xy(_L + 4, _y + 3)
+                self.cell(_W - 8, 6, 'EXECUTIVE SNAPSHOT')
+                self.set_font(self.FONT, '', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L + 4, _y + 3)
+                self.cell(_W - 8, 6, _tag, align='R')
+
+                _y += _bh + 4
+
+                # ── 2. KPI CARD GRID ──────────────────────────────────────────
+                if _snap_kpis:
+                    _nc  = len(_snap_kpis)
+                    _gap = 4.0
+                    _cw  = (_W - _gap * (_nc - 1)) / _nc
+                    _ch  = 33.0
+                    _sw  = 2.5
+                    _TREND_SYM = {'up': '▲', 'down': '▼', 'neutral': '—'}
+                    _STAT_RGB  = {
+                        'good':    b['success'],
+                        'warning': b['warning'],
+                        'risk':    b['danger'],
+                    }
+                    for _ci, _card in enumerate(_snap_kpis):
+                        try:
+                            _cx = _L + _ci * (_cw + _gap)
+                            _cy = _y
+
+                            _c_lbl = str(_card.get('label', '') or '')[:28].upper()
+                            _c_vf  = str(_card.get('value_formatted', '') or '')
+                            if not _c_vf:
+                                _cv   = _card.get('value')
+                                _cfmt = str(_card.get('format', 'number') or 'number')
+                                try:
+                                    if _cv is None:           _c_vf = '—'
+                                    elif _cfmt == 'percent':  _c_vf = f"{float(_cv):.1f}%"
+                                    elif _cfmt == 'currency': _c_vf = f"${float(_cv):,.0f}"
+                                    elif _cfmt == 'number':   _c_vf = f"{int(float(_cv)):,}"
+                                    else:                     _c_vf = str(_cv)
+                                except (TypeError, ValueError):
+                                    _c_vf = str(_cv or '—')
+                            _c_vf = _c_vf[:16]
+
+                            _c_status = str(_card.get('status', '') or '').lower()
+                            _c_trend  = str(_card.get('trend',  '') or '').lower()
+                            _c_delta  = _card.get('delta')
+                            _c_srgb   = _STAT_RGB.get(_c_status, b['neutral'])
+                            _c_tsym   = _TREND_SYM.get(_c_trend, '—')
+                            _c_trgb   = (b['success'] if _c_trend == 'up' else
+                                         b['danger']  if _c_trend == 'down' else b['neutral'])
+
+                            self.set_fill_color(*b['bg_row_alt'])
+                            self.set_draw_color(*b['rule_light'])
+                            self.set_line_width(0.3)
+                            self.rect(_cx, _cy, _cw, _ch, style='FD')
+                            self.set_fill_color(*_c_srgb)
+                            self.set_draw_color(*_c_srgb)
+                            self.rect(_cx, _cy, _sw, _ch, style='F')
+
+                            _tx = _cx + _sw + 2.5
+                            _tw = _cw - _sw - 3.5
+
+                            self.set_font(self.FONT, 'B', 7)
+                            self.set_text_color(*b['text_secondary'])
+                            self.set_xy(_tx, _cy + 3)
+                            self.cell(_tw, 4.5, _c_lbl)
+
+                            self.set_font(self.FONT, 'B', 12)
+                            self.set_text_color(*b['text_dark'])
+                            self.set_xy(_tx, _cy + 9)
+                            self.cell(_tw, 8, _c_vf)
+
+                            try:
+                                _ds = (f"{_c_tsym} {float(_c_delta):+.1f}%"
+                                       if _c_delta is not None else _c_tsym)
+                            except (TypeError, ValueError):
+                                _ds = _c_tsym
+                            self.set_font(self.FONT, 'B', 7.5)
+                            self.set_text_color(*_c_trgb)
+                            self.set_xy(_tx, _cy + 23)
+                            self.cell(_tw, 5, _ds)
+                        except Exception:
+                            pass
+
+                    _y += _ch + 5
+
+                # ── 3. KEY INSIGHT ────────────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['primary'])
+                self.set_xy(_L, _y)
+                self.cell(_W, 5, 'KEY INSIGHT', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                _y += 5
+
+                self.set_font(self.FONT, '', 9)
+                self.set_text_color(*b['text_body'])
+                self.set_xy(_L, _y)
+                self.multi_cell(_W, 5.5, _insight, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                _y = self.get_y() + 4
+
+                # ── 4. TOP RISK ───────────────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                _rx = _L + 5.5
+                _rw = _W - 5.5
+                _y_risk = _y
+
+                _sev_tag = 'CLEAR' if _risk_sev == 'clear' else _risk_sev.upper()
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*_risk_rgb)
+                self.set_xy(_rx, _y + 1)
+                self.cell(22, 5, f'[{_sev_tag}]')
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_rx + 22, _y + 1)
+                self.cell(_rw - 22, 5, 'TOP RISK')
+
+                self.set_font(self.FONT, 'B', 9)
+                self.set_text_color(*b['text_dark'])
+                self.set_xy(_rx, _y + 7)
+                self.multi_cell(_rw, 5, _risk_title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                if _risk_detail:
+                    self.set_font(self.FONT, 'I', 7.5)
+                    self.set_text_color(*b['text_light'])
+                    self.set_xy(_rx, self.get_y())
+                    self.multi_cell(_rw, 4.5, _risk_detail, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                _y_risk_end = max(self.get_y() + 2, _y_risk + 16)
+                self.set_fill_color(*_risk_rgb)
+                self.set_draw_color(*_risk_rgb)
+                self.rect(_L, _y_risk, 2.5, _y_risk_end - _y_risk, style='F')
+                _y = _y_risk_end + 4
+
+                # ── 5. RECOMMENDED ACTION ─────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                _ax = _L + 5.5
+                _aw = _W - 5.5
+                _y_act = _y
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['primary'])
+                self.set_xy(_ax, _y + 1)
+                self.cell(70, 5, 'RECOMMENDED ACTION')
+
+                if _act_priority:
+                    self.set_font(self.FONT, 'B', 7.5)
+                    self.set_text_color(*_act_rgb)
+                    self.set_xy(_ax, _y + 1)
+                    self.cell(_aw, 5, f'[{_act_priority}]', align='R')
+
+                self.set_font(self.FONT, 'B', 9)
+                self.set_text_color(*b['text_body'])
+                self.set_xy(_ax, _y + 7)
+                self.multi_cell(_aw, 5, _act_title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                if _act_reason:
+                    self.set_font(self.FONT, '', 8)
+                    self.set_text_color(*b['text_secondary'])
+                    self.set_xy(_ax, self.get_y())
+                    self.multi_cell(_aw, 4.5, _act_reason, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+                _y_act_end = max(self.get_y() + 2, _y_act + 16)
+                self.set_fill_color(*_act_rgb)
+                self.set_draw_color(*_act_rgb)
+                self.rect(_L, _y_act, 2.5, _y_act_end - _y_act, style='F')
+                _y = _y_act_end + 4
+
+                # ── 6. READINESS ROW ──────────────────────────────────────────
+                self.set_draw_color(*b['rule_light'])
+                self.set_line_width(0.3)
+                self.line(_L, _y, _L + _W, _y)
+                _y += 3
+
+                _lw2 = 82
+                _rw2 = _W - _lw2 - 6
+                _wx  = _L + _lw2 + 6
+                _y0  = _y
+
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L, _y0)
+                self.cell(_lw2, 5, 'DATA READINESS')
+
+                if _wl_items:
+                    self.set_font(self.FONT, 'B', 8)
+                    self.set_text_color(*b['text_dark'])
+                    self.set_xy(_wx, _y0)
+                    self.cell(_rw2, 5, 'WATCHLIST')
+
+                _y0 += 5
+
+                self.set_font(self.FONT, 'B', 10)
+                self.set_text_color(*_r_rgb)
+                self.set_xy(_L, _y0)
+                self.cell(68, 7, _r_label)
+                self.set_font(self.FONT, '', 9)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L + 70, _y0)
+                self.cell(_lw2 - 70, 7, f'{_r_score}/100')
+
+                _wy = _y0
+                for _wl in _wl_items:
+                    self.set_font(self.FONT, '', 8)
+                    self.set_text_color(*b['text_body'])
+                    self.set_xy(_wx, _wy)
+                    self.cell(4, 5, '•')
+                    self.set_xy(_wx + 4, _wy)
+                    self.multi_cell(_rw2 - 4, 5, _wl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    _wy += 5
+
+                _y0 += 7
+
+                self.set_font(self.FONT, '', 8)
+                self.set_text_color(*b['text_secondary'])
+                self.set_xy(_L, _y0)
+                self.cell(30, 5, 'Completeness:')
+                self.set_font(self.FONT, 'B', 8)
+                self.set_text_color(*_c_rgb)
+                self.set_xy(_L + 30, _y0)
+                self.cell(_lw2 - 30, 5, _c_str)
+
+            finally:
+                self.set_auto_page_break(auto=True, margin=25)
+
+    def _s(text) -> str:
+        return str(text)
+
+    title      = _s(report.get("title", "Untitled Report"))
+    task_type  = report.get("task_type", "")
+    status     = _s(report.get("status", "completed").title())
+    dataset    = _s(report.get("dataset_filename") or "Not specified")
+    created    = _s((report.get("created_at") or "")[:19].replace("T", " ") + " UTC")
+    sections   = (report.get("content") or {}).get("sections", [])
+    type_label = _s({
+        "generate_dataset_report": "Dataset Report",
+        "email_dataset_report":    "Emailed Dataset Report",
+    }.get(task_type, task_type.replace("_", " ").title()))
+
+    stamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    pdf   = _ToolSmithPDF(report_title=title, generated_stamp=stamp)
+    pdf.set_title(title)
+    pdf.set_author('ToolSmithAI')
+    pdf.set_creator('ToolSmithAI')
+    pdf.set_subject('Executive Intelligence Report')
+    pdf.set_margins(20, 20, 20)
+    pdf.set_auto_page_break(auto=True, margin=25)
+    pdf.add_page()
+    pdf._draw_cover(title, dataset, status, created)
+    pdf.add_page()
+    pdf._draw_executive_snapshot(sections, b)
+    pdf.add_page()
+
+    # Report sections — dispatched on section.type for v2 compatibility.
+    # Sections without 'type' (v1 saved reports) default to 'text'.
+    # Unknown future types fall back to plain text rendering; never crash.
+    for section in sections:
+        sec_type = section.get("type", "text")
+        heading  = _s(section.get("heading", ""))
+
+        pdf.set_font("Sans", "B", 8)
+        pdf.set_text_color(*b['primary'])
+        pdf.cell(0, 5, heading.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(1)
+
+        if sec_type == "text":
+            for item in section.get("items", []):
+                pdf.set_font("Sans", "B", 9)
+                pdf.set_text_color(*b['primary'])
+                pdf.cell(6, 5, "->")
+                pdf.set_font("Sans", "", 9)
+                pdf.set_text_color(*b['text_body'])
+                pdf.multi_cell(0, 5, _s(item), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == "kpi":
+            for kpi in section.get("kpis", []):
+                try:
+                    label    = _s(str(kpi.get("label", "")))
+                    raw_val  = kpi.get("value")
+                    fmt      = kpi.get("format", "number")
+                    trend    = kpi.get("trend", "neutral")
+                    desc     = _s(str(kpi.get("description", "")))
+                    if raw_val is None:
+                        val_str = "-"
+                    elif fmt == "percent":
+                        val_str = f"{raw_val}%"
+                    elif fmt == "currency":
+                        val_str = f"${float(raw_val):,.2f}"
+                    elif fmt == "number":
+                        val_str = f"{int(raw_val):,}"
+                    else:
+                        val_str = _s(str(raw_val))
+                    trend_marker = {"up": "[+]", "down": "[-]", "neutral": "[ ]"}.get(trend, "[ ]")
+                    line = f"{trend_marker}  {label}: {val_str}"
+                    if desc:
+                        line += f"   ({desc})"
+                    pdf.set_font("Sans", "", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(line), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                except Exception:
+                    pass
+        elif sec_type == "executive_summary":
+            summary       = _s(str(section.get("summary", "")))
+            takeaways     = section.get("key_takeaways", [])
+            risks         = section.get("risks", [])
+            opportunities = section.get("opportunities", [])
+            if summary:
+                pdf.set_font("Sans", "", 9)
+                pdf.set_text_color(*b['text_body'])
+                pdf.multi_cell(0, 5, summary, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(2)
+            for cat_label, items, rgb in [
+                ('Key Takeaways', takeaways,     b['primary']),
+                ('Risks',         risks,          b['danger']),
+                ('Opportunities', opportunities,  b['success']),
+            ]:
+                if items:
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(0, 5, cat_label.upper(), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    for item in items:
+                        try:
+                            pdf.set_font("Sans", "", 9)
+                            pdf.set_text_color(*b['text_body'])
+                            pdf.multi_cell(0, 5, _s(f"  • {item}"),
+                                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        except Exception:
+                            pass
+                    pdf.ln(1)
+        elif sec_type == "recommendation":
+            _PRIORITY_RGB = {'high': b['danger'], 'medium': b['warning'], 'low': b['neutral']}
+            for rec in section.get("recommendations", []):
+                try:
+                    priority   = str(rec.get("priority",   "low")).lower()
+                    title      = _s(str(rec.get("title",      "")))
+                    reason     = _s(str(rec.get("reason",     "")))
+                    action     = _s(str(rec.get("action_type","")).replace("_", " ").title())
+                    confidence = _s(str(rec.get("confidence", "")))
+                    rgb        = _PRIORITY_RGB.get(priority, (100,116,139))
+                    # Priority label + title on one line
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(22, 5, f"[{priority.upper()}]")
+                    pdf.set_font("Sans", "B", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if reason:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, f"  {reason}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    meta_parts = []
+                    if action:     meta_parts.append(f"Action: {action}")
+                    if confidence: meta_parts.append(f"Confidence: {confidence}")
+                    if meta_parts:
+                        pdf.set_font("Sans", "I", 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.cell(0, 4, f"  {' | '.join(meta_parts)}",
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+        elif sec_type == "drift_detection":
+            bw = section.get("baseline_window") or {}
+            bw_count = bw.get("snapshot_count", 0)
+            bw_start = _s(str(bw.get("start", "") or "")[:19].replace("T", " "))
+            bw_end   = _s(str(bw.get("end",   "") or "")[:19].replace("T", " "))
+            if bw_count or bw_start:
+                pdf.set_font("Sans", "I", 7.5)
+                pdf.set_text_color(*b['text_light'])
+                pdf.cell(0, 4,
+                         f"Baseline: {bw_count} snapshot(s)  {bw_start} -> {bw_end}",
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+            _DR_SEV_RGB = {
+                'high':   b['danger'],
+                'medium': b['warning'],
+                'low':    b['primary'],
+            }
+            _DR_DIR_SYM = {"increase": "[+]", "decrease": "[-]"}
+            for drift in section.get("drifts", []):
+                try:
+                    metric    = _s(str(drift.get("metric",         "")))
+                    base_val  = drift.get("baseline_value")
+                    curr_val  = drift.get("current_value")
+                    pct       = drift.get("drift_percent")
+                    sev       = str(drift.get("severity",  "low")).lower()
+                    direction = str(drift.get("direction", "")).lower()
+                    desc      = _s(str(drift.get("description", "")))
+                    rgb       = _DR_SEV_RGB.get(sev, (100, 116, 139))
+                    sym       = _DR_DIR_SYM.get(direction, "[~]")
+                    pct_str   = (f"+{pct}%" if isinstance(pct, (int, float)) and pct > 0
+                                 else f"{pct}%" if pct is not None else "?%")
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(10, 5, sym)
+                    pdf.set_font("Sans", "B", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.cell(0, 5,
+                             f"{metric}   {pct_str}  (baseline: {base_val}, current: {curr_val})",
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if desc:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, f"  {desc}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                except Exception:
+                    pass
+        elif sec_type == "historical_comparison":
+            baseline_ts = _s(str(section.get("baseline_timestamp", "") or "")[:19].replace("T", " "))
+            if baseline_ts:
+                pdf.set_font("Sans", "I", 7.5)
+                pdf.set_text_color(*b['text_light'])
+                pdf.cell(0, 4, f"Baseline: {baseline_ts} UTC",
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+            _SEV_RGB_HC = {
+                'positive': b['success'],
+                'warning':  b['danger'],
+                'neutral':  b['neutral'],
+            }
+            _ICON_HC = {"increase": "[+]", "decrease": "[-]", "stable": "[=]"}
+            for comp in section.get("comparisons", []):
+                try:
+                    metric    = _s(str(comp.get("metric",         "")))
+                    curr_val  = comp.get("current_value")
+                    prev_val  = comp.get("previous_value")
+                    change    = comp.get("change")
+                    ctype     = str(comp.get("change_type", "stable")).lower()
+                    sev       = str(comp.get("severity",    "neutral")).lower()
+                    desc      = _s(str(comp.get("description", "")))
+                    rgb       = _SEV_RGB_HC.get(sev, (100, 116, 139))
+                    icon      = _ICON_HC.get(ctype, "[=]")
+                    chg_str   = (f"+{change}" if isinstance(change, (int, float)) and change > 0
+                                 else str(change) if change is not None else "0")
+                    # Metric line: [icon] metric   curr → prev  (delta)
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(10, 5, icon)
+                    pdf.set_font("Sans", "B", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.cell(0, 5,
+                             f"{metric}   {curr_val} (prev: {prev_val}, change: {chg_str})",
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if desc:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, f"  {desc}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                except Exception:
+                    pass
+        elif sec_type == "predictive_readiness":
+            pr_score = section.get("readiness_score")
+            pr_level = str(section.get("readiness_level", "low")).lower()
+            _PR_LV_RGB = {
+                'high':   b['success'],
+                'medium': b['warning'],
+                'low':    b['danger'],
+            }
+            _PR_ST_RGB = {
+                'ready':   b['success'],
+                'partial': b['warning'],
+                'missing': b['danger'],
+            }
+            _PR_ST_SYM = {"ready": "[OK]", "partial": "[~]", "missing": "[X]"}
+            lv_rgb = _PR_LV_RGB.get(pr_level, (100, 116, 139))
+            # Score + level line
+            score_str = str(pr_score) if pr_score is not None else "-"
+            pdf.set_font("Sans", "B", 10)
+            pdf.set_text_color(*lv_rgb)
+            pdf.cell(0, 6, f"Score: {score_str} / 100  [{pr_level.upper()} READINESS]",
+                     new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(2)
+            # Signals
+            for sig in section.get("signals", []):
+                try:
+                    st_key  = str(sig.get("status", "missing")).lower()
+                    st_rgb  = _PR_ST_RGB.get(st_key, (100, 116, 139))
+                    st_sym  = _PR_ST_SYM.get(st_key, "[?]")
+                    name    = _s(str(sig.get("name",        "")))
+                    desc    = _s(str(sig.get("description", "")))
+                    ev      = _s(str(sig.get("evidence",    "")))
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*st_rgb)
+                    pdf.cell(12, 5, st_sym)
+                    pdf.set_font("Sans", "B", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if desc:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, f"  {desc}", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if ev:
+                        pdf.set_font("Sans", "I", 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.multi_cell(0, 4, f"  Evidence: {ev}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                except Exception:
+                    pass
+            # Next steps
+            next_steps = section.get("next_steps", [])
+            if next_steps:
+                pdf.ln(1)
+                pdf.set_font("Sans", "B", 8)
+                pdf.set_text_color(*b['primary'])
+                pdf.cell(0, 5, "NEXT STEPS", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                for step in next_steps:
+                    try:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_body'])
+                        pdf.multi_cell(0, 4.5, f"  -> {_s(str(step))}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+        elif sec_type == "trend":
+            _DIR_RGB = {
+                'up':       b['success'],
+                'down':     b['danger'],
+                'stable':   b['primary'],
+                'volatile': b['warning'],
+            }
+            _STR_RGB = {
+                'high':   b['danger'],
+                'medium': b['warning'],
+                'low':    b['neutral'],
+            }
+            for trend in section.get("trends", []):
+                try:
+                    direction   = str(trend.get("direction",   "stable")).lower()
+                    strength    = str(trend.get("strength",    "low")).lower()
+                    category    = _s(str(trend.get("category",    "")))
+                    title       = _s(str(trend.get("title",       "")))
+                    description = _s(str(trend.get("description", "")))
+                    evidence    = _s(str(trend.get("evidence",    "")))
+                    dir_symbol  = {"up": "[UP]", "down": "[DOWN]", "stable": "[STABLE]", "volatile": "[VOLATILE]"}.get(direction, f"[{direction.upper()}]")
+                    rgb_dir     = _DIR_RGB.get(direction, (100, 116, 139))
+                    rgb_str     = _STR_RGB.get(strength,  (100, 116, 139))
+                    # Direction + strength prefix on one line
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb_dir)
+                    pdf.cell(22, 5, dir_symbol)
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb_str)
+                    pdf.cell(20, 5, f"[{strength.upper()}]")
+                    pdf.set_font("Sans", "B", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if category:
+                        pdf.set_font("Sans", "I", 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.cell(0, 4, f"  Category: {category}",
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if description:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, f"  {description}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if evidence:
+                        pdf.set_font("Sans", "I", 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.multi_cell(0, 4, f"  Evidence: {evidence}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+        elif sec_type == "anomaly":
+            _SEV_RGB = {
+                'high':   b['danger'],
+                'medium': b['warning'],
+                'low':    b['success'],
+            }
+            for anomaly in section.get("anomalies", []):
+                try:
+                    severity    = str(anomaly.get("severity", "low")).lower()
+                    category    = _s(str(anomaly.get("category", "")))
+                    title       = _s(str(anomaly.get("title", "")))
+                    description = _s(str(anomaly.get("description", "")))
+                    evidence    = _s(str(anomaly.get("evidence", "")))
+                    rgb         = _SEV_RGB.get(severity, (100, 116, 139))
+                    pdf.set_font("Sans", "B", 8)
+                    pdf.set_text_color(*rgb)
+                    pdf.cell(22, 5, f"[{severity.upper()}]")
+                    pdf.set_font("Sans", "B", 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if category:
+                        pdf.set_font("Sans", "I", 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.cell(0, 4, f"  Category: {category}",
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if description:
+                        pdf.set_font("Sans", "", 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, f"  {description}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if evidence:
+                        pdf.set_font("Sans", "I", 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.multi_cell(0, 4, f"  Evidence: {evidence}",
+                                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+        elif sec_type == 'chart':
+            _ch      = section.get('chart', {})
+            _ct      = _s(str(_ch.get('chart_type', '')))
+            _lbls    = _ch.get('labels', [])
+            _series  = _ch.get('series', [])
+            _expl    = _s(str(section.get('explanation', '')))
+            _s0_data = _series[0].get('data', []) if _series else []
+            _s0_name = _s(str(_series[0].get('name', ''))) if _series else ''
+            _has_neg = any(isinstance(_v, (int, float)) and _v < 0
+                           for _v in _s0_data if _v is not None)
+            if _ct in ('bar',) and _series and _lbls and not _has_neg:
+                # ---- Visual bar chart ----
+                _BAR_CH  = 48
+                _BAR_CW  = 160
+                _BAR_CX  = 20
+                _BAR_CAP = 12
+                _BPAD    = 8
+                _dlbls   = [_s(str(_l)) for _l in _lbls[:_BAR_CAP]]
+                _dvals   = [_v if isinstance(_v, (int, float)) else 0
+                            for _v in _s0_data[:_BAR_CAP]]
+                if _dlbls and _dvals:
+                    _NB     = len(_dlbls)
+                    _maxval = max(_dvals) if _dvals else 0
+                    _maxval = _maxval if _maxval > 0 else 1
+                    if pdf.get_y() + _BAR_CH + _BPAD + 8 > pdf.h - 25:
+                        pdf.add_page()
+                    _cy0  = pdf.get_y()
+                    _cbot = _cy0 + _BAR_CH
+                    # Axis lines
+                    pdf.set_draw_color(*b['rule_light'])
+                    pdf.set_line_width(0.3)
+                    pdf.line(_BAR_CX, _cbot, _BAR_CX + _BAR_CW, _cbot)
+                    pdf.line(_BAR_CX, _cy0, _BAR_CX, _cbot)
+                    # Max-value scale label
+                    pdf.set_font('Sans', '', 5.5)
+                    pdf.set_text_color(*b['text_muted'])
+                    pdf.set_xy(_BAR_CX + 1, _cy0)
+                    pdf.cell(25, 4, '{:,.0f}'.format(_maxval))
+                    # Draw bars
+                    _bw = _BAR_CW / _NB
+                    for _bi in range(_NB):
+                        _bx = _BAR_CX + _bi * _bw
+                        _bh = (_dvals[_bi] / _maxval) * _BAR_CH
+                        _by = _cbot - _bh
+                        pdf.set_fill_color(*b['primary'])
+                        pdf.rect(_bx + 0.5, _by, _bw - 1.0, _bh, style='F')
+                        if _bh > 5 and _by > _cy0 + 4:
+                            try:
+                                _dv = _dvals[_bi]
+                                _vl = '{:,.0f}'.format(int(_dv)) if isinstance(_dv, float) and _dv == int(_dv) else '{:,.1f}'.format(_dv)
+                                pdf.set_font('Sans', '', 5.5)
+                                pdf.set_text_color(*b['text_muted'])
+                                pdf.set_xy(_bx, _by - 4.5)
+                                pdf.cell(_bw, 4, _vl, align='C')
+                            except Exception:
+                                pass
+                    # X-axis labels
+                    _lmax = 6 if _NB > 6 else 10
+                    _lfsz = 5.5 if _NB > 8 else 6.5
+                    for _bi, _dl in enumerate(_dlbls):
+                        _bx = _BAR_CX + _bi * _bw
+                        pdf.set_font('Sans', '', _lfsz)
+                        pdf.set_text_color(*b['text_muted'])
+                        pdf.set_xy(_bx, _cbot + 1.5)
+                        _lt = _dl[:_lmax] + ('...' if len(_dl) > _lmax else '')
+                        pdf.cell(_bw, 4, _lt, align='C')
+                    # Legend / caption
+                    pdf.set_xy(_BAR_CX, _cbot + _BPAD)
+                    if _s0_name:
+                        pdf.set_font('Sans', 'I', 7)
+                        pdf.set_text_color(*b['text_chart'])
+                        pdf.cell(0, 4, _s0_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if len(_lbls) > _BAR_CAP:
+                        pdf.set_font('Sans', 'I', 7)
+                        pdf.set_text_color(*b['text_muted'])
+                        pdf.cell(0, 4, 'Showing first ' + str(_BAR_CAP) + ' of ' + str(len(_lbls)) + ' categories.',
+                                 new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _expl:
+                        pdf.set_font('Sans', 'I', 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                elif _expl:
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            elif _ct == 'line' and _series and _lbls and not _has_neg:
+                # ---- Visual line chart ----
+                _LC_CH  = 45
+                _LC_CW  = 160
+                _LC_CX  = 20
+                _LC_PAD = 9
+                _llbls  = [_s(str(_l)) for _l in _lbls]
+                _NL     = len(_llbls)
+                _lvals  = [_s0_data[_i] if _i < len(_s0_data) and isinstance(_s0_data[_i], (int, float)) else None
+                           for _i in range(_NL)]
+                _lnz    = [_v for _v in _lvals if isinstance(_v, (int, float))]
+                _lmaxv  = max(_lnz) if _lnz else 1
+                _lmaxv  = _lmaxv if _lmaxv > 0 else 1
+                if pdf.get_y() + _LC_CH + _LC_PAD + 6 > pdf.h - 25:
+                    pdf.add_page()
+                _lcy0  = pdf.get_y()
+                _lcbot = _lcy0 + _LC_CH
+                # Axis lines
+                pdf.set_draw_color(*b['rule_light'])
+                pdf.set_line_width(0.3)
+                pdf.line(_LC_CX, _lcbot, _LC_CX + _LC_CW, _lcbot)
+                pdf.line(_LC_CX, _lcy0, _LC_CX, _lcbot)
+                # Max-value scale label
+                pdf.set_font('Sans', '', 5.5)
+                pdf.set_text_color(*b['text_muted'])
+                pdf.set_xy(_LC_CX + 1, _lcy0)
+                pdf.cell(25, 4, '{:,.0f}'.format(_lmaxv))
+                # Precompute point positions
+                _lxs = [(_LC_CX + _pi * _LC_CW / (_NL - 1)) if _NL > 1 else (_LC_CX + _LC_CW / 2)
+                        for _pi in range(_NL)]
+                _lys = [(_lcy0 + _LC_CH * (1.0 - _lvals[_pi] / _lmaxv)) if isinstance(_lvals[_pi], (int, float)) else None
+                        for _pi in range(_NL)]
+                # Line segments (skip gaps at None points)
+                pdf.set_draw_color(*b['primary'])
+                pdf.set_line_width(0.6)
+                for _pi in range(1, _NL):
+                    if _lys[_pi - 1] is not None and _lys[_pi] is not None:
+                        try:
+                            pdf.line(_lxs[_pi - 1], _lys[_pi - 1], _lxs[_pi], _lys[_pi])
+                        except Exception:
+                            pass
+                # Point markers
+                pdf.set_fill_color(*b['primary'])
+                for _pi in range(_NL):
+                    if _lys[_pi] is not None:
+                        try:
+                            pdf.ellipse(_lxs[_pi] - 1, _lys[_pi] - 1, 2, 2, style='F')
+                        except Exception:
+                            pass
+                # X-axis labels (every Kth to avoid overlap)
+                _K = 1 if _NL <= 8 else (2 if _NL <= 16 else 4)
+                for _pi, _ll in enumerate(_llbls):
+                    if _pi % _K == 0:
+                        _px = _lxs[_pi]
+                        pdf.set_font('Sans', '', 5.5)
+                        pdf.set_text_color(*b['text_muted'])
+                        pdf.set_xy(_px - 8, _lcbot + 1.5)
+                        pdf.cell(16, 4, _ll[:8], align='C')
+                # Legend / caption
+                pdf.set_xy(_LC_CX, _lcbot + _LC_PAD)
+                if _s0_name:
+                    pdf.set_font('Sans', 'I', 7)
+                    pdf.set_text_color(*b['text_chart'])
+                    pdf.cell(0, 4, _s0_name, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                if _expl:
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            elif _ct in ('pie', 'donut') and _series and _lbls:
+                # ---- Pie / donut: percentage breakdown (improved text fallback) ----
+                _pd_data  = [_v if isinstance(_v, (int, float)) else 0 for _v in _s0_data]
+                _pd_total = sum(_pd_data) or 1
+                pdf.set_font('Sans', 'I', 8)
+                pdf.set_text_color(*b['text_chart'])
+                pdf.cell(0, 4, _ct.title() + ' chart - share breakdown:',
+                         new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+                for _pi, (_pl, _pv) in enumerate(zip(_lbls[:12], _pd_data[:12])):
+                    try:
+                        _ppct = _pv / _pd_total * 100
+                        _pv_s = '{:,.0f}'.format(int(_pv)) if isinstance(_pv, float) and _pv == int(_pv) else '{:,.1f}'.format(_pv)
+                        _prow = str(_pi + 1) + '. ' + _s(str(_pl)) + ': ' + _pv_s + '  (' + '{:.1f}'.format(_ppct) + '%)'
+                        pdf.set_font('Sans', '', 8.5)
+                        pdf.set_text_color(*b['text_body'])
+                        pdf.multi_cell(0, 5, _prow, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+                if _expl:
+                    pdf.ln(1)
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            else:
+                # ---- Text fallback: correlation_matrix, unknown types, malformed / empty ----
+                if _ct:
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_chart'])
+                    pdf.cell(0, 4, _ct + '  |  ' + str(len(_lbls)) + ' data points',
+                             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                for _se in _series:
+                    try:
+                        _sn = _s(str(_se.get('name', '')))
+                        _sd = _se.get('data', [])
+                        for _si, _slbl in enumerate(_lbls):
+                            _sv = _sd[_si] if _si < len(_sd) else None
+                            if _sv is None:
+                                _sv_s = '-'
+                            elif isinstance(_sv, float) and _sv == int(_sv):
+                                _sv_s = '{:,}'.format(int(_sv))
+                            elif isinstance(_sv, (int, float)):
+                                _sv_s = '{:,.2f}'.format(_sv)
+                            else:
+                                _sv_s = _s(str(_sv))
+                            _sfx = '  [' + _sn + ']' if _sn else ''
+                            pdf.set_font('Sans', '', 9)
+                            pdf.set_text_color(*b['text_body'])
+                            pdf.multi_cell(0, 5, '  ' + _s(str(_slbl)) + ': ' + _sv_s + _sfx,
+                                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+                if _expl:
+                    pdf.ln(1)
+                    pdf.set_font('Sans', 'I', 8)
+                    pdf.set_text_color(*b['text_secondary'])
+                    pdf.multi_cell(0, 4.5, _expl, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == 'business_kpis':
+            _TREND_SYM = {'up': '[+]', 'down': '[-]', 'neutral': '[=]', 'stable': '[=]'}
+            _TREND_RGB = {
+                'up':      b['success'],
+                'down':    b['danger'],
+                'neutral': b['neutral'],
+                'stable':  b['neutral'],
+            }
+            _ds_label = _s(str(section.get('dataset_label', '')))
+            if _ds_label:
+                pdf.set_font('Sans', 'I', 7.5)
+                pdf.set_text_color(*b['text_light'])
+                pdf.cell(0, 4, _ds_label, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1)
+            _kpis = section.get('kpis', [])
+            for _kpi in _kpis:
+                try:
+                    _kpi_lbl  = _s(str(_kpi.get('label', '')))
+                    _kpi_val  = _s(str(_kpi.get('value_formatted', '') or _kpi.get('value', '')))
+                    _kpi_tr   = str(_kpi.get('trend', 'neutral')).lower()
+                    _kpi_desc = _s(str(_kpi.get('description', '') or ''))
+                    _kpi_dlt  = _kpi.get('delta')
+                    _kpi_ddir = str(_kpi.get('delta_direction', '') or '').lower()
+                    _kpi_sym  = _TREND_SYM.get(_kpi_tr, '[=]')
+                    _kpi_rgb  = _TREND_RGB.get(_kpi_tr, b['neutral'])
+                    pdf.set_font('Sans', 'B', 8.5)
+                    pdf.set_text_color(*_kpi_rgb)
+                    pdf.cell(10, 5.5, _kpi_sym)
+                    pdf.set_font('Sans', 'B', 9)
+                    pdf.set_text_color(*b['text_dark'])
+                    pdf.cell(70, 5.5, _kpi_lbl + ':')
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['primary'])
+                    _kpi_line = _kpi_val
+                    if _kpi_dlt is not None:
+                        try:
+                            _dlt_f    = float(_kpi_dlt)
+                            _dlt_sym2 = '+' if _kpi_ddir == 'increase' else ('-' if _kpi_ddir == 'decrease' else '')
+                            _kpi_line += '  (' + _dlt_sym2 + '{:.1f}'.format(abs(_dlt_f)) + '% vs prior period)'
+                        except Exception:
+                            pass
+                    pdf.multi_cell(0, 5.5, _kpi_line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _kpi_desc:
+                        pdf.set_font('Sans', 'I', 7.5)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.cell(10, 4, '')
+                        pdf.multi_cell(0, 4, _kpi_desc, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(1)
+                except Exception:
+                    pass
+            if not _kpis:
+                for _item in section.get('items', []):
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(str(_item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == 'segmentation_insights':
+            _segs = section.get('segments', [])
+            for _seg in _segs:
+                try:
+                    _seg_m   = _s(str(_seg.get('metric', '')))
+                    _seg_d   = _s(str(_seg.get('dimension', '')))
+                    _seg_ins = _s(str(_seg.get('insight_summary', '')))
+                    _seg_act = _s(str(_seg.get('recommended_action', '')))
+                    _seg_top = _seg.get('top_segments', [])
+                    if _seg_m or _seg_d:
+                        _seg_hdr = (_seg_m + ' by ' + _seg_d).strip(' by ')
+                        pdf.set_font('Sans', 'B', 9)
+                        pdf.set_text_color(*b['primary'])
+                        pdf.cell(0, 5.5, _seg_hdr, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    for _ts in _seg_top[:5]:
+                        try:
+                            _ts_lbl  = _s(str(_ts.get('label', '')))
+                            _ts_val  = _ts.get('value', None)
+                            _ts_pct  = _ts.get('pct_of_total', None)
+                            _ts_rnk  = _ts.get('rank', '')
+                            _ts_vstr = '{:,.0f}'.format(_ts_val) if isinstance(_ts_val, (int, float)) else _s(str(_ts_val))
+                            _ts_pstr = '  ({:.1f}% of total)'.format(_ts_pct) if isinstance(_ts_pct, (int, float)) else ''
+                            pdf.set_font('Sans', '', 8.5)
+                            pdf.set_text_color(*b['text_body'])
+                            pdf.cell(8, 5, _s(str(_ts_rnk)) + '.')
+                            pdf.cell(80, 5, _ts_lbl + ':')
+                            pdf.set_text_color(*b['primary'])
+                            pdf.multi_cell(0, 5, _ts_vstr + _ts_pstr, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        except Exception:
+                            pass
+                    if _seg_ins:
+                        pdf.set_font('Sans', 'I', 8.5)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 5, _seg_ins, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _seg_act:
+                        pdf.set_font('Sans', 'I', 8)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.multi_cell(0, 4.5, 'Recommended: ' + _seg_act, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+            if not _segs:
+                for _item in section.get('items', []):
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(str(_item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == 'drilldown_table':
+            _C_DIM  = 90
+            _C_VAL  = 50
+            _C_PCT  = 30
+            _tables = section.get('tables', [])
+            for _tbl in _tables:
+                try:
+                    _tbl_m    = _s(str(_tbl.get('metric', '')))
+                    _tbl_d    = _s(str(_tbl.get('dimension', '')))
+                    _tbl_smr  = _s(str(_tbl.get('summary', '')))
+                    _tbl_rows = _tbl.get('rows', [])
+                    if _tbl_m or _tbl_d:
+                        _tbl_hdr = (_tbl_m + ' by ' + _tbl_d).strip(' by ')
+                        pdf.set_font('Sans', 'B', 9)
+                        pdf.set_text_color(*b['primary'])
+                        pdf.cell(0, 5.5, _tbl_hdr, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.set_font('Sans', 'B', 8)
+                    pdf.set_text_color(*b['meta_label'])
+                    pdf.cell(_C_DIM, 5, 'Dimension')
+                    pdf.cell(_C_VAL, 5, 'Total', align='R')
+                    pdf.cell(_C_PCT, 5, 'Share', align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.set_draw_color(*b['rule_light'])
+                    pdf.set_line_width(0.2)
+                    pdf.line(20, pdf.get_y(), 190, pdf.get_y())
+                    for _row in _tbl_rows[:8]:
+                        try:
+                            _r_lbl  = _s(str(_row.get('label', '')))
+                            _r_lbl  = _r_lbl[:38] + '...' if len(_r_lbl) > 40 else _r_lbl
+                            _r_val  = _row.get('value', None)
+                            _r_pct  = _row.get('pct_of_total', None)
+                            _r_vstr = '{:,.1f}'.format(_r_val) if isinstance(_r_val, (int, float)) else _s(str(_r_val))
+                            _r_pstr = '{:.1f}%'.format(_r_pct) if isinstance(_r_pct, (int, float)) else '-'
+                            pdf.set_font('Sans', '', 8.5)
+                            pdf.set_text_color(*b['text_body'])
+                            pdf.cell(_C_DIM, 5, _r_lbl)
+                            pdf.cell(_C_VAL, 5, _r_vstr, align='R')
+                            pdf.cell(_C_PCT, 5, _r_pstr, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                        except Exception:
+                            pass
+                    if _tbl_smr:
+                        pdf.set_font('Sans', 'I', 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, _tbl_smr, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+            if not _tables:
+                for _item in section.get('items', []):
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(str(_item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == 'forecast':
+            _fc_col   = _s(str(section.get('target_column', '')))
+            _fc_meth  = _s(str(section.get('method', '')).replace('_', ' ').title())
+            _fc_horiz = section.get('horizon_periods', None)
+            _fc_meta  = []
+            if _fc_col:
+                _fc_meta.append('Target: ' + _fc_col)
+            if _fc_meth:
+                _fc_meta.append('Method: ' + _fc_meth)
+            if _fc_horiz is not None:
+                _fc_meta.append('Horizon: ' + _s(str(_fc_horiz)) + ' periods')
+            if _fc_meta:
+                pdf.set_font('Sans', 'I', 8)
+                pdf.set_text_color(*b['text_chart'])
+                pdf.cell(0, 4.5, '  '.join(_fc_meta), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1.5)
+            for _fi in section.get('items', []):
+                try:
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(str(_fi)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                except Exception:
+                    pass
+            _fc_chart = section.get('chart', {})
+            _fc_lbls  = _fc_chart.get('labels', [])
+            _fc_vals  = _fc_chart.get('forecast', [])
+            _fc_upper = _fc_chart.get('upper_band', [])
+            _fc_lower = _fc_chart.get('lower_band', [])
+            _fc_start = _fc_chart.get('forecast_start_index', None)
+            if _fc_start is not None and _fc_lbls:
+                pdf.ln(2)
+                pdf.set_font('Sans', 'B', 8.5)
+                pdf.set_text_color(*b['primary'])
+                pdf.cell(0, 5, 'Projected Outlook', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                for _pi in range(_fc_start, len(_fc_lbls)):
+                    try:
+                        _p_lbl = _s(str(_fc_lbls[_pi]))
+                        _p_val = _fc_vals[_pi] if _pi < len(_fc_vals) else None
+                        _p_hi  = _fc_upper[_pi] if _pi < len(_fc_upper) else None
+                        _p_lo  = _fc_lower[_pi] if _pi < len(_fc_lower) else None
+                        if _p_val is None:
+                            continue
+                        if isinstance(_p_val, float) and _p_val == int(_p_val):
+                            _p_vstr = '{:,.0f}'.format(int(_p_val))
+                        elif isinstance(_p_val, (int, float)):
+                            _p_vstr = '{:,.1f}'.format(_p_val)
+                        else:
+                            _p_vstr = _s(str(_p_val))
+                        _p_band = ''
+                        if isinstance(_p_lo, (int, float)) and isinstance(_p_hi, (int, float)):
+                            _p_band = '  [{:,.0f} – {:,.0f}]'.format(_p_lo, _p_hi)
+                        pdf.set_font('Sans', '', 8.5)
+                        pdf.set_text_color(*b['text_body'])
+                        pdf.cell(55, 5, '  ' + _p_lbl + ':')
+                        pdf.set_text_color(*b['primary'])
+                        pdf.multi_cell(0, 5, _p_vstr + _p_band, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+        elif sec_type == 'ai_dashboard':
+            _ai_ins = _s(str(section.get('most_important_insight', '')))
+            _ai_rsk = _s(str(section.get('highest_risk', '')))
+            _ai_act = _s(str(section.get('recommended_action', '')))
+            _ai_wl  = section.get('watchlist', [])
+            if _ai_ins:
+                pdf.set_font('Sans', 'B', 8.5)
+                pdf.set_text_color(*b['primary'])
+                pdf.cell(0, 5, 'Key Insight', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_font('Sans', '', 9)
+                pdf.set_text_color(*b['text_body'])
+                pdf.multi_cell(0, 5, _ai_ins, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1.5)
+            if _ai_rsk:
+                _ai_rsk_clr = b['neutral'] if 'No high-severity risks identified' in _ai_rsk else b['danger']
+                pdf.set_font('Sans', 'B', 8.5)
+                pdf.set_text_color(*_ai_rsk_clr)
+                pdf.cell(0, 5, 'Risk Alert', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_font('Sans', '', 9)
+                pdf.set_text_color(*b['text_body'])
+                pdf.multi_cell(0, 5, _ai_rsk, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1.5)
+            if _ai_act:
+                pdf.set_font('Sans', 'B', 8.5)
+                pdf.set_text_color(*b['primary_dark'])
+                pdf.cell(0, 5, 'Recommended Action', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_font('Sans', '', 9)
+                pdf.set_text_color(*b['text_body'])
+                pdf.multi_cell(0, 5, _ai_act, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.ln(1.5)
+            if _ai_wl:
+                pdf.set_font('Sans', 'B', 8.5)
+                pdf.set_text_color(*b['text_dark'])
+                pdf.cell(0, 5, 'Watchlist', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                for _wl_item in _ai_wl:
+                    try:
+                        pdf.set_font('Sans', '', 8.5)
+                        pdf.set_text_color(*b['text_body'])
+                        pdf.cell(6, 5, '•')
+                        pdf.multi_cell(0, 5, _s(str(_wl_item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    except Exception:
+                        pass
+            if not any([_ai_ins, _ai_rsk, _ai_act, _ai_wl]):
+                for _item in section.get('items', []):
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(str(_item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        elif sec_type == 'insight_priority':
+            _SEV_RGB = {
+                'high':     b['danger'],
+                'medium':   b['warning'],
+                'low':      b['neutral'],
+                'critical': b['danger'],
+                'info':     b['primary'],
+            }
+            _SEV_LBL = {
+                'high':     'HIGH',
+                'medium':   'MEDIUM',
+                'low':      'LOW',
+                'critical': 'CRITICAL',
+                'info':     'INFO',
+            }
+            _CONF_LBL = {
+                'high':   'High confidence',
+                'medium': 'Moderate confidence',
+                'low':    'Indicative',
+            }
+            _insights = section.get('insights', [])
+            for _ins in _insights:
+                try:
+                    _ins_title = _s(str(_ins.get('title', '')))
+                    _ins_sev   = str(_ins.get('severity', 'medium')).lower()
+                    _ins_evid  = _s(str(_ins.get('evidence', '')))
+                    _ins_act   = _s(str(_ins.get('recommended_action', '')))
+                    _ins_conf  = str(_ins.get('confidence', '')).lower()
+                    _ins_rgb   = _SEV_RGB.get(_ins_sev, b['neutral'])
+                    _ins_sev_l = _SEV_LBL.get(_ins_sev, _ins_sev.upper())
+                    pdf.set_font('Sans', 'B', 8)
+                    pdf.set_text_color(*_ins_rgb)
+                    pdf.cell(18, 5.5, '[' + _ins_sev_l + ']')
+                    pdf.set_font('Sans', 'B', 9)
+                    pdf.set_text_color(*b['text_dark'])
+                    pdf.multi_cell(0, 5.5, _ins_title, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _ins_evid:
+                        pdf.set_font('Sans', '', 8.5)
+                        pdf.set_text_color(*b['text_body'])
+                        pdf.multi_cell(0, 5, _ins_evid, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _ins_act:
+                        pdf.set_font('Sans', 'I', 8)
+                        pdf.set_text_color(*b['text_secondary'])
+                        pdf.multi_cell(0, 4.5, 'Action: ' + _ins_act, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    if _ins_conf:
+                        _ins_conf_l = _CONF_LBL.get(_ins_conf, _ins_conf.capitalize())
+                        pdf.set_font('Sans', 'I', 7.5)
+                        pdf.set_text_color(*b['text_light'])
+                        pdf.cell(0, 4, _ins_conf_l, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    pdf.ln(2)
+                except Exception:
+                    pass
+            if not _insights:
+                for _item in section.get('items', []):
+                    pdf.set_font('Sans', '', 9)
+                    pdf.set_text_color(*b['text_body'])
+                    pdf.multi_cell(0, 5, _s(str(_item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        else:
+            # Unknown future section types: safe string fallback, never crash.
+            for item in section.get("items", []):
+                pdf.set_font("Sans", "", 9)
+                pdf.set_text_color(*b['text_body'])
+                pdf.multi_cell(0, 5, _s(str(item)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        pdf.ln(3)
+
+    return bytes(pdf.output())
