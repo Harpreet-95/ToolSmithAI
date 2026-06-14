@@ -5264,6 +5264,7 @@ function RegisterAdminView({ onSignIn }) {
   const [serverError,     setServerError]     = useState('')
   const [showPassword,    setShowPassword]    = useState(false)
   const [showConfirm,     setShowConfirm]     = useState(false)
+  const [success,         setSuccess]         = useState(false)
 
   // Render an immediate error card when the link is malformed — no form shown.
   const missingParams = !urlEmail || !urlToken
@@ -5354,7 +5355,11 @@ function RegisterAdminView({ onSignIn }) {
         password,
         invite_token: urlToken,
       })
-      onSignIn(data.access_token, data.user)
+      setSuccess(true)
+      setTimeout(() => {
+        onSignIn(data.access_token, data.user)
+        window.location.replace('/')
+      }, 1800)
     } catch (err) {
       setServerError(mapServerError(err.message || ''))
     } finally {
@@ -5391,6 +5396,42 @@ function RegisterAdminView({ onSignIn }) {
     )
   }
 
+  if (success) {
+    return (
+      <div style={cardStyle}>
+        <div style={{ ...innerStyle, textAlign: 'center' }}>
+          <div style={{ marginBottom: '24px' }}>
+            <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '56px', display: 'block', margin: '0 auto 8px' }} />
+            <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
+          </div>
+          <div style={{
+            width: '52px', height: '52px', borderRadius: '50%',
+            background: 'rgba(16,185,129,0.10)', border: '1px solid rgba(16,185,129,0.28)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px',
+          }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          </div>
+          <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#eef0ff', margin: '0 0 10px' }}>Admin account created</h2>
+          <p style={{ color: '#a0b0cc', fontSize: '14px', margin: '0 0 6px' }}>
+            Signing you in…
+          </p>
+          <div style={{
+            width: '32px', height: '3px', borderRadius: '2px',
+            background: 'rgba(16,185,129,0.25)', margin: '18px auto 0', overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%', background: '#10b981', borderRadius: '2px',
+              animation: 'adminRegProgress 1.8s linear forwards',
+            }} />
+          </div>
+          <style>{`@keyframes adminRegProgress { from { width: 0% } to { width: 100% } }`}</style>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div style={cardStyle}>
       <style>{`
@@ -5399,8 +5440,10 @@ function RegisterAdminView({ onSignIn }) {
       `}</style>
       <div style={innerStyle}>
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '56px', display: 'block', margin: '0 auto 8px' }} />
-          <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px', marginBottom: '18px' }}>ToolSmithAI</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', marginBottom: '18px' }}>
+            <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '38px', height: '38px' }} />
+            <div style={{ fontSize: '20px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
+          </div>
           <h2 style={{ fontSize: '22px', fontWeight: '700', color: '#eef0ff', margin: '0 0 8px' }}>
             Complete admin registration
           </h2>
