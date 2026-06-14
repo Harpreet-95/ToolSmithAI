@@ -9,6 +9,7 @@ from core.intelligence.segmentation_engine import (
     build_segmentation_section,
     build_drilldown_table_section,
 )
+from core.intelligence.semantic_classifier import build_label_map
 from core.output.kpi_formatter import format_kpi_display_label, format_dataset_display_name
 from core.config import FRONTEND_BASE_URL
 
@@ -873,6 +874,7 @@ def _build_executive_summary_section(
     categorical_profile: dict,
     missing_values: dict,
     date_profile: dict,
+    label_map: dict | None = None,
 ) -> dict:
     """Build a deterministic executive summary from stored profile data.
 
@@ -880,6 +882,7 @@ def _build_executive_summary_section(
     profile values only. Called after date_profile is computed so all data is
     available. Pre-stamped type='executive_summary' so the setdefault loop ignores it.
     """
+    lm            = label_map or {}
     numeric_count = len(numeric_profile)
     cat_count     = len(categorical_profile)
 
@@ -937,7 +940,7 @@ def _build_executive_summary_section(
         if by_mean:
             col_name, stats = by_mean[0]
             takeaways.append(
-                f"{col_name} is the primary numeric indicator "
+                f"{lm.get(col_name, col_name)} is the primary numeric indicator "
                 f"with a mean of {_safe_fmt(stats['mean'])}."
             )
     except Exception:
@@ -955,7 +958,7 @@ def _build_executive_summary_section(
                 if entries:
                     top = entries[0]
                     takeaways.append(
-                        f'"{top["value"]}" is the most frequent value in {col_name} '
+                        f'"{top["value"]}" is the most frequent value in {lm.get(col_name, col_name)} '
                         f"({top['count']:,} records)."
                     )
     except Exception:
@@ -968,7 +971,7 @@ def _build_executive_summary_section(
             days = dc.get("range_days", 0)
             takeaways.append(
                 f"Dataset spans {days:,} day{'s' if days != 1 else ''} "
-                f"of {dc['column']} data."
+                f"of {lm.get(dc['column'], dc['column'])} data."
             )
     except Exception:
         pass
@@ -1042,6 +1045,7 @@ def _build_recommendation_section(
     date_profile: dict,
     correlation_profile: list | None = None,
     narrative_config: dict | None = None,
+    label_map: dict | None = None,
 ) -> dict | None:
     """Build deterministic recommended actions from stored profile data.
 
@@ -1050,6 +1054,7 @@ def _build_recommendation_section(
     No AI call. No hallucinated claims — every recommendation is gated on a
     verifiable profile fact.
     """
+    lm            = label_map or {}
     numeric_count = len(numeric_profile)
     cat_count     = len(categorical_profile)
 
@@ -1110,7 +1115,7 @@ def _build_recommendation_section(
             recs.append({
                 "title":       "Schedule Recurring Trend Monitoring",
                 "reason":      (
-                    f"A date column ({col_name}) is present. "
+                    f"A date column ({lm.get(col_name, col_name)}) is present. "
                     "Set up a scheduled report to track changes over time automatically."
                 ),
                 "priority":    "medium",
@@ -1128,7 +1133,7 @@ def _build_recommendation_section(
                 key=lambda x: len(x[1]),
                 default=None,
             )
-            col_hint = f" (starting with {best[0]})" if best else ""
+            col_hint = f" (starting with {lm.get(best[0], best[0])})" if best else ""
             recs.append({
                 "title":       "Segment Analysis by Category",
                 "reason":      (
@@ -1167,9 +1172,9 @@ def _build_recommendation_section(
                 density = float(oc) / float(nn)
                 if density >= 0.10:
                     recs.append({
-                        "title":       f"Investigate Outlier Concentration: {col}",
+                        "title":       f"Investigate Outlier Concentration: {lm.get(col, col)}",
                         "reason":      (
-                            f"{int(oc):,} outlier values in '{col}' "
+                            f"{int(oc):,} outlier values in '{lm.get(col, col)}' "
                             f"({round(density * 100, 1)}% via IQR). "
                             "Review for data entry errors or genuine extreme values before analysis."
                         ),
@@ -1191,7 +1196,7 @@ def _build_recommendation_section(
                     "title":       "Leverage Detected Feature Correlations",
                     "reason":      (
                         f"Strong correlation (r={round(top['correlation'], 2)}) between "
-                        f"'{top['column_a']}' and '{top['column_b']}'. "
+                        f"'{lm.get(top['column_a'], top['column_a'])}' and '{lm.get(top['column_b'], top['column_b'])}'. "
                         f"{len(strong)} correlated feature pairs may support predictive modeling."
                     ),
                     "priority":    "medium",
@@ -1209,7 +1214,7 @@ def _build_recommendation_section(
                     recs.append({
                         "title":       "Enable Time-Series Forecasting Workflow",
                         "reason":      (
-                            f"Column '{dc['column']}' has daily granularity over "
+                            f"Column '{lm.get(dc['column'], dc['column'])}' has daily granularity over "
                             f"{dc.get('range_days', 0):,} days. "
                             "Daily data supports short-term trend monitoring and scheduling."
                         ),
@@ -1258,6 +1263,7 @@ def _build_anomaly_section(
     date_profile: dict,
     correlation_profile: list | None = None,
     categorical_meta: dict | None = None,
+    label_map: dict | None = None,
 ) -> dict:
     """Build deterministic anomaly/risk detection from stored profile data only.
 
@@ -1266,6 +1272,7 @@ def _build_anomaly_section(
     Maximum 8 anomalies, sorted high → medium → low.
     Shows an all-clear item when none are found so users know the check ran.
     """
+    lm        = label_map or {}
     anomalies: list[dict] = []
 
     # ── 1. Per-column missing data ────────────────────────────────────────────
@@ -1277,16 +1284,16 @@ def _build_anomaly_section(
                 rate = cnt / row_count
                 if rate >= 0.25:
                     anomalies.append({
-                        "title":       f"High Missing Rate: {col}",
-                        "description": f"Column '{col}' has a critically high proportion of missing values.",
+                        "title":       f"High Missing Rate: {lm.get(col, col)}",
+                        "description": f"Column '{lm.get(col, col)}' has a critically high proportion of missing values.",
                         "severity":    "high",
                         "category":    "missing_data",
                         "evidence":    f"{int(cnt):,} of {row_count:,} rows ({round(rate * 100, 1)}%) are null.",
                     })
                 elif rate >= 0.10:
                     anomalies.append({
-                        "title":       f"Moderate Missing Rate: {col}",
-                        "description": f"Column '{col}' has a notable proportion of missing values.",
+                        "title":       f"Moderate Missing Rate: {lm.get(col, col)}",
+                        "description": f"Column '{lm.get(col, col)}' has a notable proportion of missing values.",
                         "severity":    "medium",
                         "category":    "missing_data",
                         "evidence":    f"{int(cnt):,} of {row_count:,} rows ({round(rate * 100, 1)}%) are null.",
@@ -1359,8 +1366,8 @@ def _build_anomaly_section(
                 top_value = str(entries[0].get("value", ""))
                 if dominance >= 0.90:
                     anomalies.append({
-                        "title":       f"Extreme Category Dominance: {col}",
-                        "description": f"A single value dominates '{col}', indicating a near-constant field.",
+                        "title":       f"Extreme Category Dominance: {lm.get(col, col)}",
+                        "description": f"A single value dominates '{lm.get(col, col)}', indicating a near-constant field.",
                         "severity":    "high",
                         "category":    "distribution",
                         "evidence":    (
@@ -1370,8 +1377,8 @@ def _build_anomaly_section(
                     })
                 elif dominance >= 0.80:
                     anomalies.append({
-                        "title":       f"Category Imbalance: {col}",
-                        "description": f"Column '{col}' is heavily skewed toward one value.",
+                        "title":       f"Category Imbalance: {lm.get(col, col)}",
+                        "description": f"Column '{lm.get(col, col)}' is heavily skewed toward one value.",
                         "severity":    "medium",
                         "category":    "distribution",
                         "evidence":    (
@@ -1397,8 +1404,8 @@ def _build_anomaly_section(
                 continue
             if mn > 0 and mx / mn > 1000:
                 anomalies.append({
-                    "title":       f"Extreme Value Range: {col}",
-                    "description": f"Column '{col}' spans an unusually wide numeric range (>1000x).",
+                    "title":       f"Extreme Value Range: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' spans an unusually wide numeric range (>1000x).",
                     "severity":    "medium",
                     "category":    "distribution",
                     "evidence":    (
@@ -1408,8 +1415,8 @@ def _build_anomaly_section(
                 })
             elif mean > 0 and mx > 10 * mean:
                 anomalies.append({
-                    "title":       f"Potential Outlier in {col}",
-                    "description": f"Maximum value in '{col}' is far above the column mean, suggesting outliers.",
+                    "title":       f"Potential Outlier in {lm.get(col, col)}",
+                    "description": f"Maximum value in '{lm.get(col, col)}' is far above the column mean, suggesting outliers.",
                     "severity":    "medium",
                     "category":    "distribution",
                     "evidence":    (
@@ -1434,9 +1441,9 @@ def _build_anomaly_section(
                 if abs(pct) >= 200:
                     direction = "increase" if pct > 0 else "decrease"
                     anomalies.append({
-                        "title":       f"Large Trend Shift: {col}",
+                        "title":       f"Large Trend Shift: {lm.get(col, col)}",
                         "description": (
-                            f"Column '{col}' shows a sharp {direction} between "
+                            f"Column '{lm.get(col, col)}' shows a sharp {direction} between "
                             "the first and second half of the time range."
                         ),
                         "severity":    "medium",
@@ -1461,16 +1468,16 @@ def _build_anomaly_section(
             density = float(oc) / float(nn)
             if density >= 0.20:
                 anomalies.append({
-                    "title":       f"High Outlier Density: {col}",
-                    "description": f"Column '{col}' has a high proportion of IQR outliers.",
+                    "title":       f"High Outlier Density: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' has a high proportion of IQR outliers.",
                     "severity":    "high",
                     "category":    "distribution",
                     "evidence":    f"{int(oc):,} outliers in {int(nn):,} non-null values ({round(density * 100, 1)}%).",
                 })
             elif density >= 0.10:
                 anomalies.append({
-                    "title":       f"Moderate Outlier Density: {col}",
-                    "description": f"Column '{col}' contains a notable proportion of IQR outliers.",
+                    "title":       f"Moderate Outlier Density: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' contains a notable proportion of IQR outliers.",
                     "severity":    "medium",
                     "category":    "distribution",
                     "evidence":    f"{int(oc):,} outliers in {int(nn):,} non-null values ({round(density * 100, 1)}%).",
@@ -1492,16 +1499,16 @@ def _build_anomaly_section(
             cv = std_f / abs(mean_f)
             if cv > 5.0:
                 anomalies.append({
-                    "title":       f"Extreme Variability: {col}",
-                    "description": f"Column '{col}' has an extreme coefficient of variation — values are highly unstable relative to the mean.",
+                    "title":       f"Extreme Variability: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' has an extreme coefficient of variation — values are highly unstable relative to the mean.",
                     "severity":    "high",
                     "category":    "distribution",
                     "evidence":    f"CV={round(cv, 2)} (std={_safe_fmt(std_f)}, mean={_safe_fmt(mean_f)}).",
                 })
             elif cv > 2.0:
                 anomalies.append({
-                    "title":       f"High Variability: {col}",
-                    "description": f"Column '{col}' shows high relative variability around its mean.",
+                    "title":       f"High Variability: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' shows high relative variability around its mean.",
                     "severity":    "medium",
                     "category":    "distribution",
                     "evidence":    f"CV={round(cv, 2)} (std={_safe_fmt(std_f)}, mean={_safe_fmt(mean_f)}).",
@@ -1527,8 +1534,8 @@ def _build_anomaly_section(
     if _sparse_best and _sparse_best_frac > 0.50:
         col, empty, total = _sparse_best
         anomalies.append({
-            "title":       f"Sparse Distribution: {col}",
-            "description": f"Column '{col}' has large empty regions in its value distribution, suggesting gaps or multimodal patterns.",
+            "title":       f"Sparse Distribution: {lm.get(col, col)}",
+            "description": f"Column '{lm.get(col, col)}' has large empty regions in its value distribution, suggesting gaps or multimodal patterns.",
             "severity":    "medium",
             "category":    "distribution",
             "evidence":    f"{empty} of {total} histogram bins are empty ({round(_sparse_best_frac * 100, 0):.0f}% empty).",
@@ -1543,8 +1550,8 @@ def _build_anomaly_section(
                 if abs(c) >= 0.90:
                     a, b = pair.get("column_a", ""), pair.get("column_b", "")
                     anomalies.append({
-                        "title":       f"Highly Correlated Fields: {a} & {b}",
-                        "description": f"'{a}' and '{b}' move together very closely and may contain overlapping information.",
+                        "title":       f"Highly Correlated Fields: {lm.get(a, a)} & {lm.get(b, b)}",
+                        "description": f"'{lm.get(a, a)}' and '{lm.get(b, b)}' move together very closely and may contain overlapping information.",
                         "severity":    "medium",
                         "category":    "quality",
                         "evidence":    f"These fields are {round(abs(c) * 100):.0f}% correlated — consider consolidating or removing one.",
@@ -1569,8 +1576,8 @@ def _build_anomaly_section(
                     continue
                 if float(entropy) < 0.30:
                     anomalies.append({
-                        "title":       f"Low Categorical Diversity: {col}",
-                        "description": f"Column '{col}' has near-zero entropy — distributional variety is severely limited.",
+                        "title":       f"Low Categorical Diversity: {lm.get(col, col)}",
+                        "description": f"Column '{lm.get(col, col)}' has near-zero entropy — distributional variety is severely limited.",
                         "severity":    "medium",
                         "category":    "distribution",
                         "evidence":    (
@@ -1616,6 +1623,7 @@ def _build_trend_section(
     categorical_profile: dict,
     missing_values: dict,
     date_profile: dict,
+    label_map: dict | None = None,
 ) -> dict:
     """Build deterministic trend intelligence from stored profile data only.
 
@@ -1624,6 +1632,7 @@ def _build_trend_section(
     Maximum 6 trends, sorted by strength (high first).
     Shows a fallback item when no profile data yields signals.
     """
+    lm     = label_map or {}
     trends: list[dict] = []
 
     # ── 1. Time-series direction from pct_change ──────────────────────────────
@@ -1648,10 +1657,10 @@ def _build_trend_section(
                 dir_label = {"up": "Increasing", "down": "Decreasing", "stable": "Stable"}.get(direction, direction.title())
 
                 trends.append({
-                    "title":       f"{col} — {dir_label} Trend",
+                    "title":       f"{lm.get(col, col)} — {dir_label} Trend",
                     "description": (
-                        f"{col} shows a {dir_label.lower()} pattern between the first and "
-                        f"second half of the dataset when sorted by {date_col_name}."
+                        f"{lm.get(col, col)} shows a {dir_label.lower()} pattern between the first and "
+                        f"second half of the dataset when sorted by {lm.get(date_col_name, date_col_name)}."
                     ),
                     "direction": direction,
                     "strength":  strength,
@@ -1746,9 +1755,9 @@ def _build_trend_section(
 
                 if best_dom >= 0.80:
                     trends.append({
-                        "title":       f"Concentrated Distribution: {best_col}",
+                        "title":       f"Concentrated Distribution: {lm.get(best_col, best_col)}",
                         "description": (
-                            f"Column '{best_col}' is dominated by a single value, "
+                            f"Column '{lm.get(best_col, best_col)}' is dominated by a single value, "
                             "indicating low distributional variety."
                         ),
                         "direction": "stable",
@@ -1758,9 +1767,9 @@ def _build_trend_section(
                     })
                 elif best_dom >= 0.50:
                     trends.append({
-                        "title":       f"Moderate Concentration: {best_col}",
+                        "title":       f"Moderate Concentration: {lm.get(best_col, best_col)}",
                         "description": (
-                            f"Column '{best_col}' has a leading category but retains "
+                            f"Column '{lm.get(best_col, best_col)}' has a leading category but retains "
                             "meaningful distributional variety."
                         ),
                         "direction": "stable",
@@ -1770,9 +1779,9 @@ def _build_trend_section(
                     })
                 else:
                     trends.append({
-                        "title":       f"Balanced Distribution: {best_col}",
+                        "title":       f"Balanced Distribution: {lm.get(best_col, best_col)}",
                         "description": (
-                            f"Column '{best_col}' is spread across categories, "
+                            f"Column '{lm.get(best_col, best_col)}' is spread across categories, "
                             "supporting stable segmentation analysis."
                         ),
                         "direction": "stable",
@@ -1820,9 +1829,9 @@ def _build_trend_section(
                 )
                 if best_ratio > 10:
                     trends.append({
-                        "title":       f"High Value Dispersion: {best_col}",
+                        "title":       f"High Value Dispersion: {lm.get(best_col, best_col)}",
                         "description": (
-                            f"'{best_col}' shows wide numeric spread relative to its mean, "
+                            f"'{lm.get(best_col, best_col)}' shows wide numeric spread relative to its mean, "
                             "indicating volatile or heterogeneous values."
                         ),
                         "direction": "volatile",
@@ -1832,9 +1841,9 @@ def _build_trend_section(
                     })
                 elif best_ratio > 3:
                     trends.append({
-                        "title":       f"Moderate Value Spread: {best_col}",
+                        "title":       f"Moderate Value Spread: {lm.get(best_col, best_col)}",
                         "description": (
-                            f"'{best_col}' shows moderate numeric spread, "
+                            f"'{lm.get(best_col, best_col)}' shows moderate numeric spread, "
                             "typical of datasets with natural variation."
                         ),
                         "direction": "stable",
@@ -1844,9 +1853,9 @@ def _build_trend_section(
                     })
                 else:
                     trends.append({
-                        "title":       f"Tightly Grouped Values: {best_col}",
+                        "title":       f"Tightly Grouped Values: {lm.get(best_col, best_col)}",
                         "description": (
-                            f"'{best_col}' values cluster closely around the mean, "
+                            f"'{lm.get(best_col, best_col)}' values cluster closely around the mean, "
                             "indicating a consistent numeric distribution."
                         ),
                         "direction": "stable",
@@ -1872,7 +1881,7 @@ def _build_trend_section(
             col        = dc.get("column", "date")
             if avg_second > avg_first * 1.15:
                 trends.append({
-                    "title":       f"Monthly Volume Growth: {col}",
+                    "title":       f"Monthly Volume Growth: {lm.get(col, col)}",
                     "description": "Record volume shows consistent growth in the second half of the observed period.",
                     "direction":   "up",
                     "strength":    "medium",
@@ -1885,7 +1894,7 @@ def _build_trend_section(
                 })
             elif avg_second < avg_first * 0.85:
                 trends.append({
-                    "title":       f"Monthly Volume Decline: {col}",
+                    "title":       f"Monthly Volume Decline: {lm.get(col, col)}",
                     "description": "Record volume shows a declining pattern in the second half of the observed period.",
                     "direction":   "down",
                     "strength":    "medium",
@@ -1898,7 +1907,7 @@ def _build_trend_section(
                 })
             else:
                 trends.append({
-                    "title":       f"Stable Monthly Volume: {col}",
+                    "title":       f"Stable Monthly Volume: {lm.get(col, col)}",
                     "description": "Record volume is consistent month-over-month across the observed period.",
                     "direction":   "stable",
                     "strength":    "low",
@@ -1919,8 +1928,8 @@ def _build_trend_section(
             range_days = dc.get("range_days", 0)
             if gran == "daily":
                 trends.append({
-                    "title":       f"Daily Granularity: {col}",
-                    "description": f"Column '{col}' records at daily intervals — supports fine-grained time-series analysis.",
+                    "title":       f"Daily Granularity: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' records at daily intervals — supports fine-grained time-series analysis.",
                     "direction":   "stable",
                     "strength":    "high",
                     "category":    "time_series",
@@ -1928,8 +1937,8 @@ def _build_trend_section(
                 })
             elif gran in ("weekly", "monthly"):
                 trends.append({
-                    "title":       f"{gran.title()} Granularity: {col}",
-                    "description": f"Column '{col}' records at {gran} intervals — suitable for period aggregation and reporting.",
+                    "title":       f"{gran.title()} Granularity: {lm.get(col, col)}",
+                    "description": f"Column '{lm.get(col, col)}' records at {gran} intervals — suitable for period aggregation and reporting.",
                     "direction":   "stable",
                     "strength":    "medium",
                     "category":    "time_series",
@@ -1975,6 +1984,7 @@ def _build_predictive_readiness_section(
     date_profile: dict,
     correlation_profile: list | None = None,
     categorical_meta: dict | None = None,
+    label_map: dict | None = None,
 ) -> dict:
     """Assess whether the dataset is ready for future predictive analytics.
 
@@ -1983,6 +1993,7 @@ def _build_predictive_readiness_section(
     Each signal contributes 0 (missing), 10 (partial), or 20 (ready) points.
     Maximum score = 100. Always returns a section — never omitted.
     """
+    lm      = label_map or {}
     signals: list[dict] = []
     score = 0
 
@@ -2124,7 +2135,7 @@ def _build_predictive_readiness_section(
             signals.append({
                 "name":        "Outlier Data Quality",
                 "status":      "missing",
-                "description": f"High outlier density in '{_worst_col}' may require preprocessing before model training.",
+                "description": f"High outlier density in '{lm.get(_worst_col, _worst_col)}' may require preprocessing before model training.",
                 "evidence":    f"{round(_worst_d * 100, 1)}% outlier rate (IQR method).",
             })
             score = max(0, score - 5)
@@ -2132,7 +2143,7 @@ def _build_predictive_readiness_section(
             signals.append({
                 "name":        "Outlier Data Quality",
                 "status":      "partial",
-                "description": f"Moderate outlier density in '{_worst_col}' — review before applying models.",
+                "description": f"Moderate outlier density in '{lm.get(_worst_col, _worst_col)}' — review before applying models.",
                 "evidence":    f"{round(_worst_d * 100, 1)}% outlier rate (IQR method).",
             })
     except Exception:
@@ -2147,7 +2158,7 @@ def _build_predictive_readiness_section(
                 signals.append({
                     "name":        "Date Granularity",
                     "status":      "ready",
-                    "description": f"Daily granularity in '{col}' supports fine-grained forecasting and sequence modeling.",
+                    "description": f"Daily granularity in '{lm.get(col, col)}' supports fine-grained forecasting and sequence modeling.",
                     "evidence":    f"Inferred daily granularity over {dc.get('range_days', 0):,} days.",
                 })
                 score = min(100, score + 5)
@@ -2155,7 +2166,7 @@ def _build_predictive_readiness_section(
                 signals.append({
                     "name":        "Date Granularity",
                     "status":      "partial",
-                    "description": f"{gran.title()} granularity in '{col}' — adequate for period aggregation but not fine-grained forecasting.",
+                    "description": f"{gran.title()} granularity in '{lm.get(col, col)}' — adequate for period aggregation but not fine-grained forecasting.",
                     "evidence":    f"Inferred {gran} granularity.",
                 })
     except Exception:
@@ -2887,6 +2898,10 @@ def generate_dataset_report(
     except Exception:
         pass
 
+    # Built once here; consumed by all inline sections and passed to section
+    # builders via label_map=.  Empty dict on old datasets — degrades safely.
+    semantic_label_map: dict[str, str] = build_label_map(semantic_profile)
+
     # Parse date_profile here so all subsequent section builders can use it.
     # (Must be before the business_kpis block which references date_profile.)
     date_profile_raw = dataset.get("date_profile_json")
@@ -3010,11 +3025,11 @@ def generate_dataset_report(
         by_mean = sorted(num_entries, key=lambda x: x[1]["mean"], reverse=True)
         high_col, high_stats = by_mean[0]
         items.append(
-            f"{high_col} has the highest average value at {_safe_fmt(high_stats['mean'])}."
+            f"{semantic_label_map.get(high_col, high_col)} has the highest average value at {_safe_fmt(high_stats['mean'])}."
         )
         if high_stats.get("min") is not None and high_stats.get("max") is not None:
             items.append(
-                f"{high_col} ranges from {_safe_fmt(high_stats['min'])}"
+                f"{semantic_label_map.get(high_col, high_col)} ranges from {_safe_fmt(high_stats['min'])}"
                 f" to {_safe_fmt(high_stats['max'])}."
             )
         by_sum = sorted(
@@ -3025,12 +3040,12 @@ def generate_dataset_report(
         if by_sum:
             sum_col, sum_stats = by_sum[0]
             items.append(
-                f"{sum_col} has the highest total at {_safe_fmt(sum_stats['sum'])}."
+                f"{semantic_label_map.get(sum_col, sum_col)} has the highest total at {_safe_fmt(sum_stats['sum'])}."
             )
         if len(by_mean) > 1:
             low_col, low_stats = by_mean[-1]
             items.append(
-                f"{low_col} has the lowest average value at {_safe_fmt(low_stats['mean'])}."
+                f"{semantic_label_map.get(low_col, low_col)} has the lowest average value at {_safe_fmt(low_stats['mean'])}."
             )
         sections.append({"heading": "Numeric Insights", "items": items})
 
@@ -3043,7 +3058,7 @@ def generate_dataset_report(
         for col, cnt in missing_entries[:5]:
             pct = round(cnt / row_count * 100, 1) if row_count > 0 else 0
             missing_items.append(
-                f"{col} has {cnt:,} missing values ({pct}% of rows)."
+                f"{semantic_label_map.get(col, col)} has {cnt:,} missing values ({pct}% of rows)."
             )
         if len(missing_entries) > 5:
             missing_items.append(
@@ -3058,7 +3073,7 @@ def generate_dataset_report(
         if entries
     ]
     cat_items = [
-        f'{col} is most commonly "{entries[0]["value"]}" ({entries[0]["count"]:,} rows).'
+        f'{semantic_label_map.get(col, col)} is most commonly "{entries[0]["value"]}" ({entries[0]["count"]:,} rows).'
         for col, entries in cat_entries[:6]
     ]
     if cat_items:
@@ -3074,7 +3089,7 @@ def generate_dataset_report(
             valid     = dc["valid_count"]
             range_str = _format_date_range(dc["earliest"], dc["latest"], dc["range_days"])
             date_items.append(
-                f"{col}: {valid:,} date values detected. Coverage: {range_str}."
+                f"{semantic_label_map.get(col, col)}: {valid:,} date values detected. Coverage: {range_str}."
             )
         sections.append({"heading": "Date Coverage", "items": date_items})
 
@@ -3090,8 +3105,8 @@ def generate_dataset_report(
             pct    = ti["pct_change"]
             pct_str = f"+{pct}%" if pct >= 0 else f"{pct}%"
             trend_items.append(
-                f"{col} is {trend} {symbol} ({pct_str} change from first to second half,"
-                f" sorted by {date_col_name})."
+                f"{semantic_label_map.get(col, col)} is {trend} {symbol} ({pct_str} change from first to second half,"
+                f" sorted by {semantic_label_map.get(date_col_name, date_col_name)})."
             )
         sections.append({"heading": "Trend Insights", "items": trend_items})
 
@@ -3101,12 +3116,14 @@ def generate_dataset_report(
         numeric_profile, categorical_profile, missing_values, date_profile,
         correlation_profile=correlation_profile,
         categorical_meta=categorical_meta,
+        label_map=semantic_label_map,
     ))
 
     # ── Trend Intelligence ────────────────────────────────────────────────────
     sections.append(_build_trend_section(
         row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
+        label_map=semantic_label_map,
     ))
 
     # ── Predictive Readiness ──────────────────────────────────────────────────
@@ -3115,6 +3132,7 @@ def generate_dataset_report(
         numeric_profile, categorical_profile, missing_values, date_profile,
         correlation_profile=correlation_profile,
         categorical_meta=categorical_meta,
+        label_map=semantic_label_map,
     ))
 
     # ── Chart Sections ────────────────────────────────────────────────────────
@@ -3134,6 +3152,7 @@ def generate_dataset_report(
         numeric_profile, categorical_profile, missing_values, date_profile,
         correlation_profile=correlation_profile,
         narrative_config=_report_plan.get("narrative_config") if isinstance(_report_plan, dict) else None,
+        label_map=semantic_label_map,
     )
     if rec_sec is not None:
         # KPI section was appended second (after Overview), so it's always at
@@ -3213,6 +3232,7 @@ def generate_dataset_report(
     sections.insert(0, _build_executive_summary_section(
         filename, row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
+        label_map=semantic_label_map,
     ))
 
     # ── Schema v2: stamp every section with its type before returning ──────────
