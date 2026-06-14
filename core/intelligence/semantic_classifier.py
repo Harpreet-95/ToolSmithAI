@@ -780,3 +780,244 @@ def clean_col_display(col_name: str) -> str:
         .strip()
         .title()
     )
+
+
+# ── Label map constants ────────────────────────────────────────────────────────
+
+# Tokens that are structural suffixes or internal naming conventions.
+# They identify the column role but carry no business domain meaning
+# on their own — the domain meaning comes from any paired tokens.
+#
+# Examples:
+#   smoker_flag  → "flag" is structural; "smoker" is the domain concept
+#   segment_id   → "id"   is structural; "segment" is the domain concept
+#   is_active    → "is"   filtered by _tokenize's isalpha; "active" is kept
+_GENERIC_LABEL_TOKENS: frozenset[str] = frozenset({
+    "flag",    # boolean indicator suffix
+    "id",      # identifier suffix
+    "key",     # key/foreign-key suffix
+    "code",    # code suffix (product_code, zip_code)
+    "num",     # number abbreviation
+    "no",      # number abbreviation (invoice_no)
+    "nr",      # number abbreviation (order_nr)
+    "val",     # value placeholder
+    "value",   # value placeholder
+    "col",     # internal column reference
+    "column",  # internal column reference
+    "field",   # internal field reference
+    "var",     # variable — internal name
+    "ind",     # indicator abbreviation
+    "is",      # boolean prefix (is_active → active kept)
+    "has",     # boolean prefix (has_subscription → subscription kept)
+})
+
+# Per semantic-type display label template.
+# "{primary}" is replaced with the extracted primary display token.
+# Types mapped to "{primary}" use the token alone (it IS the full label).
+# Types absent from this map fall through to clean_col_display().
+_SEMANTIC_LABEL_TEMPLATES: dict[str, str] = {
+    "revenue":    "{primary} Revenue",
+    "cost":       "{primary} Cost",
+    "profit":     "{primary} Margin",
+    "amount":     "{primary} Amount",
+    "price":      "{primary} Price",
+    "quantity":   "{primary} Volume",
+    "percentage": "{primary} Rate",
+    "score":      "{primary} Score",
+    "status":     "{primary} Status",
+    "risk":       "{primary} Risk",
+    "product":    "{primary}",
+    "category":   "{primary}",
+    "customer":   "{primary}",
+    "employee":   "{primary}",
+    "region":     "{primary}",
+    "country":    "{primary}",
+    "state":      "{primary}",
+    "city":       "{primary}",
+    "date":       "{primary} Date",
+    "timestamp":  "{primary} Timestamp",
+    "id":         "{primary} ID",
+}
+
+# Per semantic-type core words.  When the extracted primary token IS one of
+# these words, the template would produce a redundant label ("Revenue Revenue",
+# "Region Region") — the redundancy guard fires and falls back to
+# clean_col_display(), which already produces the correct Title Case form.
+_TYPE_CORE_WORDS: dict[str, frozenset[str]] = {
+    "revenue":    frozenset({"revenue", "rev", "sales", "income", "turnover", "receipts"}),
+    "cost":       frozenset({"cost", "costs", "expense", "expenses", "cogs", "spend", "spending"}),
+    "profit":     frozenset({"profit", "margin", "ebitda", "ebit", "pnl", "noi"}),
+    "amount":     frozenset({"amount", "amt", "total", "sum"}),
+    "price":      frozenset({"price", "prices", "fee", "tariff", "premium", "fare", "msrp"}),
+    "quantity":   frozenset({"quantity", "qty", "units", "unit", "volume", "pieces", "items"}),
+    "percentage": frozenset({"percent", "pct", "percentage", "ratio", "rate", "fraction"}),
+    "score":      frozenset({"score", "rating", "rank", "nps", "csat", "index", "grade"}),
+    "status":     frozenset({"status"}),
+    "risk":       frozenset({"risk", "severity", "criticality", "threat", "exposure"}),
+    "product":    frozenset({"product", "item", "sku", "part", "goods", "merchandise", "service"}),
+    "category":   frozenset({"category", "cat", "segment", "type", "class", "sector",
+                              "family", "brand", "division", "department"}),
+    "customer":   frozenset({"customer", "client", "account", "user", "member", "buyer",
+                              "purchaser", "consumer", "subscriber", "prospect", "lead"}),
+    "employee":   frozenset({"employee", "staff", "agent", "rep", "worker", "associate",
+                              "manager", "salesperson", "vendor", "supplier"}),
+    "region":     frozenset({"region", "area", "territory", "zone", "district", "geo", "geography"}),
+    "country":    frozenset({"country", "nation", "continent"}),
+    "state":      frozenset({"state", "province", "prefecture", "county"}),
+    "city":       frozenset({"city", "town", "municipality", "metro", "market", "site"}),
+    "date":       frozenset({"date", "dt", "day", "month", "year", "quarter", "week",
+                              "period", "fiscal", "calendar", "when"}),
+    "timestamp":  frozenset({"timestamp", "datetime", "created", "updated", "modified",
+                              "logged", "recorded", "processed"}),
+    "id":         frozenset({"id", "key", "uuid", "guid", "pk", "fk", "identifier",
+                              "ref", "reference", "number", "num"}),
+}
+
+# Minimum semantic confidence to apply enriched labeling.
+# Columns below this threshold fall back to clean_col_display().
+# Set above the classifier's own minimum (0.40) to filter marginal results.
+_LABEL_CONFIDENCE_THRESHOLD: float = 0.50
+
+
+# ── Label map internal helpers ─────────────────────────────────────────────────
+
+def _extract_primary_token(col_name: str, matched_tokens: list[str]) -> str | None:
+    """Select the most meaningful display token for a column.
+
+    Priority:
+      1. First non-generic token from matched_tokens (classifier-validated signal)
+      2. All non-generic tokens from full re-tokenisation of col_name (joined)
+      3. None — caller falls through to clean_col_display()
+
+    Returns a Title Case string or None.  Never raises.
+    """
+    try:
+        # Pass 1: classifier-confirmed tokens with domain meaning
+        non_generic_matched = [
+            t for t in matched_tokens if t not in _GENERIC_LABEL_TOKENS
+        ]
+        if non_generic_matched:
+            return non_generic_matched[0].title()
+
+        # Pass 2: re-tokenise the raw name, take all non-generic tokens
+        all_tokens = _tokenize(col_name)
+        non_generic_all = [t for t in all_tokens if t not in _GENERIC_LABEL_TOKENS]
+        if non_generic_all:
+            return " ".join(t.title() for t in non_generic_all)
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _is_primary_redundant(primary: str, semantic_type: str) -> bool:
+    """Return True when the primary token IS the core concept of its type.
+
+    Prevents templates from producing "Revenue Revenue", "Region Region", etc.
+    Example: col='total_revenue', primary='Revenue', type='revenue' → True.
+    """
+    core = _TYPE_CORE_WORDS.get(semantic_type, frozenset())
+    return primary.lower() in core
+
+
+def _build_single_label(
+    col_name: str,
+    semantic_type: str,
+    confidence: float,
+    matched_tokens: list[str],
+) -> str:
+    """Compute the display label for one column.
+
+    Decision path:
+      A. confidence >= threshold AND known type
+           → extract primary token
+           → if redundant with type  → clean_col_display (mechanical)
+           → else apply template
+           → if no template          → clean_col_display
+           → if no primary           → clean_col_display
+      B. unknown type / low confidence
+           → clean_col_display (mechanical)
+      C. Any exception
+           → raw col_name (last resort; always non-empty)
+
+    Never raises. Never returns an empty string.
+    """
+    try:
+        if semantic_type != "unknown" and confidence >= _LABEL_CONFIDENCE_THRESHOLD:
+            primary = _extract_primary_token(col_name, matched_tokens)
+
+            if primary is not None:
+                if _is_primary_redundant(primary, semantic_type):
+                    return clean_col_display(col_name)
+                template = _SEMANTIC_LABEL_TEMPLATES.get(semantic_type)
+                if template is not None:
+                    label = template.replace("{primary}", primary)
+                    return label if label else clean_col_display(col_name)
+                return clean_col_display(col_name)
+
+            return clean_col_display(col_name)
+
+        return clean_col_display(col_name)
+
+    except Exception:
+        return col_name if col_name else "Unknown"
+
+
+# ── Public entry point ─────────────────────────────────────────────────────────
+
+def build_label_map(semantic_profile: list[dict] | None) -> dict[str, str]:
+    """Build a mapping from raw column names to business-readable display labels.
+
+    Called once per report immediately after the semantic_profile is loaded.
+    O(n) where n is the column count. Never raises. Returns {} on empty or
+    None input — callers use label_map.get(col, col) so an empty map
+    degrades gracefully to the raw column name.
+
+    Label generation per column (in priority order):
+      1. Semantic enrichment: confidence >= 0.50 and type is known
+             primary_token + type template
+             e.g. "smoker" + "status" template → "Smoker Status"
+      2. Redundancy guard fires (primary IS the type concept)
+             → clean_col_display(col_name)
+             e.g. "total_revenue" → "Total Revenue"
+      3. No extractable primary token
+             → clean_col_display(col_name)
+      4. Unknown type or confidence below threshold
+             → clean_col_display(col_name)
+      5. Any failure
+             → raw col_name (never empty)
+
+    Args:
+        semantic_profile: List of semantic descriptors from classify_columns().
+                          Pass None or [] to get an empty map (safe no-op).
+
+    Returns:
+        dict[str, str] — raw column name → display label.
+        Every value is a non-empty string.
+    """
+    if not semantic_profile:
+        return {}
+
+    label_map: dict[str, str] = {}
+
+    for descriptor in semantic_profile:
+        try:
+            col_name       = descriptor.get("column", "")
+            semantic_type  = descriptor.get("semantic_type", "unknown")
+            confidence     = float(descriptor.get("confidence", 0.0))
+            matched_tokens = descriptor.get("matched_tokens") or []
+
+            if not col_name:
+                continue
+
+            label_map[col_name] = _build_single_label(
+                col_name, semantic_type, confidence, matched_tokens
+            )
+
+        except Exception:
+            col_name = descriptor.get("column", "")
+            if col_name:
+                label_map[col_name] = col_name  # last-resort: raw name
+
+    return label_map
