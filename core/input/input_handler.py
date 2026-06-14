@@ -265,6 +265,7 @@ def handle_input(
     dataset_id: int | None = None,
     recipient: str | None = None,
     selected_sections: list[str] | None = None,
+    report_type: str | None = None,
 ) -> dict:
     lowered = user_input.lower()
 
@@ -297,12 +298,13 @@ def handle_input(
             plan = _build_email_dataset_report_plan(user_input)
             result = run_email_dataset_report_plan(
                 plan, user_id, dataset_id=dataset_id, recipient=recipient,
-                selected_sections=selected_sections,
+                selected_sections=selected_sections, report_type=report_type,
             )
         else:
             plan = _build_dataset_report_plan(user_input)
             result = run_dataset_report_plan(
-                plan, user_id, dataset_id=dataset_id, selected_sections=selected_sections,
+                plan, user_id, dataset_id=dataset_id,
+                selected_sections=selected_sections, report_type=report_type,
             )
         result["original_input"]  = user_input
         result["planner_source"]  = "legacy_interpreter"
@@ -336,7 +338,7 @@ def handle_input(
             result = run_composed_workflow_proposal(
                 proposal, user_id,
                 dataset_id=dataset_id, recipient=recipient,
-                selected_sections=selected_sections,
+                selected_sections=selected_sections, report_type=report_type,
             )
             result["planner_source"]  = "composer"
             result["fallback_used"]   = False
@@ -362,12 +364,13 @@ def handle_input(
 
     if plan.get("task_type") == "generate_dataset_report":
         result = run_dataset_report_plan(
-            plan, user_id, dataset_id=dataset_id, selected_sections=selected_sections
+            plan, user_id, dataset_id=dataset_id,
+            selected_sections=selected_sections, report_type=report_type,
         )
     elif plan.get("task_type") == "email_dataset_report":
         result = run_email_dataset_report_plan(
             plan, user_id, dataset_id=dataset_id, recipient=recipient,
-            selected_sections=selected_sections,
+            selected_sections=selected_sections, report_type=report_type,
         )
     else:
         if recipient is not None or plan.get("intent"):

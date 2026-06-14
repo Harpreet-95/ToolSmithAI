@@ -11,7 +11,7 @@ from data.execution_history import log_execution_history
 from data.usage_service import log_usage_event
 
 
-def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, selected_sections: list[str] | None = None) -> dict:
+def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, selected_sections: list[str] | None = None, report_type: str | None = None) -> dict:
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id
     from core.tools.report_generator import generate_dataset_report
 
@@ -71,6 +71,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
         baseline_snapshots=baseline_snapshots,
         selected_sections=selected_sections,
         intent_text=plan.get("intent") or "",
+        report_type=report_type,
     )
 
     report_id = None
@@ -135,7 +136,7 @@ def run_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | N
     }
 
 
-def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None, selected_sections: list[str] | None = None) -> dict:
+def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: int | None = None, ctx: dict | None = None, recipient: str | None = None, selected_sections: list[str] | None = None, report_type: str | None = None) -> dict:
     from data.dataset_service import get_latest_dataset_for_user, get_dataset_by_id, get_user_email
     from core.tools.report_generator import generate_dataset_report, render_report_as_plain_text
     from core.email import send_real_email
@@ -200,6 +201,7 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             baseline_snapshots=baseline_snapshots,
             selected_sections=selected_sections,
             intent_text=plan.get("intent") or "",
+            report_type=report_type,
         )
     _display_name = format_dataset_display_name(dataset["filename"])
     body = render_report_as_plain_text(
@@ -732,6 +734,7 @@ def run_composed_workflow_proposal(
     dataset_id: int | None = None,
     recipient: str | None = None,
     selected_sections: list[str] | None = None,
+    report_type: str | None = None,
 ) -> dict:
     """Execute a composer workflow proposal using trusted runner paths.
 
@@ -763,12 +766,13 @@ def run_composed_workflow_proposal(
 
         if step_type == "generate_dataset_report":
             return run_dataset_report_plan(
-                plan, user_id, dataset_id=dataset_id, selected_sections=step_sections
+                plan, user_id, dataset_id=dataset_id,
+                selected_sections=step_sections, report_type=report_type,
             )
         if step_type == "email_dataset_report":
             return run_email_dataset_report_plan(
                 plan, user_id, dataset_id=dataset_id, recipient=recipient,
-                selected_sections=step_sections,
+                selected_sections=step_sections, report_type=report_type,
             )
         if step_type == "analyze_dataset":
             return run_analyze_dataset_plan(plan, user_id, dataset_id=dataset_id)

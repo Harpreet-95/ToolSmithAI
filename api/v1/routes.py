@@ -574,6 +574,17 @@ class InterpretRequest(BaseModel):
     dataset_id: int | None = None
     recipient: str | None = None
     selected_sections: list[str] | None = None
+    report_type: str | None = None
+
+
+_VALID_REPORT_TYPES: frozenset[str] = frozenset({
+    "executive",
+    "risk",
+    "forecast",
+    "segmentation",
+    "operational",
+    "data_quality",
+})
 
 
 class WorkflowRunRequest(BaseModel):
@@ -618,8 +629,23 @@ class ComposeIntentRequest(BaseModel):
 def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
     if not request.input.strip():
         return JSONResponse(status_code=400, content=build_error_response("Input cannot be empty"))
+    if request.report_type is not None and request.report_type not in _VALID_REPORT_TYPES:
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response(
+                f"Invalid report_type '{request.report_type}'. "
+                f"Valid values: {', '.join(sorted(_VALID_REPORT_TYPES))}."
+            ),
+        )
     try:
-        return handle_input(request.input, user_id=user.user_id, dataset_id=request.dataset_id, recipient=request.recipient, selected_sections=request.selected_sections)
+        return handle_input(
+            request.input,
+            user_id=user.user_id,
+            dataset_id=request.dataset_id,
+            recipient=request.recipient,
+            selected_sections=request.selected_sections,
+            report_type=request.report_type,
+        )
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 

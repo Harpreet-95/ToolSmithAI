@@ -2854,12 +2854,49 @@ def _build_insight_priority_section(sections: list[dict]) -> dict | None:
     }
 
 
+# ── Intent-Aware Report Type Routing ─────────────────────────────────────────
+# Maps the six supported report_type values to high-weight keyword clusters that
+# steer report_planner.plan_report() to the correct style deterministically.
+# Each cluster's combined weight in _INTENT_SIGNALS exceeds 4.5, which is
+# reliably higher than any single user-intent keyword (max: 1.8 for "charts
+# only" or "drift detection"), so the target style always wins even when the
+# user's original input contains competing keywords.
+# The original intent_text flows unchanged to section builders and the strategy
+# engine so section content is unaffected by the routing hint.
+_REPORT_TYPE_PLANNER_HINTS: dict[str, str] = {
+    # executive_brief: "executive"(1.2) + "brief"(1.0) + "kpi summary"(1.8) + "at a glance"(1.2) = 5.2
+    "executive":    "executive brief kpi summary at a glance",
+    # anomaly_report: "anomaly"(1.5) + "anomalies"(1.5) + "data quality"(1.4) + "outliers"(1.2) = 5.6
+    "risk":         "anomaly anomalies data quality issues outliers",
+    # monitoring_report: "trend analysis"(1.4) + "monitoring"(1.5) + "drift detection"(1.8) = 4.7
+    "forecast":     "trend analysis monitoring drift detection time series",
+    # table_heavy_report: "drilldown"(1.2) + "drill-down"(1.2) + "tabular"(1.3) + "tables"(1.2) = 4.9
+    "segmentation": "drilldown drill-down tabular breakdown tables",
+    # operational_report: "operational"(1.5) + "operations"(1.3) + "ops"(0.9) + "daily report"(1.1) = 4.8
+    "operational":  "operational operations ops daily report",
+    # anomaly_report: "data quality"(1.4) + "anomalies"(1.5) + "missing values"(1.2) + "outliers"(1.2) = 5.3
+    "data_quality": "data quality anomalies missing values outliers",
+}
+
+# Maps each report_type to the planner style it targets.  Stamped into
+# report_plan["report_type"] so callers never need to reverse-engineer the style.
+_REPORT_TYPE_TO_STYLE: dict[str, str] = {
+    "executive":    "executive_brief",
+    "risk":         "anomaly_report",
+    "forecast":     "monitoring_report",
+    "segmentation": "table_heavy_report",
+    "operational":  "operational_report",
+    "data_quality": "anomaly_report",
+}
+
+
 def generate_dataset_report(
     dataset: dict,
     previous_snapshot: dict | None = None,
     baseline_snapshots: list[dict] | None = None,
     selected_sections: list[str] | None = None,
     intent_text: str | None = None,
+    report_type: str | None = None,
 ) -> dict:
     """
     Build a structured report from a stored dataset summary row.
@@ -2915,6 +2952,19 @@ def generate_dataset_report(
     except Exception:
         pass
 
+    # ── Intent-aware planner hint ─────────────────────────────────────────────
+    # When report_type is specified, build a planner-only intent string whose
+    # combined keyword weight (≥4.7) reliably overrides any competing signals in
+    # the user's original input (max single-keyword weight: 1.8).  The original
+    # intent_text is preserved for section content: chart column selection,
+    # narrative tone, and the strategy engine all continue to receive the
+    # unmodified text so generated content reflects the user's actual words.
+    _planner_intent_text = intent_text
+    if report_type:
+        _hint = _REPORT_TYPE_PLANNER_HINTS.get(report_type.lower(), "")
+        if _hint:
+            _planner_intent_text = f"{_hint} — {intent_text}" if intent_text else _hint
+
     # ── Adaptive Report Plan ─────────────────────────────────────────────────
     # Computed once from intent + profiles; applied for section ordering later.
     # Lazy import so old datasets without planner never fail.
@@ -2922,7 +2972,7 @@ def generate_dataset_report(
     try:
         from core.intelligence.report_planner import plan_report as _plan_report
         _report_plan = _plan_report(
-            intent_text         = intent_text,
+            intent_text         = _planner_intent_text,
             semantic_profile    = semantic_profile,
             date_profile        = date_profile,
             numeric_profile     = numeric_profile,
@@ -2930,6 +2980,12 @@ def generate_dataset_report(
         )
     except Exception:
         pass
+
+    # Stamp report_type into the plan payload when provided.  Frontend and callers
+    # can use this to identify the intent without parsing the intent string or
+    # reverse-engineering the style name.
+    if report_type and isinstance(_report_plan, dict):
+        _report_plan["report_type"] = report_type.lower()
 
     # ── Report Strategy Engine ────────────────────────────────────────────────
     # Resolved alongside the adaptive plan. In Phase 3 the strategy always
