@@ -77,7 +77,7 @@ _REVENUE: dict[str, float] = {
     "income":  0.76, "earnings": 0.76,
     "turnover": 0.72, "receipts": 0.66,
     "proceeds": 0.62, "inflow": 0.57,
-    "billing":  0.62,
+    "billing":  0.62, "charges": 0.72,
 }
 
 _COST: dict[str, float] = {
@@ -106,7 +106,7 @@ _AMOUNT: dict[str, float] = {
 
 _PRICE: dict[str, float] = {
     "price":   0.88, "prices":  0.84,
-    "fee":     0.76, "charge":  0.72, "charges": 0.72,
+    "fee":     0.76, "charge":  0.72,
     "tariff":  0.76, "premium": 0.66,
     "fare":    0.72, "msrp":    0.88,
     "retail":  0.66, "list":    0.55,
@@ -750,3 +750,33 @@ def summarise_semantic_profile(semantic_profile: list[dict]) -> dict:
         "has_temporal_data":   groups.get("temporal", 0) > 0,
         "has_operational_kpis": groups.get("operational_metric", 0) > 0,
     }
+
+
+# ── Column display name helper ─────────────────────────────────────────────────
+# Canonical home for column-name → human-readable display transformation.
+# business_kpi_engine imports this via alias so all column display logic
+# lives in one module. Import with:
+#   from core.intelligence.semantic_classifier import clean_col_display
+
+
+def clean_col_display(col_name: str) -> str:
+    """Convert snake_case / camelCase / kebab-case column name to Title Case.
+
+    Examples:
+      load_weight_kg  → Load Weight Kg
+      transitDays     → Transit Days
+      delay-hours     → Delay Hours
+    """
+    result = []
+    for i, ch in enumerate(col_name):
+        if i > 0 and ch.isupper() and col_name[i - 1].islower():
+            result.append(" ")
+        result.append(ch)
+    return (
+        "".join(result)
+        .replace("_", " ")
+        .replace("-", " ")
+        .replace(".", " ")
+        .strip()
+        .title()
+    )

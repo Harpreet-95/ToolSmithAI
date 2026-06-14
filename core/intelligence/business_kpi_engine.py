@@ -52,6 +52,7 @@ from core.intelligence.semantic_classifier import (
     get_segmentation_candidates,
     get_columns_by_type,
     summarise_semantic_profile,
+    clean_col_display as _clean_col_display,
 )
 
 
@@ -687,29 +688,6 @@ _GENERIC_SKIP_TYPES: frozenset = frozenset({
     "quantity", "price",
     "score", "percentage", "risk",
 })
-
-
-def _clean_col_display(col: str) -> str:
-    """Convert snake_case / camelCase / kebab-case column name to Title Case.
-
-    Examples:
-      load_weight_kg  → Load Weight Kg
-      transitDays     → Transit Days
-      delay-hours     → Delay Hours
-    """
-    result = []
-    for i, ch in enumerate(col):
-        if i > 0 and ch.isupper() and col[i - 1].islower():
-            result.append(" ")
-        result.append(ch)
-    return (
-        "".join(result)
-        .replace("_", " ")
-        .replace("-", " ")
-        .replace(".", " ")
-        .strip()
-        .title()
-    )
 
 
 def compute_generic_measure_kpis(
