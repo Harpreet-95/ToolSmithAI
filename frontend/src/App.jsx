@@ -787,12 +787,6 @@ function LoginView({ onSignIn, sessionExpired }) {
 
           {mode === 'login' ? (<>
 
-          {/* Brand lockup */}
-          <div style={{ textAlign: 'center', marginBottom: '22px' }}>
-            <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '48px', display: 'block', margin: '0 auto 8px' }} />
-            <div style={{ fontSize: '15px', fontWeight: '700', color: '#eef0f8', letterSpacing: '-0.2px' }}>ToolSmithAI</div>
-          </div>
-
           {/* Welcome Back */}
           <h2 style={{
             margin: 0,
@@ -5262,12 +5256,14 @@ function RegisterAdminView({ onSignIn }) {
   const urlEmail  = params.get('email') || ''
   const urlToken  = params.get('token') || ''
 
-  const [name,        setName]        = useState('')
-  const [password,    setPassword]    = useState('')
-  const [confirm,     setConfirm]     = useState('')
-  const [loading,     setLoading]     = useState(false)
-  const [fieldError,  setFieldError]  = useState('')
-  const [serverError, setServerError] = useState('')
+  const [name,            setName]            = useState('')
+  const [password,        setPassword]        = useState('')
+  const [confirm,         setConfirm]         = useState('')
+  const [loading,         setLoading]         = useState(false)
+  const [fieldError,      setFieldError]      = useState('')
+  const [serverError,     setServerError]     = useState('')
+  const [showPassword,    setShowPassword]    = useState(false)
+  const [showConfirm,     setShowConfirm]     = useState(false)
 
   // Render an immediate error card when the link is malformed — no form shown.
   const missingParams = !urlEmail || !urlToken
@@ -5397,6 +5393,10 @@ function RegisterAdminView({ onSignIn }) {
 
   return (
     <div style={cardStyle}>
+      <style>{`
+        input[type="password"]::-ms-reveal,
+        input[type="password"]::-ms-clear { display: none; }
+      `}</style>
       <div style={innerStyle}>
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
           <img src="/toolsmith-logo-transparent.png" alt="ToolSmithAI" style={{ width: '56px', display: 'block', margin: '0 auto 8px' }} />
@@ -5437,26 +5437,66 @@ function RegisterAdminView({ onSignIn }) {
 
           <div>
             <label style={labelStyle}>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-              placeholder="At least 6 characters"
-              style={inputStyle()}
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+                placeholder="At least 6 characters"
+                style={{ ...inputStyle(), padding: '0 38px 0 13px' }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(v => !v)}
+                tabIndex={-1}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                style={{
+                  position: 'absolute', right: '11px', top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: '#6370a0', padding: '0', display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                {showPassword
+                  ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                }
+              </button>
+            </div>
           </div>
 
           <div>
             <label style={labelStyle}>Confirm password</label>
-            <input
-              type="password"
-              value={confirm}
-              onChange={e => setConfirm(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-              placeholder="Repeat password"
-              style={inputStyle()}
-            />
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showConfirm ? 'text' : 'password'}
+                value={confirm}
+                onChange={e => setConfirm(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+                placeholder="Repeat password"
+                style={{ ...inputStyle(), padding: '0 38px 0 13px' }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirm(v => !v)}
+                tabIndex={-1}
+                aria-label={showConfirm ? 'Hide password' : 'Show password'}
+                style={{
+                  position: 'absolute', right: '11px', top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: '#6370a0', padding: '0', display: 'flex',
+                  alignItems: 'center',
+                }}
+              >
+                {showConfirm
+                  ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                }
+              </button>
+            </div>
           </div>
         </div>
 
