@@ -1021,3 +1021,199 @@ def build_label_map(semantic_profile: list[dict] | None) -> dict[str, str]:
                 label_map[col_name] = col_name  # last-resort: raw name
 
     return label_map
+
+
+# ── Business meaning layer ─────────────────────────────────────────────────────
+# Maps semantic type (with optional domain token) to an enterprise business concept.
+# Keys follow the pattern "{semantic_type}.{domain_token}" for specific overrides,
+# or "{semantic_type}" as a general fallback.
+#
+# Domain token is extracted from the full column name tokenisation, with generic
+# structural tokens (flag, id, key, etc.) filtered via _GENERIC_LABEL_TOKENS.
+#
+# Example resolution for "smoker_flag" (semantic_type="status"):
+#   tokens: ["smoker", "flag"] → domain tokens: ["smoker"]
+#   lookup "status.smoker" → "Insurance Risk Segment"
+#
+# Example resolution for "total_revenue" (semantic_type="revenue"):
+#   tokens: ["total", "revenue"] → domain tokens: ["total"]
+#   lookup "revenue.total" → not found
+#   fallback "revenue" → "Revenue Performance"
+
+_BUSINESS_MEANING_REGISTRY: dict[str, str] = {
+    # ── Status-domain overrides ────────────────────────────────────────────
+    "status.smoker":       "Insurance Risk Segment",
+    "status.churn":        "Customer Retention Risk",
+    "status.fraud":        "Fraud Risk Indicator",
+    "status.default":      "Credit Default Risk",
+    "status.active":       "Engagement Status",
+    "status.attrition":    "Attrition Risk",
+    "status.claim":        "Claims Status",
+    "status.policy":       "Policy Status",
+    "status.renewal":      "Renewal Status",
+    "status.payment":      "Payment Status",
+    "status.delivery":     "Delivery Status",
+    "status.approval":     "Approval Status",
+    "status.retention":    "Retention Status",
+    "status.subscription": "Subscription Status",
+    "status.contract":     "Contract Status",
+    "status.complaint":    "Complaint Status",
+    "status.escalation":   "Escalation Status",
+    "status.priority":     "Priority Classification",
+
+    # ── Risk-domain overrides ──────────────────────────────────────────────
+    "risk.credit":         "Credit Risk Exposure",
+    "risk.fraud":          "Fraud Risk Exposure",
+    "risk.churn":          "Customer Churn Risk",
+    "risk.operational":    "Operational Risk",
+    "risk.market":         "Market Risk",
+    "risk.liquidity":      "Liquidity Risk",
+    "risk.claim":          "Claims Risk Exposure",
+    "risk.default":        "Default Risk",
+
+    # ── Revenue-domain overrides ───────────────────────────────────────────
+    "revenue.claim":       "Claims Revenue",
+    "revenue.premium":     "Premium Revenue",
+    "revenue.policy":      "Policy Revenue",
+    "revenue.renewal":     "Renewal Revenue",
+    "revenue.subscription": "Subscription Revenue",
+    "revenue.service":     "Service Revenue",
+    "revenue.recurring":   "Recurring Revenue",
+
+    # ── Cost-domain overrides ──────────────────────────────────────────────
+    "cost.claim":          "Claims Cost",
+    "cost.acquisition":    "Customer Acquisition Cost",
+    "cost.operational":    "Operational Cost",
+    "cost.marketing":      "Marketing Spend",
+    "cost.maintenance":    "Maintenance Cost",
+
+    # ── Amount-domain overrides ────────────────────────────────────────────
+    "amount.claim":        "Claims Exposure",
+    "amount.premium":      "Premium Exposure",
+    "amount.loss":         "Loss Exposure",
+    "amount.settlement":   "Settlement Exposure",
+    "amount.deductible":   "Deductible Exposure",
+    "amount.coverage":     "Coverage Exposure",
+    "amount.refund":       "Refund Exposure",
+    "amount.discount":     "Discount Impact",
+
+    # ── Customer-domain overrides ──────────────────────────────────────────
+    "customer.segment":    "Customer Segmentation",
+    "customer.lifetime":   "Customer Lifetime Value",
+    "customer.policy":     "Policy Ownership",
+    "customer.claim":      "Claims History",
+    "customer.retention":  "Customer Retention",
+    "customer.acquisition": "Customer Acquisition",
+    "customer.churn":      "Customer Churn",
+
+    # ── Score-domain overrides ─────────────────────────────────────────────
+    "score.credit":        "Credit Score",
+    "score.risk":          "Risk Score",
+    "score.fraud":         "Fraud Score",
+    "score.churn":         "Churn Propensity Score",
+    "score.health":        "Health Score",
+    "score.satisfaction":  "Customer Satisfaction Score",
+    "score.engagement":    "Engagement Score",
+
+    # ── Percentage-domain overrides ────────────────────────────────────────
+    "percentage.churn":       "Customer Churn Rate",
+    "percentage.conversion":  "Conversion Rate",
+    "percentage.retention":   "Customer Retention Rate",
+    "percentage.utilization": "Utilization Rate",
+    "percentage.loss":        "Loss Ratio",
+    "percentage.claim":       "Claims Rate",
+
+    # ── General semantic-type fallbacks ───────────────────────────────────
+    "revenue":    "Revenue Performance",
+    "cost":       "Cost Performance",
+    "profit":     "Profitability",
+    "amount":     "Monetary Exposure",
+    "price":      "Pricing",
+    "quantity":   "Volume Performance",
+    "percentage": "Rate Analysis",
+    "score":      "Performance Score",
+    "product":    "Product Portfolio",
+    "category":   "Business Category",
+    "customer":   "Customer Base",
+    "employee":   "Workforce",
+    "region":     "Geographic Coverage",
+    "country":    "Country Exposure",
+    "state":      "State Distribution",
+    "city":       "City Distribution",
+    "date":       "Time Dimension",
+    "timestamp":  "Event Timeline",
+    "id":         "Record Identifier",
+    "status":     "Operational Status",
+    "risk":       "Risk Exposure",
+}
+
+
+def build_business_meaning_map(semantic_profile: list[dict] | None) -> dict[str, str]:
+    """Build a mapping from raw column names to enterprise business meaning concepts.
+
+    Converts technical semantic entities into business vocabulary by combining
+    the classified semantic type with domain-specific tokens from the column name.
+
+    Lookup priority per column:
+      1. Specific domain override: "{semantic_type}.{domain_token}"
+             e.g. status + "smoker" → "Insurance Risk Segment"
+             e.g. amount + "claim"  → "Claims Exposure"
+      2. General semantic-type fallback: "{semantic_type}"
+             e.g. "revenue" → "Revenue Performance"
+      3. No registry match → column excluded from output
+
+    Domain tokens are derived from the full column name tokenisation with
+    generic structural tokens (flag, id, key, code, etc.) and the semantic
+    type word itself filtered out to isolate the domain concept.
+
+    Args:
+        semantic_profile: List of semantic descriptors from classify_columns().
+                          Pass None or [] to get an empty map (safe no-op).
+
+    Returns:
+        dict[str, str] — raw column name → business meaning label.
+        Only includes columns with a known semantic type and confidence >= 0.50.
+        Never raises. Returns {} when semantic_profile is None or empty.
+    """
+    if not semantic_profile:
+        return {}
+
+    meaning_map: dict[str, str] = {}
+
+    for descriptor in semantic_profile:
+        try:
+            col_name      = descriptor.get("column", "")
+            semantic_type = descriptor.get("semantic_type", "unknown")
+            confidence    = float(descriptor.get("confidence", 0.0))
+
+            if not col_name or semantic_type == "unknown":
+                continue
+            if confidence < _LABEL_CONFIDENCE_THRESHOLD:
+                continue
+
+            # Derive domain tokens: column tokens minus generic structural words
+            # and the semantic type keyword itself (avoids "revenue.revenue" lookups)
+            domain_tokens = [
+                t for t in _tokenize(col_name)
+                if t not in _GENERIC_LABEL_TOKENS and t != semantic_type
+            ]
+
+            # Step 1: specific domain override
+            business_meaning: str | None = None
+            for token in domain_tokens:
+                candidate = _BUSINESS_MEANING_REGISTRY.get(f"{semantic_type}.{token}")
+                if candidate is not None:
+                    business_meaning = candidate
+                    break
+
+            # Step 2: general semantic-type fallback
+            if business_meaning is None:
+                business_meaning = _BUSINESS_MEANING_REGISTRY.get(semantic_type)
+
+            if business_meaning is not None:
+                meaning_map[col_name] = business_meaning
+
+        except Exception:
+            pass
+
+    return meaning_map
