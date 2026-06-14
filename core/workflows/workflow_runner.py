@@ -259,6 +259,27 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
             logger.warning("Report save failed: %s", exc)
             report_save_warning = "Report was generated but could not be saved. Please try again."
 
+    # PDF attachment — fail-safe: a PDF failure must never block email delivery.
+    _pdf_bytes: bytes | None = None
+    _pdf_filename: str | None = None
+    if report_id is not None:
+        try:
+            from data.report_service import get_report_by_id as _get_rpt
+            from core.tools.report_generator import _build_pdf_bytes
+            _saved_rpt = _get_rpt(report_id, user_id)
+            if _saved_rpt is not None:
+                _safe = "".join(
+                    c if (c.isalnum() or c in " .-_") else "_"
+                    for c in (_saved_rpt.get("title") or dataset["filename"])
+                )[:60].strip().replace(" ", "_")
+                _pdf_bytes    = _build_pdf_bytes(_saved_rpt)
+                _pdf_filename = f"{_safe}_report.pdf" if _safe.strip("_") else f"report_{report_id}.pdf"
+        except Exception as _pdf_exc:
+            logger.warning(
+                "[email_dataset_report] PDF generation failed — sending without attachment: %s",
+                _pdf_exc,
+            )
+
     # Send email now that report_id is known — log row will be fully attributed.
     if to_address is None:
         email_delivery = {
@@ -268,6 +289,8 @@ def run_email_dataset_report_plan(plan: dict, user_id: str | None, dataset_id: i
     else:
         email_delivery = send_real_email(
             to=to_address, subject=subject, body=body,
+            attachment_bytes=_pdf_bytes,
+            attachment_filename=_pdf_filename,
             user_id=user_id, report_id=report_id, email_type="report",
         )
 

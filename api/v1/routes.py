@@ -3325,8 +3325,24 @@ def email_report_route(
             dataset_filename=_dataset,
             report_url=_report_url,
         )
+        _pdf_bytes: bytes | None = None
+        _pdf_filename: str | None = None
+        try:
+            _safe = "".join(
+                c if (c.isalnum() or c in " .-_") else "_"
+                for c in (_title or _dataset)
+            )[:60].strip().replace(" ", "_")
+            _pdf_bytes    = _build_pdf_bytes(report)
+            _pdf_filename = f"{_safe}_report.pdf" if _safe.strip("_") else f"report_{report_id}.pdf"
+        except Exception as _pdf_exc:
+            import logging as _log_mod
+            _log_mod.getLogger(__name__).warning(
+                "[email_report] PDF generation failed — sending without attachment: %s", _pdf_exc
+            )
         result       = send_real_email(to=to, subject=subject, body=body,
                                        html_body=html_body,
+                                       attachment_bytes=_pdf_bytes,
+                                       attachment_filename=_pdf_filename,
                                        user_id=str(user.user_id), report_id=report_id,
                                        email_type="report")
         sent     = result["sent"]
