@@ -9,7 +9,7 @@ from core.intelligence.segmentation_engine import (
     build_segmentation_section,
     build_drilldown_table_section,
 )
-from core.intelligence.semantic_classifier import build_label_map
+from core.intelligence.semantic_classifier import build_label_map, build_business_meaning_map
 from core.output.kpi_formatter import format_kpi_display_label, format_dataset_display_name
 from core.config import FRONTEND_BASE_URL
 
@@ -875,6 +875,7 @@ def _build_executive_summary_section(
     missing_values: dict,
     date_profile: dict,
     label_map: dict | None = None,
+    business_meaning_map: dict | None = None,
 ) -> dict:
     """Build a deterministic executive summary from stored profile data.
 
@@ -883,6 +884,7 @@ def _build_executive_summary_section(
     available. Pre-stamped type='executive_summary' so the setdefault loop ignores it.
     """
     lm            = label_map or {}
+    bm            = business_meaning_map or {}
     numeric_count = len(numeric_profile)
     cat_count     = len(categorical_profile)
 
@@ -940,7 +942,7 @@ def _build_executive_summary_section(
         if by_mean:
             col_name, stats = by_mean[0]
             takeaways.append(
-                f"{lm.get(col_name, col_name)} is the primary numeric indicator "
+                f"{bm.get(col_name, lm.get(col_name, col_name))} is the primary numeric indicator "
                 f"with a mean of {_safe_fmt(stats['mean'])}."
             )
     except Exception:
@@ -958,7 +960,7 @@ def _build_executive_summary_section(
                 if entries:
                     top = entries[0]
                     takeaways.append(
-                        f'"{top["value"]}" is the most frequent value in {lm.get(col_name, col_name)} '
+                        f'"{top["value"]}" is the most frequent value in {bm.get(col_name, lm.get(col_name, col_name))} '
                         f"({top['count']:,} records)."
                     )
     except Exception:
@@ -971,7 +973,7 @@ def _build_executive_summary_section(
             days = dc.get("range_days", 0)
             takeaways.append(
                 f"Dataset spans {days:,} day{'s' if days != 1 else ''} "
-                f"of {lm.get(dc['column'], dc['column'])} data."
+                f"of {bm.get(dc['column'], lm.get(dc['column'], dc['column']))} data."
             )
     except Exception:
         pass
@@ -1046,6 +1048,7 @@ def _build_recommendation_section(
     correlation_profile: list | None = None,
     narrative_config: dict | None = None,
     label_map: dict | None = None,
+    business_meaning_map: dict | None = None,
 ) -> dict | None:
     """Build deterministic recommended actions from stored profile data.
 
@@ -1055,6 +1058,7 @@ def _build_recommendation_section(
     verifiable profile fact.
     """
     lm            = label_map or {}
+    bm            = business_meaning_map or {}
     numeric_count = len(numeric_profile)
     cat_count     = len(categorical_profile)
 
@@ -1115,7 +1119,7 @@ def _build_recommendation_section(
             recs.append({
                 "title":       "Schedule Recurring Trend Monitoring",
                 "reason":      (
-                    f"A date column ({lm.get(col_name, col_name)}) is present. "
+                    f"A date column ({bm.get(col_name, lm.get(col_name, col_name))}) is present. "
                     "Set up a scheduled report to track changes over time automatically."
                 ),
                 "priority":    "medium",
@@ -1133,7 +1137,7 @@ def _build_recommendation_section(
                 key=lambda x: len(x[1]),
                 default=None,
             )
-            col_hint = f" (starting with {lm.get(best[0], best[0])})" if best else ""
+            col_hint = f" (starting with {bm.get(best[0], lm.get(best[0], best[0]))})" if best else ""
             recs.append({
                 "title":       "Segment Analysis by Category",
                 "reason":      (
@@ -1172,9 +1176,9 @@ def _build_recommendation_section(
                 density = float(oc) / float(nn)
                 if density >= 0.10:
                     recs.append({
-                        "title":       f"Investigate Outlier Concentration: {lm.get(col, col)}",
+                        "title":       f"Investigate Outlier Concentration: {bm.get(col, lm.get(col, col))}",
                         "reason":      (
-                            f"{int(oc):,} outlier values in '{lm.get(col, col)}' "
+                            f"{int(oc):,} outlier values in '{bm.get(col, lm.get(col, col))}' "
                             f"({round(density * 100, 1)}% via IQR). "
                             "Review for data entry errors or genuine extreme values before analysis."
                         ),
@@ -1196,7 +1200,7 @@ def _build_recommendation_section(
                     "title":       "Leverage Detected Feature Correlations",
                     "reason":      (
                         f"Strong correlation (r={round(top['correlation'], 2)}) between "
-                        f"'{lm.get(top['column_a'], top['column_a'])}' and '{lm.get(top['column_b'], top['column_b'])}'. "
+                        f"'{bm.get(top['column_a'], lm.get(top['column_a'], top['column_a']))}' and '{bm.get(top['column_b'], lm.get(top['column_b'], top['column_b']))}'. "
                         f"{len(strong)} correlated feature pairs may support predictive modeling."
                     ),
                     "priority":    "medium",
@@ -1214,7 +1218,7 @@ def _build_recommendation_section(
                     recs.append({
                         "title":       "Enable Time-Series Forecasting Workflow",
                         "reason":      (
-                            f"Column '{lm.get(dc['column'], dc['column'])}' has daily granularity over "
+                            f"Column '{bm.get(dc['column'], lm.get(dc['column'], dc['column']))}' has daily granularity over "
                             f"{dc.get('range_days', 0):,} days. "
                             "Daily data supports short-term trend monitoring and scheduling."
                         ),
@@ -2938,6 +2942,11 @@ def generate_dataset_report(
     # Built once here; consumed by all inline sections and passed to section
     # builders via label_map=.  Empty dict on old datasets — degrades safely.
     semantic_label_map: dict[str, str] = build_label_map(semantic_profile)
+    # Business meaning map: used only in high-level narrative sections (executive
+    # summary, recommendations) to surface enterprise concepts like
+    # "Insurance Risk Segment" instead of "Smoker Status".  Falls back to
+    # semantic_label_map → raw column name, so old reports degrade safely.
+    business_meaning_map: dict[str, str] = build_business_meaning_map(semantic_profile)
 
     # Parse date_profile here so all subsequent section builders can use it.
     # (Must be before the business_kpis block which references date_profile.)
@@ -3210,6 +3219,7 @@ def generate_dataset_report(
         correlation_profile=correlation_profile,
         narrative_config=_report_plan.get("narrative_config") if isinstance(_report_plan, dict) else None,
         label_map=semantic_label_map,
+        business_meaning_map=business_meaning_map,
     )
     if rec_sec is not None:
         # KPI section was appended second (after Overview), so it's always at
@@ -3290,6 +3300,7 @@ def generate_dataset_report(
         filename, row_count, column_count,
         numeric_profile, categorical_profile, missing_values, date_profile,
         label_map=semantic_label_map,
+        business_meaning_map=business_meaning_map,
     ))
 
     # ── Schema v2: stamp every section with its type before returning ──────────
