@@ -496,6 +496,24 @@ _NARRATIVE_CONFIGS_BY_INTENT: dict[str, NarrativeConfig] = {
     ),
 }
 
+# ---------------------------------------------------------------------------
+# Direct report_type → intent_type mapping
+# ---------------------------------------------------------------------------
+# When the caller passes report_type explicitly (e.g. from the UI type selector),
+# this mapping routes directly to the correct intent without relying on keyword
+# scoring of the user's raw intent text — which may contain no relevant signals.
+# Precedence: report_type mapping > keyword classification > fallback.
+# Types not listed here (segmentation, operational) have no dedicated strategy
+# and fall through to keyword classification so they still benefit from any
+# signals in intent_text.
+
+_REPORT_TYPE_TO_INTENT: dict[str, str] = {
+    "executive":    EXECUTIVE_BRIEF,
+    "risk":         ANOMALY_FOCUS,
+    "forecast":     TREND_MONITORING,
+    "data_quality": DATA_QUALITY,
+}
+
 # Minimum cumulative score required to accept a non-fallback classification.
 # A single weak signal (e.g. "chart" in "bar chart breakdown") scores 1.1 —
 # just above threshold — so genuinely chart-focused requests are classified
@@ -572,16 +590,15 @@ def resolve_report_strategy(
     date_profile:        dict,
     numeric_profile:     dict,
     categorical_profile: dict,
+    *,
+    report_type:         str | None = None,
 ) -> ReportStrategy:
-    """Resolve a ReportStrategy from intent text and dataset profiles.
+    """Resolve a ReportStrategy from intent text, dataset profiles, and report type.
 
-    Phase 1: always returns the FULL_INTELLIGENCE fallback strategy.
-    No classification, no keyword scoring, no chart logic.
-
-    Subsequent phases will add:
-      Phase 2 — intent keyword scoring → non-default intent types + section scores
-      Phase 3 — section_allowlist population + suppression logic
-      Phase 4 — narrative_config population per intent type
+    Resolution order (highest precedence first):
+      1. report_type direct mapping (_REPORT_TYPE_TO_INTENT) — explicit UI selection.
+      2. intent keyword classification — inferred from raw intent text.
+      3. FULL_INTELLIGENCE fallback — when no signals are present.
 
     Args:
         intent_text:          Raw user intent string, or None.
@@ -589,12 +606,22 @@ def resolve_report_strategy(
         date_profile:         Date column analysis dict.
         numeric_profile:      Numeric column statistics dict.
         categorical_profile:  Categorical column frequency dicts.
+        report_type:          Optional explicit report type from the caller
+                              (e.g. "executive", "risk", "forecast", "data_quality").
+                              When provided and recognised, bypasses keyword scoring.
 
     Returns:
         A valid ReportStrategy.  Never raises.
     """
     try:
-        intent_type, source = _classify_intent_text(intent_text)
+        if report_type:
+            _mapped = _REPORT_TYPE_TO_INTENT.get(report_type.lower())
+            if _mapped:
+                intent_type, source = _mapped, "report_type"
+            else:
+                intent_type, source = _classify_intent_text(intent_text)
+        else:
+            intent_type, source = _classify_intent_text(intent_text)
         base = _full_intelligence_strategy()
         if intent_type == FULL_INTELLIGENCE:
             return base

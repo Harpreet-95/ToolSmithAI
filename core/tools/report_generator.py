@@ -2988,10 +2988,10 @@ def generate_dataset_report(
         _report_plan["report_type"] = report_type.lower()
 
     # ── Report Strategy Engine ────────────────────────────────────────────────
-    # Resolved alongside the adaptive plan. In Phase 3 the strategy always
-    # returns section_scores={} so the reorder block falls back to plan_report
-    # scores — zero behaviour change.  Phase 4 will populate section_scores to
-    # activate intent-driven ordering.
+    # Resolved from report_type (explicit UI selection, highest precedence) or
+    # intent keyword classification.  When a non-FULL_INTELLIGENCE intent is
+    # resolved, strategy.section_scores are populated and the reorder block
+    # below uses them in place of the planner's own scores.
     _strategy = None
     try:
         from core.intelligence.report_strategy_engine import resolve_report_strategy as _resolve_strategy
@@ -3001,6 +3001,7 @@ def generate_dataset_report(
             date_profile        = date_profile,
             numeric_profile     = numeric_profile,
             categorical_profile = categorical_profile,
+            report_type         = report_type,
         )
     except Exception:
         pass
