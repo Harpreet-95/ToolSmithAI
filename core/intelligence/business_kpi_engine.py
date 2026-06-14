@@ -53,6 +53,7 @@ from core.intelligence.semantic_classifier import (
     get_columns_by_type,
     summarise_semantic_profile,
     clean_col_display as _clean_col_display,
+    build_label_map,
 )
 
 
@@ -115,6 +116,7 @@ def _kpi_card(
     delta_direction: str = "neutral",
     status: str = "good",
     confidence: float = 1.0,
+    source_column: str = "",
 ) -> dict:
     """Build a single business KPI card compatible with the existing KPI card schema."""
     return {
@@ -131,6 +133,7 @@ def _kpi_card(
         "semantic_source":  semantic_source,
         "confidence":       round(confidence, 2),
         "value_formatted":  format_kpi_value(value, fmt),
+        "source_column":    source_column,
     }
 
 
@@ -141,8 +144,10 @@ def compute_revenue_metrics(
     numeric_profile: dict,
     date_profile: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute revenue-related KPI cards."""
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         rev_cols = get_revenue_columns(semantic_profile, min_confidence=0.50)
@@ -174,9 +179,9 @@ def compute_revenue_metrics(
                 label          = "Total Revenue",
                 value          = total,
                 fmt            = "currency",
-                description    = f"Sum of {col}",
+                description    = f"Sum of {lm.get(col, col)}",
                 explanation    = (
-                    f"Derived from {row_count:,} records in column '{col}'. "
+                    f"Derived from {row_count:,} records in column '{lm.get(col, col)}'. "
                     + (f"Trend: {trend_pct:+.1f}% period-over-period." if trend_pct is not None else "")
                 ),
                 priority       = "executive",
@@ -186,6 +191,7 @@ def compute_revenue_metrics(
                 delta_direction = delta_dir,
                 status         = _status_from_trend(trend, positive_good=True),
                 confidence     = conf,
+                source_column  = col,
             ))
 
         if avg is not None:
@@ -193,11 +199,12 @@ def compute_revenue_metrics(
                 label          = "Avg Revenue / Record",
                 value          = avg,
                 fmt            = "currency",
-                description    = f"Mean of {col}",
-                explanation    = f"Average revenue per row in '{col}'.",
+                description    = f"Mean of {lm.get(col, col)}",
+                explanation    = f"Average revenue per row in '{lm.get(col, col)}'.",
                 priority       = "executive",
                 semantic_source = "revenue",
                 confidence     = conf * 0.9,
+                source_column  = col,
             ))
 
         # Revenue trend as its own card when significant
@@ -206,9 +213,9 @@ def compute_revenue_metrics(
                 label          = "Revenue Trend",
                 value          = abs(trend_pct),
                 fmt            = "percent",
-                description    = f"Period-over-period change in {col}",
+                description    = f"Period-over-period change in {lm.get(col, col)}",
                 explanation    = (
-                    f"{col} shows a {trend} trend of {trend_pct:+.1f}% "
+                    f"{lm.get(col, col)} shows a {trend} trend of {trend_pct:+.1f}% "
                     "from the first half to the second half of the time range."
                 ),
                 priority       = "executive",
@@ -218,6 +225,7 @@ def compute_revenue_metrics(
                 delta_direction = delta_dir,
                 status         = _status_from_trend(trend, positive_good=True),
                 confidence     = conf * 0.85,
+                source_column  = col,
             ))
     except Exception:
         pass
@@ -228,8 +236,10 @@ def compute_cost_metrics(
     semantic_profile: list[dict],
     numeric_profile: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute cost/expense-related KPI cards."""
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         cost_cols = get_cost_columns(semantic_profile, min_confidence=0.50)
@@ -245,11 +255,12 @@ def compute_cost_metrics(
                 label          = "Total Cost",
                 value          = total,
                 fmt            = "currency",
-                description    = f"Sum of {col}",
-                explanation    = f"Total cost/expense across {row_count:,} records in '{col}'.",
+                description    = f"Sum of {lm.get(col, col)}",
+                explanation    = f"Total cost/expense across {row_count:,} records in '{lm.get(col, col)}'.",
                 priority       = "executive",
                 semantic_source = "cost",
                 confidence     = conf,
+                source_column  = col,
             ))
     except Exception:
         pass
@@ -260,6 +271,7 @@ def compute_profit_metrics(
     semantic_profile: list[dict],
     numeric_profile: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute profit and margin KPI cards.
 
@@ -267,6 +279,7 @@ def compute_profit_metrics(
     If margin/percentage-like column exists, show avg margin %.
     Else attempt revenue − cost derivation.
     """
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         # 1. Explicit profit column
@@ -289,12 +302,13 @@ def compute_profit_metrics(
                         label          = label,
                         value          = val,
                         fmt            = fmt,
-                        description    = f"{'Mean' if is_pct else 'Sum'} of {col}",
-                        explanation    = f"Derived from '{col}' across {row_count:,} records.",
+                        description    = f"{'Mean' if is_pct else 'Sum'} of {lm.get(col, col)}",
+                        explanation    = f"Derived from '{lm.get(col, col)}' across {row_count:,} records.",
                         priority       = "executive",
                         semantic_source = "profit",
                         status         = "good" if val > 0 else "risk",
                         confidence     = conf,
+                        source_column  = col,
                     ))
 
         # 2. Fallback: revenue - cost derivation
@@ -312,15 +326,16 @@ def compute_profit_metrics(
                         label          = "Derived Gross Profit",
                         value          = derived_profit,
                         fmt            = "currency",
-                        description    = f"{rev_cols[0]} − {cost_cols[0]}",
+                        description    = f"{lm.get(rev_cols[0], rev_cols[0])} − {lm.get(cost_cols[0], cost_cols[0])}",
                         explanation    = (
-                            f"Estimated from {rev_cols[0]} (sum: {format_kpi_value(r_sum, 'currency')}) "
-                            f"minus {cost_cols[0]} (sum: {format_kpi_value(c_sum, 'currency')})."
+                            f"Estimated from {lm.get(rev_cols[0], rev_cols[0])} (sum: {format_kpi_value(r_sum, 'currency')}) "
+                            f"minus {lm.get(cost_cols[0], cost_cols[0])} (sum: {format_kpi_value(c_sum, 'currency')})."
                         ),
                         priority       = "executive",
                         semantic_source = "profit",
                         status         = "good" if derived_profit > 0 else "risk",
                         confidence     = conf,
+                        source_column  = f"{rev_cols[0]},{cost_cols[0]}",
                     ))
                     cards.append(_kpi_card(
                         label          = "Derived Gross Margin",
@@ -332,6 +347,7 @@ def compute_profit_metrics(
                         semantic_source = "profit",
                         status         = "good" if derived_margin > 20 else ("warning" if derived_margin > 0 else "risk"),
                         confidence     = conf,
+                        source_column  = f"{rev_cols[0]},{cost_cols[0]}",
                     ))
     except Exception:
         pass
@@ -342,8 +358,10 @@ def compute_quantity_metrics(
     semantic_profile: list[dict],
     numeric_profile: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute quantity/units KPI cards."""
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         qty_cols = get_columns_by_type(semantic_profile, "quantity", min_confidence=0.50)
@@ -360,22 +378,24 @@ def compute_quantity_metrics(
                 label          = "Total Units",
                 value          = total,
                 fmt            = "number",
-                description    = f"Sum of {col}",
-                explanation    = f"Total quantity across {row_count:,} records in '{col}'.",
+                description    = f"Sum of {lm.get(col, col)}",
+                explanation    = f"Total quantity across {row_count:,} records in '{lm.get(col, col)}'.",
                 priority       = "operational",
                 semantic_source = "quantity",
                 confidence     = conf,
+                source_column  = col,
             ))
         if avg is not None:
             cards.append(_kpi_card(
                 label          = "Avg Units / Record",
                 value          = avg,
                 fmt            = "decimal",
-                description    = f"Mean of {col}",
-                explanation    = f"Average quantity per row in '{col}'.",
+                description    = f"Mean of {lm.get(col, col)}",
+                explanation    = f"Average quantity per row in '{lm.get(col, col)}'.",
                 priority       = "operational",
                 semantic_source = "quantity",
                 confidence     = conf * 0.9,
+                source_column  = col,
             ))
     except Exception:
         pass
@@ -386,8 +406,10 @@ def compute_price_metrics(
     semantic_profile: list[dict],
     numeric_profile: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute average price KPI card."""
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         price_cols = get_columns_by_type(semantic_profile, "price", min_confidence=0.55)
@@ -424,11 +446,12 @@ def compute_price_metrics(
             label           = defn["label_template"].replace("{col}", clean_label),
             value           = avg,
             fmt             = defn["format_type"],
-            description     = f"Mean of {col}",
-            explanation     = f"Average price across {row_count:,} records in '{col}'.",
+            description     = f"Mean of {lm.get(col, col)}",
+            explanation     = f"Average price across {row_count:,} records in '{lm.get(col, col)}'.",
             priority        = defn["priority"],
             semantic_source = "price",
             confidence      = round(evaluated_item.get("role_confidence", 0.7), 2),
+            source_column   = col,
         ))
     except Exception:
         pass
@@ -438,8 +461,10 @@ def compute_price_metrics(
 def compute_customer_metrics(
     semantic_profile: list[dict],
     categorical_meta: dict,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute customer count KPI from categorical cardinality."""
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         cust_cols = get_columns_by_type(semantic_profile, "customer", min_confidence=0.50)
@@ -457,11 +482,12 @@ def compute_customer_metrics(
                 label          = "Unique Customers",
                 value          = unique_count,
                 fmt            = "number",
-                description    = f"Distinct values in {col}",
-                explanation    = f"Number of unique {col} values across the dataset.",
+                description    = f"Distinct values in {lm.get(col, col)}",
+                explanation    = f"Number of unique {lm.get(col, col)} values across the dataset.",
                 priority       = "executive",
                 semantic_source = "customer",
                 confidence     = conf,
+                source_column  = col,
             ))
     except Exception:
         pass
@@ -473,8 +499,10 @@ def compute_segmentation_metrics(
     categorical_profile: dict,
     categorical_meta: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute top dimension KPI cards (top region, top product, top category, etc.)."""
+    lm    = label_map or {}
     cards: list[dict] = []
     try:
         seg_cols = get_segmentation_candidates(semantic_profile, min_confidence=0.45)
@@ -498,7 +526,7 @@ def compute_segmentation_metrics(
                     (s["confidence"] for s in semantic_profile if s["column"] == col),
                     0.6
                 )
-                label_map = {
+                _DIM_LABELS = {
                     "region":   "Top Region",
                     "country":  "Top Country",
                     "state":    "Top State",
@@ -508,7 +536,7 @@ def compute_segmentation_metrics(
                     "customer": "Top Customer",
                     "employee": "Top Employee",
                 }
-                label = label_map.get(sem_type, f"Top {col}")
+                label = _DIM_LABELS.get(sem_type, f"Top {col}")
                 cards.append({
                     "label":            label,
                     "value":            pct,
@@ -516,17 +544,18 @@ def compute_segmentation_metrics(
                     "value_display":    top_value,
                     "value_formatted":  f"{top_value} ({pct}%)",
                     "trend":            "neutral",
-                    "description":      f"Most frequent value in {col}",
+                    "description":      f"Most frequent value in {lm.get(col, col)}",
                     "delta":            None,
                     "delta_direction":  "neutral",
                     "status":           "good",
                     "explanation":      (
-                        f"'{top_value}' accounts for {pct}% of all {col} records "
+                        f"'{top_value}' accounts for {pct}% of all {lm.get(col, col)} records "
                         f"({top_count:,} of {row_count:,} rows)."
                     ),
                     "priority":         "operational",
                     "semantic_source":  sem_type,
                     "confidence":       round(conf, 2),
+                    "source_column":    col,
                 })
             except Exception:
                 continue
@@ -539,8 +568,10 @@ def compute_operational_metrics(
     semantic_profile: list[dict],
     numeric_profile: dict,
     row_count: int,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Compute score, percentage, and risk KPI cards."""
+    lm = label_map or {}
     cards: list[dict] = []
     try:
         # Score columns → avg score
@@ -571,12 +602,13 @@ def compute_operational_metrics(
                     label          = f"Avg {col}",
                     value          = display_val,
                     fmt            = fmt,
-                    description    = f"Mean of {col}",
-                    explanation    = f"Average score in '{col}'." + (f" Range: {range_str}." if range_str else ""),
+                    description    = f"Mean of {lm.get(col, col)}",
+                    explanation    = f"Average score in '{lm.get(col, col)}'." + (f" Range: {range_str}." if range_str else ""),
                     priority       = "operational",
                     semantic_source = "score",
                     status         = "good" if display_val >= (70 if fmt == "percent" else 0) else "warning",
                     confidence     = conf,
+                    source_column  = col,
                 ))
             except Exception:
                 continue
@@ -598,11 +630,12 @@ def compute_operational_metrics(
                     label          = f"Avg {col}",
                     value          = avg,
                     fmt            = "percent",
-                    description    = f"Mean of {col}",
-                    explanation    = f"Average {col} across {row_count:,} records.",
+                    description    = f"Mean of {lm.get(col, col)}",
+                    explanation    = f"Average {lm.get(col, col)} across {row_count:,} records.",
                     priority       = "operational",
                     semantic_source = "percentage",
                     confidence     = conf,
+                    source_column  = col,
                 ))
             except Exception:
                 continue
@@ -624,12 +657,13 @@ def compute_operational_metrics(
                     label          = f"Avg Risk: {col}",
                     value          = avg,
                     fmt            = "decimal",
-                    description    = f"Mean of {col}",
-                    explanation    = f"Average risk score in '{col}' across {row_count:,} records.",
+                    description    = f"Mean of {lm.get(col, col)}",
+                    explanation    = f"Average risk score in '{lm.get(col, col)}' across {row_count:,} records.",
                     priority       = "risk",
                     semantic_source = "risk",
                     status         = "risk" if avg > 70 else ("warning" if avg > 40 else "good"),
                     confidence     = conf,
+                    source_column  = col,
                 ))
             except Exception:
                 continue
@@ -698,6 +732,7 @@ def compute_generic_measure_kpis(
     role_profile: list | None = None,
     eligibility_profile: list | None = None,
     discovery_profile: list | None = None,
+    label_map: dict | None = None,
 ) -> list[dict]:
     """Discover KPI candidates from any unclaimed numeric column.
 
@@ -709,6 +744,7 @@ def compute_generic_measure_kpis(
     Output shape is identical to the previous implementation.
     Never raises. Returns [] on any failure.
     """
+    lm = label_map or {}
     cards: list[dict] = []
     claimed = already_claimed_cols or set()
 
@@ -780,21 +816,23 @@ def compute_generic_measure_kpis(
 
             clean_label = _clean_col_display(col)
             label       = defn["label_template"].replace("{col}", clean_label)
+            display_col = lm.get(col, clean_label)
             explanation = (
-                f"Total {clean_label.lower()} across {row_count:,} records."
+                f"Total {display_col.lower()} across {row_count:,} records."
                 if agg == "sum"
-                else f"Average {clean_label.lower()} across {row_count:,} records."
+                else f"Average {display_col.lower()} across {row_count:,} records."
             )
 
             cards.append(_kpi_card(
                 label           = label,
                 value           = display_val,
                 fmt             = fmt_type,
-                description     = f"{agg.title()} of {col}",
+                description     = f"{agg.title()} of {lm.get(col, col)}",
                 explanation     = explanation,
                 priority        = defn["priority"],
                 semantic_source = "measure",
                 confidence      = 0.45,
+                source_column   = col,
             ))
         except Exception:
             continue
@@ -803,19 +841,22 @@ def compute_generic_measure_kpis(
         if item.get("derived_value") is None:
             continue
         try:
-            clean_label = _clean_col_display(item["column"])
+            raw_col     = item["column"]
+            clean_label = _clean_col_display(raw_col)
+            formula_str = item.get("formula", lm.get(raw_col, raw_col))
             cards.append(_kpi_card(
                 label           = clean_label,
                 value           = item["derived_value"],
                 fmt             = item["derived_format"],
-                description     = item.get("formula", item["column"]),
+                description     = formula_str,
                 explanation     = (
-                    f"Derived metric: {item.get('formula', item['column'])}"
+                    f"Derived metric: {formula_str}"
                     f" across {row_count:,} records."
                 ),
                 priority        = "operational",
                 semantic_source = "measure",
                 confidence      = item["discovery_score"],
+                source_column   = raw_col,
             ))
         except Exception:
             continue
@@ -855,6 +896,9 @@ def build_business_kpi_section(
 
         dataset_type = detect_dataset_type(summary)
 
+        # Build semantic label map once for all KPI functions in this report
+        semantic_label_map = build_label_map(semantic_profile)
+
         # Phase 1 Enterprise Migration: classify all numeric business metrics once
         # so role_profile is available to every KPI path in future phases.
         _numeric_candidates = [
@@ -877,14 +921,14 @@ def build_business_kpi_section(
 
         # Compute all KPI classes
         all_cards: list[dict] = []
-        all_cards += compute_revenue_metrics(semantic_profile, numeric_profile, date_profile, row_count)
-        all_cards += compute_cost_metrics(semantic_profile, numeric_profile, row_count)
-        all_cards += compute_profit_metrics(semantic_profile, numeric_profile, row_count)
-        all_cards += compute_quantity_metrics(semantic_profile, numeric_profile, row_count)
-        all_cards += compute_price_metrics(semantic_profile, numeric_profile, row_count)
-        all_cards += compute_customer_metrics(semantic_profile, categorical_meta)
-        all_cards += compute_segmentation_metrics(semantic_profile, categorical_profile, categorical_meta, row_count)
-        all_cards += compute_operational_metrics(semantic_profile, numeric_profile, row_count)
+        all_cards += compute_revenue_metrics(semantic_profile, numeric_profile, date_profile, row_count, label_map=semantic_label_map)
+        all_cards += compute_cost_metrics(semantic_profile, numeric_profile, row_count, label_map=semantic_label_map)
+        all_cards += compute_profit_metrics(semantic_profile, numeric_profile, row_count, label_map=semantic_label_map)
+        all_cards += compute_quantity_metrics(semantic_profile, numeric_profile, row_count, label_map=semantic_label_map)
+        all_cards += compute_price_metrics(semantic_profile, numeric_profile, row_count, label_map=semantic_label_map)
+        all_cards += compute_customer_metrics(semantic_profile, categorical_meta, label_map=semantic_label_map)
+        all_cards += compute_segmentation_metrics(semantic_profile, categorical_profile, categorical_meta, row_count, label_map=semantic_label_map)
+        all_cards += compute_operational_metrics(semantic_profile, numeric_profile, row_count, label_map=semantic_label_map)
 
         # Phase 1 — Generic Metric Discovery:
         # Columns claimed by the 8 domain functions above (identified by semantic_type)
@@ -901,6 +945,7 @@ def build_business_kpi_section(
             role_profile=role_profile,
             eligibility_profile=eligibility_profile,
             discovery_profile=discovery_profile,
+            label_map=semantic_label_map,
         )
 
         if not all_cards:
