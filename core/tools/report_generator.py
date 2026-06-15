@@ -10,6 +10,10 @@ from core.intelligence.segmentation_engine import (
     build_drilldown_table_section,
 )
 from core.intelligence.semantic_classifier import build_label_map, build_business_meaning_map
+from core.intelligence.insight_explanation_builder import (
+    build_insight_explanation,
+    build_root_cause_analysis,
+)
 from core.output.kpi_formatter import format_kpi_display_label, format_dataset_display_name
 from core.config import FRONTEND_BASE_URL
 
@@ -1251,10 +1255,27 @@ def _build_recommendation_section(
             recs = [r for r in recs if r.get("confidence") != "medium"]
         limit = narrative_config.get("recommendation_limit", 5)
 
+    recs = recs[:limit]
+
+    # ── Enrich each finding with root-cause analysis ──────────────────────────
+    for rec in recs:
+        rec["explanation"] = build_root_cause_analysis(
+            rec,
+            semantic_labels=lm,
+            business_meanings=bm,
+            numeric_profile=numeric_profile,
+            categorical_profile=categorical_profile,
+            missing_values=missing_values,
+            date_profile=date_profile,
+            correlation_profile=correlation_profile,
+            row_count=row_count,
+            column_count=column_count,
+        )
+
     return {
         "type":            "recommendation",
         "heading":         "Recommended Actions",
-        "recommendations": recs[:limit],
+        "recommendations": recs,
     }
 
 
@@ -1268,6 +1289,7 @@ def _build_anomaly_section(
     correlation_profile: list | None = None,
     categorical_meta: dict | None = None,
     label_map: dict | None = None,
+    business_meaning_map: dict | None = None,
 ) -> dict:
     """Build deterministic anomaly/risk detection from stored profile data only.
 
@@ -1612,6 +1634,23 @@ def _build_anomaly_section(
                 "passed all risk checks."
             ),
         }]
+
+    # ── Enrich each finding with root-cause analysis ──────────────────────────
+    _bm = business_meaning_map or {}
+    for anomaly in anomalies:
+        anomaly["explanation"] = build_root_cause_analysis(
+            anomaly,
+            semantic_labels=lm,
+            business_meanings=_bm,
+            numeric_profile=numeric_profile,
+            categorical_profile=categorical_profile,
+            categorical_meta=categorical_meta,
+            missing_values=missing_values,
+            date_profile=date_profile,
+            correlation_profile=correlation_profile,
+            row_count=row_count,
+            column_count=column_count,
+        )
 
     return {
         "type":      "anomaly",
@@ -3183,6 +3222,7 @@ def generate_dataset_report(
         correlation_profile=correlation_profile,
         categorical_meta=categorical_meta,
         label_map=semantic_label_map,
+        business_meaning_map=business_meaning_map,
     ))
 
     # ── Trend Intelligence ────────────────────────────────────────────────────
