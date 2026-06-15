@@ -37,7 +37,10 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import math
+
+logger = logging.getLogger(__name__)
 
 # ── Local formatting helper ────────────────────────────────────────────────────
 
@@ -582,6 +585,12 @@ def _drivers_sample_size(
     severity: str,
 ) -> list[str]:
     """Drivers for sample size anomalies."""
+    try:
+        if int(column_count) <= 0:
+            return []
+    except (TypeError, ValueError):
+        return []
+
     threshold = 30 if severity == "high" else 100
     record_word = "record is" if row_count == 1 else "records are"
     drivers: list[str] = [
@@ -945,6 +954,10 @@ def build_root_cause_analysis(
         }
 
     except Exception:
+        logger.exception(
+            "build_root_cause_analysis failed; category=%r",
+            finding.get("category") if isinstance(finding, dict) else type(finding).__name__,
+        )
         # Safe fallback — delegates to build_insight_explanation which itself never raises
         try:
             base = build_insight_explanation(
@@ -954,6 +967,7 @@ def build_root_cause_analysis(
             )
             return {"title": base["title"], "why": base["why"], "drivers": []}
         except Exception:
+            logger.exception("build_root_cause_analysis recovery fallback also failed")
             title = "Insight"
             try:
                 title = finding.get("title", "Insight") if isinstance(finding, dict) else "Insight"
