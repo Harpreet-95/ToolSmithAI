@@ -498,6 +498,15 @@ export async function askReport(reportId, question, token) {
   return parseResponse(res);
 }
 
+export async function askDataset(datasetId, question, composerText, token) {
+  const res = await fetch(`/v1/datasets/${datasetId}/ask`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({ question, composer_text: composerText ?? null }),
+  });
+  return parseResponse(res);
+}
+
 export async function createAdminInvite(email, token) {
   const res = await fetch('/v1/admin/invites', {
     method: 'POST',

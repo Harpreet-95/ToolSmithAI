@@ -503,8 +503,18 @@ def _ai_enrich(intent: str, base: dict) -> dict | None:
             enriched["suggested_name"] = clean
 
     if isinstance(raw.get("required_inputs"), list):
-        valid = [str(i) for i in raw["required_inputs"]
-                 if isinstance(i, str) and re.match(r'^[A-Za-z_]\w*$', i)]
+        _DATASET_INPUT_ALIASES = {
+            "dataset_url", "csv_url", "file_url", "dataset", "dataset_file", "uploaded_dataset",
+        }
+        valid = []
+        seen: set[str] = set()
+        for i in raw["required_inputs"]:
+            if not (isinstance(i, str) and re.match(r'^[A-Za-z_]\w*$', i)):
+                continue
+            canonical = "dataset_id" if i in _DATASET_INPUT_ALIASES else i
+            if canonical not in seen:
+                seen.add(canonical)
+                valid.append(canonical)
         if valid:
             enriched["required_inputs"] = valid
 

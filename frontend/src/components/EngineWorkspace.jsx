@@ -1,8 +1,8 @@
 /**
- * EngineWorkspace — Dynamic Tool Creation Engine lifecycle testing panel.
+ * EngineWorkspace — AI Tools library.
  *
- * Full flow: plan → save → submit → approve → execute → view runs / step results.
- * This is a functional testing workspace, not a polished product UI.
+ * UX layer only — all backend calls go through the same engine API.
+ * Internal identifiers (EngineWorkspace, listEngineTools, etc.) are intentionally unchanged.
  */
 
 import { useState, useEffect } from 'react'
@@ -13,54 +13,130 @@ import {
   approveEngineTool,
   executeEngineTool,
   getEngineToolRuns,
-  getEngineRun,
   getEngineTool,
   listEngineTools,
 } from '../api/client'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
-const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
 
-// ── Status badge colours ─────────────────────────────────────────────────────
-const STATUS_COLORS = {
-  draft:            '#94a3b8',
-  pending_approval: '#fbbf24',
-  approved:         '#22c55e',
-  deprecated:       '#f87171',
-  completed:        '#22c55e',
-  failed:           '#f87171',
-  running:          '#38bdf8',
-  cancelled:        '#94a3b8',
-  skipped:          '#94a3b8',
+// ── Status metadata ────────────────────────────────────────────────────────
+const TOOL_STATUS = {
+  draft:            { label: 'Draft',          color: '#94a3b8' },
+  pending_approval: { label: 'Pending Review', color: '#fbbf24' },
+  approved:         { label: 'Active',         color: '#22c55e' },
+  deprecated:       { label: 'Deprecated',     color: '#f87171' },
 }
 
-function statusColor(s) { return STATUS_COLORS[s] ?? '#94a3b8' }
+const RUN_STATUS = {
+  completed: { label: 'Completed', color: '#22c55e' },
+  failed:    { label: 'Failed',    color: '#f87171' },
+  running:   { label: 'Running',   color: '#38bdf8' },
+  cancelled: { label: 'Cancelled', color: '#94a3b8' },
+  skipped:   { label: 'Skipped',   color: '#94a3b8' },
+}
 
+function toolStatusMeta(s) { return TOOL_STATUS[s] ?? { label: s ?? 'Unknown', color: '#94a3b8' } }
+function runStatusMeta(s)  { return RUN_STATUS[s]  ?? { label: s ?? 'Unknown', color: '#94a3b8' } }
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function slugToTitle(s) {
+  if (!s) return 'Untitled Tool'
+  return s
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, c => c.toUpperCase())
+    .trim()
+}
+
+function displayTitle(t) {
+  if (!t) return 'Untitled Tool'
+  const desc = t.description ?? t.plan?.description
+  if (desc) {
+    const trimmed = desc.length <= 72 ? desc : desc.split(/[.!?]/)[0].trim()
+    if (trimmed) return trimmed
+  }
+  return slugToTitle(t.name)
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function fmtRelative(iso) {
+  if (!iso) return null
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 2)   return 'just now'
+  if (mins < 60)  return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)   return `${hrs}h ago`
+  const days = Math.floor(hrs / 24)
+  if (days === 1) return 'yesterday'
+  if (days < 7)   return `${days}d ago`
+  return fmtDate(iso)
+}
+
+// ── Status badge ───────────────────────────────────────────────────────────
 function StatusBadge({ status }) {
-  if (!status) return null
-  const c = statusColor(status)
+  const m = toolStatusMeta(status)
   return (
     <span style={{
       display: 'inline-block',
       padding: '2px 9px',
       borderRadius: '10px',
-      fontSize: '0.68rem',
+      fontSize: '0.67rem',
       fontWeight: '700',
       letterSpacing: '0.05em',
       textTransform: 'uppercase',
-      background: `${c}20`,
-      color: c,
-      border: `1px solid ${c}50`,
+      background: `${m.color}20`,
+      color: m.color,
+      border: `1px solid ${m.color}50`,
       whiteSpace: 'nowrap',
     }}>
-      {status.replace(/_/g, ' ')}
+      {m.label}
     </span>
   )
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Toast ──────────────────────────────────────────────────────────────────
+function Toast({ toast, success, errCol }) {
+  if (!toast) return null
+  return (
+    <div style={{
+      position: 'fixed', bottom: '24px', right: '24px',
+      background: toast.ok ? `${success}20` : `${errCol}20`,
+      border: `1px solid ${toast.ok ? success + '50' : errCol + '50'}`,
+      color: toast.ok ? success : errCol,
+      borderRadius: '10px', padding: '10px 18px',
+      fontSize: '0.81rem', fontFamily: FONT, fontWeight: '500',
+      maxWidth: '380px', zIndex: 9999,
+      boxShadow: '0 4px 24px rgba(0,0,0,0.45)',
+    }}>
+      {toast.text}
+    </div>
+  )
+}
+
+// ── Tab bar (future-ready structure) ──────────────────────────────────────
+const TABS = [
+  { id: 'my-tools',  label: 'My Tools',  enabled: true  },
+  { id: 'templates', label: 'Templates', enabled: false },
+  { id: 'shared',    label: 'Shared',    enabled: false },
+  { id: 'usage',     label: 'Usage',     enabled: false },
+]
+
+// ── Tool icon ──────────────────────────────────────────────────────────────
+function ToolIcon({ accent }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+    </svg>
+  )
+}
+
+// ── Main component ─────────────────────────────────────────────────────────
 export default function EngineWorkspace({ C = {}, token }) {
-  // Colour tokens with fallbacks so the panel works even without C prop
   const bg      = C.bg       ?? '#0f1117'
   const surface = C.surface  ?? '#1a1f2e'
   const border  = C.border   ?? '#2a2f3f'
@@ -71,96 +147,61 @@ export default function EngineWorkspace({ C = {}, token }) {
   const errCol  = C.error    ?? '#f87171'
   const warn    = C.warn     ?? '#fbbf24'
 
-  // ── State ────────────────────────────────────────────────────────────────
-  const [intent,      setIntent]      = useState('')
-  const [toolDef,     setToolDef]     = useState(null)   // planned ToolDefinition dict
-  const [savedToolId, setSavedToolId] = useState(null)   // UUID after save
-  const [toolStatus,  setToolStatus]  = useState(null)   // 'draft' | 'pending_approval' | 'approved'
-  const [inputs,      setInputs]      = useState('{}')   // JSON string for execute
-  const [runs,        setRuns]        = useState([])
-  const [selectedRun, setSelectedRun] = useState(null)
-  const [busy,        setBusy]        = useState(null)   // which step is in-flight
-  const [toast,       setToast]       = useState(null)   // {ok, text}
-  const [loadId,      setLoadId]      = useState('')     // tool_id input for load-saved flow
-  const [savedTools,  setSavedTools]  = useState([])    // summary list from GET /engine/tools
+  // ── Navigation ──────────────────────────────────────────────────────────
+  const [view,      setView]      = useState('list')    // 'list' | 'detail' | 'create'
+  const [activeTab, setActiveTab] = useState('my-tools')
+
+  // ── Tool list ────────────────────────────────────────────────────────────
+  const [savedTools,   setSavedTools]   = useState([])
   const [toolsLoading, setToolsLoading] = useState(false)
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-  function notify(text, ok = true) {
-    setToast({ text, ok })
+  // ── Tool detail ───────────────────────────────────────────────────────────
+  const [selectedTool, setSelectedTool] = useState(null)
+  const [selectedRuns, setSelectedRuns] = useState([])
+  const [runsLoading,  setRunsLoading]  = useState(false)
+
+  // ── Create flow ───────────────────────────────────────────────────────────
+  const [intent,      setIntent]      = useState('')
+  const [pendingPlan, setPendingPlan] = useState(null)
+
+  // ── Shared ────────────────────────────────────────────────────────────────
+  const [busy,  setBusy]  = useState(null)
+  const [toast, setToast] = useState(null)
+
+  function notify(msg, ok = true) {
+    setToast({ text: msg, ok })
     setTimeout(() => setToast(null), 5000)
   }
   function notifyErr(e) { notify(e?.message ?? String(e), false) }
 
-  // Button style factory
+  // ── Style helpers ─────────────────────────────────────────────────────────
+  function card(extra = {}) {
+    return { background: surface, border: `1px solid ${border}`, borderRadius: '12px', padding: '20px 22px', ...extra }
+  }
+
   function btn(variant, disabled) {
     const base = {
-      padding: '6px 14px',
-      borderRadius: '7px',
-      border: 'none',
+      padding: '8px 16px', borderRadius: '8px', border: 'none',
       cursor: disabled ? 'not-allowed' : 'pointer',
-      fontSize: '0.79rem',
-      fontWeight: '600',
-      fontFamily: FONT,
-      opacity: disabled ? 0.42 : 1,
-      transition: 'opacity 0.12s',
+      fontSize: '0.8rem', fontWeight: '600', fontFamily: FONT,
+      opacity: disabled ? 0.42 : 1, transition: 'all 0.12s',
+      display: 'inline-flex', alignItems: 'center', gap: '6px',
     }
-    if (variant === 'primary') return { ...base, background: accent,        color: '#fff' }
-    if (variant === 'success') return { ...base, background: `${success}22`, color: success, border: `1px solid ${success}50` }
-    if (variant === 'warn')    return { ...base, background: `${warn}22`,    color: warn,    border: `1px solid ${warn}50` }
-    return { ...base, background: `${border}88`, color: text, border: `1px solid ${border}` }
+    if (variant === 'primary') return { ...base, background: accent, color: '#fff' }
+    if (variant === 'ghost')   return { ...base, background: 'transparent', color: accent, border: `1px solid ${accent}50` }
+    if (variant === 'danger')  return { ...base, background: `${errCol}15`, color: errCol, border: `1px solid ${errCol}30` }
+    return { ...base, background: `${border}80`, color: text, border: `1px solid ${border}` }
   }
 
-  const card = {
-    background: surface,
-    border: `1px solid ${border}`,
-    borderRadius: '10px',
-    padding: '16px 18px',
-    marginBottom: '14px',
+  const sectionLabel = {
+    margin: '0 0 14px', fontSize: '0.71rem', fontWeight: '700',
+    letterSpacing: '0.08em', textTransform: 'uppercase', color: muted, fontFamily: FONT,
   }
 
-  const label = {
-    fontSize: '0.71rem',
-    fontWeight: '700',
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase',
-    color: muted,
-    marginBottom: '10px',
-    display: 'block',
-    fontFamily: FONT,
-  }
+  // ── Data loading ──────────────────────────────────────────────────────────
+  useEffect(() => { loadTools() }, []) // eslint-disable-line
 
-  const textareaStyle = {
-    width: '100%',
-    background: `${bg}cc`,
-    border: `1px solid ${border}`,
-    borderRadius: '7px',
-    color: text,
-    fontFamily: FONT,
-    fontSize: '0.84rem',
-    padding: '10px 12px',
-    resize: 'vertical',
-    boxSizing: 'border-box',
-    outline: 'none',
-  }
-
-  const preStyle = {
-    background: `${bg}cc`,
-    border: `1px solid ${border}`,
-    borderRadius: '7px',
-    padding: '12px 14px',
-    fontFamily: MONO,
-    fontSize: '0.71rem',
-    color: text,
-    overflowX: 'auto',
-    overflowY: 'auto',
-    maxHeight: '300px',
-    whiteSpace: 'pre',
-    margin: 0,
-  }
-
-  // ── Saved tools list ─────────────────────────────────────────────────────
-  async function handleRefreshTools() {
+  async function loadTools() {
     setToolsLoading(true)
     try {
       const res = await listEngineTools(token)
@@ -169,467 +210,512 @@ export default function EngineWorkspace({ C = {}, token }) {
     finally { setToolsLoading(false) }
   }
 
-  useEffect(() => { handleRefreshTools() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Load saved tool (accepts explicit id from list click or falls back to input) ──
-  async function handleLoadTool(explicitId) {
-    const id = (explicitId ?? loadId).trim()
-    if (!id) return notify('Enter a tool ID.', false)
-    setBusy('load'); setToast(null)
+  async function loadToolRuns(toolId) {
+    setRunsLoading(true)
     try {
-      const res = await getEngineTool(id, token)
+      const res = await getEngineToolRuns(toolId, token)
+      setSelectedRuns(res?.data ?? [])
+    } catch { /* non-critical */ }
+    finally { setRunsLoading(false) }
+  }
+
+  // ── Navigation actions ────────────────────────────────────────────────────
+  async function openTool(toolId) {
+    setBusy('open-' + toolId)
+    try {
+      const res = await getEngineTool(toolId, token)
       const td = res?.data ?? res
-      setToolDef(td)
-      setSavedToolId(td.id)
-      setToolStatus(td.status ?? 'draft')
-      setRuns([])
-      setSelectedRun(null)
-      const req = (td?.inputs ?? []).filter(i => i.required).map(i => [i.name, ''])
-      if (req.length > 0) setInputs(JSON.stringify(Object.fromEntries(req), null, 2))
-      notify(`Loaded "${td?.name}" — status: ${td?.status}`)
+      setSelectedTool(td)
+      setSelectedRuns([])
+      setView('detail')
+      loadToolRuns(toolId)
     } catch (e) { notifyErr(e) }
     finally { setBusy(null) }
   }
 
-  // ── Lifecycle handlers ────────────────────────────────────────────────────
-  async function handlePlan() {
-    if (!intent.trim()) return notify('Enter an intent first.', false)
-    setBusy('plan'); setToast(null)
-    setToolDef(null); setSavedToolId(null); setToolStatus(null)
-    setRuns([]); setSelectedRun(null)
+  function backToList() {
+    setView('list')
+    setSelectedTool(null)
+    setSelectedRuns([])
+  }
+
+  function startCreate() {
+    setIntent('')
+    setPendingPlan(null)
+    setView('create')
+  }
+
+  // ── Run tool ──────────────────────────────────────────────────────────────
+  async function runTool(toolId) {
+    setBusy('run-' + toolId)
+    try {
+      await executeEngineTool(toolId, {}, token)
+      notify('Tool started successfully.')
+      if (selectedTool?.id === toolId) loadToolRuns(toolId)
+    } catch (e) { notifyErr(e) }
+    finally { setBusy(null) }
+  }
+
+  // ── Create flow ───────────────────────────────────────────────────────────
+  async function handleGenerate() {
+    if (!intent.trim()) return
+    setBusy('plan')
+    setPendingPlan(null)
     try {
       const res = await planEngineTool(intent.trim(), token)
-      const td = res?.data ?? res
-      setToolDef(td)
-      // Pre-fill inputs JSON with required fields from the plan
-      const req = (td?.inputs ?? []).filter(i => i.required).map(i => [i.name, ''])
-      if (req.length > 0) setInputs(JSON.stringify(Object.fromEntries(req), null, 2))
-      notify(`Planned "${td?.name}" — ${(td?.graph?.nodes ?? []).length} node(s)`)
+      setPendingPlan(res?.data ?? res)
     } catch (e) { notifyErr(e) }
     finally { setBusy(null) }
   }
 
-  async function handleSave() {
-    if (!toolDef) return
-    setBusy('save'); setToast(null)
+  async function handleSaveAndActivate() {
+    if (!pendingPlan) return
+    setBusy('save')
     try {
-      const res = await saveEngineTool(toolDef, token)
-      const d = res?.data ?? res
-      setSavedToolId(d.tool_id)
-      setToolStatus(d.status ?? 'draft')
-      notify(`Saved. tool_id = ${d.tool_id}`)
+      const res = await saveEngineTool(pendingPlan, token)
+      const { tool_id } = res?.data ?? res
+      await submitEngineTool(tool_id, token)
+      await approveEngineTool(tool_id, token)
+      notify(`"${displayTitle(pendingPlan)}" created and activated.`)
+      await loadTools()
+      setView('list')
+      setIntent('')
+      setPendingPlan(null)
     } catch (e) { notifyErr(e) }
     finally { setBusy(null) }
   }
 
-  async function handleSubmit() {
-    if (!savedToolId) return
-    setBusy('submit'); setToast(null)
-    try {
-      await submitEngineTool(savedToolId, token)
-      setToolStatus('pending_approval')
-      notify('Submitted for approval.')
-    } catch (e) { notifyErr(e) }
-    finally { setBusy(null) }
-  }
+  // ── Recently used ─────────────────────────────────────────────────────────
+  const recentlyUsed = [...savedTools]
+    .filter(t => t.updated_at)
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+    .slice(0, 5)
 
-  async function handleApprove() {
-    if (!savedToolId) return
-    setBusy('approve'); setToast(null)
-    try {
-      await approveEngineTool(savedToolId, token)
-      setToolStatus('approved')
-      notify('Tool approved — ready to execute.')
-    } catch (e) { notifyErr(e) }
-    finally { setBusy(null) }
-  }
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER: List (landing page)
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (view === 'list') {
+    return (
+      <div style={{ fontFamily: FONT, color: text, padding: '28px 32px', maxWidth: '1040px' }}>
 
-  async function handleExecute() {
-    if (!savedToolId) return
-    let parsedInputs = {}
-    try { parsedInputs = JSON.parse(inputs || '{}') }
-    catch { return notify('Inputs field is not valid JSON.', false) }
-    setBusy('execute'); setToast(null); setSelectedRun(null)
-    try {
-      const res = await executeEngineTool(savedToolId, parsedInputs, token)
-      const record = res?.data ?? res
-      setSelectedRun(record)
-      const steps = record?.step_results?.length ?? 0
-      notify(`Run ${record?.status} — ${steps} step(s) completed`)
-      // Refresh run list after execute
-      const runsRes = await getEngineToolRuns(savedToolId, token)
-      setRuns(runsRes?.data ?? [])
-    } catch (e) { notifyErr(e) }
-    finally { setBusy(null) }
-  }
-
-  async function handleLoadRuns() {
-    if (!savedToolId) return
-    setBusy('runs'); setToast(null)
-    try {
-      const res = await getEngineToolRuns(savedToolId, token)
-      setRuns(res?.data ?? [])
-    } catch (e) { notifyErr(e) }
-    finally { setBusy(null) }
-  }
-
-  async function handleSelectRun(runId) {
-    if (selectedRun?.run_id === runId) { setSelectedRun(null); return }
-    setBusy('run-' + runId)
-    try {
-      const res = await getEngineRun(runId, token)
-      setSelectedRun(res?.data ?? res)
-    } catch (e) { notifyErr(e) }
-    finally { setBusy(null) }
-  }
-
-  // ── Computed button states ────────────────────────────────────────────────
-  const canSave    = !!toolDef && !savedToolId
-  const canSubmit  = !!savedToolId && toolStatus === 'draft'
-  const canApprove = !!savedToolId && toolStatus === 'pending_approval'
-  const canExecute = !!savedToolId && toolStatus === 'approved'
-
-  // ── Render ───────────────────────────────────────────────────────────────
-  return (
-    <div style={{ fontFamily: FONT, color: text, padding: '24px 28px', maxWidth: '960px' }}>
-
-      {/* ── Header ── */}
-      <div style={{ marginBottom: '22px' }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: '700', color: text, letterSpacing: '-0.2px' }}>
-          Engine Lab
-        </h2>
-        <p style={{ margin: '4px 0 0', fontSize: '0.78rem', color: muted }}>
-          Dynamic Tool Creation Engine — end-to-end lifecycle testing
-        </p>
-      </div>
-
-      {/* ── Saved Tools ── */}
-      <div style={{ ...card, marginBottom: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-          <span style={label}>Saved Tools</span>
-          <button
-            style={btn('default', toolsLoading)}
-            disabled={toolsLoading}
-            onClick={handleRefreshTools}
-          >
-            {toolsLoading ? 'Refreshing…' : 'Refresh'}
-          </button>
+        {/* Page header */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '28px', flexWrap: 'wrap', gap: '16px' }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: '1.4rem', fontWeight: '700', color: text, letterSpacing: '-0.3px' }}>AI Tools</h1>
+            <p style={{ margin: '4px 0 0', fontSize: '0.82rem', color: muted }}>Build, run, and manage your custom AI tools.</p>
+          </div>
+          <button style={btn('primary', false)} onClick={startCreate}>+ Create AI Tool</button>
         </div>
 
-        {/* Tool list */}
-        {toolsLoading && savedTools.length === 0 ? (
-          <p style={{ fontSize: '0.77rem', color: muted, margin: '0 0 12px', fontStyle: 'italic' }}>Loading…</p>
-        ) : savedTools.length === 0 ? (
-          <p style={{ fontSize: '0.77rem', color: muted, margin: '0 0 12px', fontStyle: 'italic' }}>No saved tools yet — plan and save one below.</p>
-        ) : (
-          <div style={{ marginBottom: '12px' }}>
-            {savedTools.map(t => {
-              const isActive  = savedToolId === t.id
-              const isLoading = busy === 'load'
-              const updated   = t.updated_at
-                ? new Date(t.updated_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                : '—'
-              return (
+        {/* Tab bar */}
+        <div style={{ display: 'flex', gap: '2px', borderBottom: `1px solid ${border}`, marginBottom: '28px' }}>
+          {TABS.map(t => {
+            const isActive = t.id === activeTab
+            return (
+              <button
+                key={t.id}
+                onClick={() => t.enabled && setActiveTab(t.id)}
+                style={{
+                  padding: '10px 18px', background: 'transparent', border: 'none',
+                  borderBottom: isActive ? `2px solid ${accent}` : '2px solid transparent',
+                  color: isActive ? accent : t.enabled ? muted : `${muted}55`,
+                  fontSize: '0.83rem', fontWeight: isActive ? '600' : '500', fontFamily: FONT,
+                  cursor: t.enabled ? 'pointer' : 'default', marginBottom: '-1px',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {t.label}
+                {!t.enabled && (
+                  <span style={{ marginLeft: '6px', fontSize: '0.61rem', background: `${border}`, color: `${muted}80`, padding: '1px 5px', borderRadius: '4px' }}>
+                    Soon
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Recently Used */}
+        {recentlyUsed.length > 0 && (
+          <div style={{ marginBottom: '32px' }}>
+            <h3 style={sectionLabel}>Recently Used</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {recentlyUsed.map(t => (
                 <div
                   key={t.id}
-                  onClick={() => !isLoading && handleLoadTool(t.id)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: '10px',
-                    padding: '8px 10px', borderRadius: '7px',
-                    cursor: isLoading ? 'not-allowed' : 'pointer',
-                    background: isActive ? `${accent}18` : 'transparent',
-                    border: `1px solid ${isActive ? accent + '45' : 'transparent'}`,
-                    marginBottom: '4px', transition: 'background 0.1s',
-                    flexWrap: 'wrap', opacity: isLoading ? 0.6 : 1,
-                  }}
+                  style={{ ...card({ padding: '12px 18px' }), display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}
                 >
-                  <span style={{ fontSize: '0.82rem', fontWeight: '600', color: isActive ? accent : text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {t.name || t.id}
-                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ fontSize: '0.87rem', fontWeight: '600', color: text, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {displayTitle(t)}
+                    </span>
+                    {t.updated_at && (
+                      <span style={{ fontSize: '0.72rem', color: muted }}>Last run {fmtRelative(t.updated_at)}</span>
+                    )}
+                  </div>
                   <StatusBadge status={t.status} />
-                  <span style={{ fontSize: '0.71rem', color: muted, flexShrink: 0 }}>{updated}</span>
+                  <button
+                    style={btn('ghost', busy === 'open-' + t.id || t.status !== 'approved')}
+                    disabled={busy === 'open-' + t.id || t.status !== 'approved'}
+                    onClick={() => runTool(t.id)}
+                  >
+                    Run Again →
+                  </button>
                 </div>
-              )
-            })}
+              ))}
+            </div>
           </div>
         )}
 
-        {/* Manual UUID fallback */}
-        <div style={{ borderTop: `1px solid ${border}`, paddingTop: '12px' }}>
-          <span style={{ ...label, marginBottom: '8px', textTransform: 'none', letterSpacing: 0, fontSize: '0.72rem' }}>
-            Or load by tool ID
-          </span>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <input
-              type="text"
-              placeholder="Paste tool_id (UUID)"
-              value={loadId}
-              onChange={e => setLoadId(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleLoadTool() }}
-              style={{
-                flex: 1,
-                background: `${bg}cc`,
-                border: `1px solid ${border}`,
-                borderRadius: '7px',
-                color: text,
-                fontFamily: MONO,
-                fontSize: '0.8rem',
-                padding: '8px 12px',
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
-            />
-            <button
-              style={btn('default', !loadId.trim() || busy === 'load')}
-              disabled={!loadId.trim() || busy === 'load'}
-              onClick={() => handleLoadTool()}
-            >
-              {busy === 'load' ? 'Loading…' : 'Load'}
+        {/* My AI Tools */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+            <h3 style={{ ...sectionLabel, margin: 0 }}>My AI Tools</h3>
+            <button style={btn('default', toolsLoading)} disabled={toolsLoading} onClick={loadTools}>
+              {toolsLoading ? 'Refreshing…' : 'Refresh'}
             </button>
           </div>
-        </div>
-      </div>
 
-      {/* ── Active tool status bar ── */}
-      {savedToolId && (
-        <div style={{ ...card, display: 'flex', alignItems: 'center', gap: '14px', padding: '10px 16px', marginBottom: '14px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.74rem', color: muted, fontWeight: '600' }}>TOOL ID</span>
-          <code style={{ fontFamily: MONO, fontSize: '0.71rem', color: accent, wordBreak: 'break-all' }}>{savedToolId}</code>
-          <StatusBadge status={toolStatus} />
-        </div>
-      )}
-
-      {/* ═══ STEP 1: PLAN ════════════════════════════════════════════════════ */}
-      <div style={card}>
-        <span style={label}>Step 1 — Plan</span>
-        <textarea
-          style={{ ...textareaStyle, minHeight: '76px' }}
-          placeholder={'Describe the tool, e.g. "format output and send notification"'}
-          value={intent}
-          onChange={e => setIntent(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handlePlan() }}
-        />
-        <div style={{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <button
-            style={btn('primary', !intent.trim() || busy === 'plan')}
-            disabled={!intent.trim() || busy === 'plan'}
-            onClick={handlePlan}
-          >
-            {busy === 'plan' ? 'Planning…' : 'Plan Tool'}
-          </button>
-          <span style={{ fontSize: '0.72rem', color: muted }}>Ctrl/⌘+Enter to plan</span>
-        </div>
-      </div>
-
-      {/* ═══ STEP 2: REVIEW & APPROVE ════════════════════════════════════════ */}
-      {toolDef && (
-        <div style={card}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-            <span style={label}>Step 2 — Review & Approve</span>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button
-                style={btn('default', !canSave || busy === 'save')}
-                disabled={!canSave || busy === 'save'}
-                onClick={handleSave}
-              >
-                {busy === 'save' ? 'Saving…' : 'Save'}
-              </button>
-              <button
-                style={btn('warn', !canSubmit || busy === 'submit')}
-                disabled={!canSubmit || busy === 'submit'}
-                onClick={handleSubmit}
-              >
-                {busy === 'submit' ? 'Submitting…' : 'Submit for Approval'}
-              </button>
-              <button
-                style={btn('success', !canApprove || busy === 'approve')}
-                disabled={!canApprove || busy === 'approve'}
-                onClick={handleApprove}
-              >
-                {busy === 'approve' ? 'Approving…' : 'Approve'}
-              </button>
+          {toolsLoading && savedTools.length === 0 ? (
+            <div style={{ ...card({ textAlign: 'center', padding: '48px 24px' }) }}>
+              <p style={{ color: muted, fontSize: '0.84rem', margin: 0 }}>Loading your tools…</p>
             </div>
-          </div>
-
-          {/* Node summary */}
-          {(toolDef.graph?.nodes ?? []).length > 0 && (
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
-              {(toolDef.graph.nodes ?? []).map(n => (
-                <span key={n.id} style={{
-                  fontSize: '0.71rem', fontFamily: MONO, padding: '2px 8px',
-                  background: `${accent}18`, color: accent, border: `1px solid ${accent}40`,
-                  borderRadius: '6px',
-                }}>
-                  {n.action_type}
-                </span>
-              ))}
-              {(toolDef.inputs ?? []).filter(i => i.required).map(i => (
-                <span key={i.name} style={{
-                  fontSize: '0.71rem', fontFamily: MONO, padding: '2px 8px',
-                  background: `${warn}18`, color: warn, border: `1px solid ${warn}40`,
-                  borderRadius: '6px',
-                }}>
-                  req: {i.name}
-                </span>
-              ))}
+          ) : savedTools.length === 0 ? (
+            <div style={{ ...card({ textAlign: 'center', padding: '56px 24px' }) }}>
+              <div style={{ fontSize: '2rem', marginBottom: '12px' }}>🛠</div>
+              <p style={{ color: text, fontSize: '0.92rem', fontWeight: '600', margin: '0 0 6px' }}>No tools yet</p>
+              <p style={{ color: muted, fontSize: '0.82rem', margin: '0 0 20px' }}>Create your first AI tool to automate workflows and analyses.</p>
+              <button style={btn('primary', false)} onClick={startCreate}>+ Create AI Tool</button>
             </div>
-          )}
-
-          <pre style={preStyle}>{JSON.stringify(toolDef, null, 2)}</pre>
-        </div>
-      )}
-
-      {/* ═══ STEP 3: EXECUTE ═════════════════════════════════════════════════ */}
-      {savedToolId && (
-        <div style={card}>
-          <span style={label}>Step 3 — Execute</span>
-          {!canExecute && (
-            <p style={{ fontSize: '0.77rem', color: muted, margin: '0 0 10px', fontStyle: 'italic' }}>
-              {toolStatus === 'draft' ? 'Submit and approve the tool first.' : 'Approve the tool first.'}
-            </p>
-          )}
-          <label style={{ ...label, marginBottom: '6px', textTransform: 'none', letterSpacing: 0, fontSize: '0.76rem' }}>
-            Inputs (JSON)
-          </label>
-          <textarea
-            style={{ ...textareaStyle, fontFamily: MONO, fontSize: '0.77rem', minHeight: '80px' }}
-            value={inputs}
-            onChange={e => setInputs(e.target.value)}
-          />
-          <div style={{ marginTop: '10px' }}>
-            <button
-              style={btn('primary', !canExecute || busy === 'execute')}
-              disabled={!canExecute || busy === 'execute'}
-              onClick={handleExecute}
-            >
-              {busy === 'execute' ? 'Executing…' : 'Execute Tool'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ═══ STEP 4: RUN HISTORY ═════════════════════════════════════════════ */}
-      {savedToolId && (
-        <div style={card}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
-            <span style={label}>Step 4 — Run History</span>
-            <button
-              style={btn('default', busy === 'runs')}
-              disabled={busy === 'runs'}
-              onClick={handleLoadRuns}
-            >
-              {busy === 'runs' ? 'Loading…' : 'Refresh Runs'}
-            </button>
-          </div>
-
-          {runs.length === 0 ? (
-            <p style={{ fontSize: '0.77rem', color: muted, margin: 0, fontStyle: 'italic' }}>
-              No runs yet — execute the tool, then refresh.
-            </p>
           ) : (
-            <div>
-              {runs.map(run => {
-                const isSelected = selectedRun?.run_id === run.run_id
-                const isBusy    = busy === 'run-' + run.run_id
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {savedTools.map(t => {
+                const title = displayTitle(t)
+                const isOpening = busy === 'open-' + t.id
+                const isRunning = busy === 'run-' + t.id
+                const canRun    = t.status === 'approved'
                 return (
                   <div
-                    key={run.run_id}
-                    onClick={() => !isBusy && handleSelectRun(run.run_id)}
+                    key={t.id}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: '10px',
-                      padding: '8px 10px', borderRadius: '7px', cursor: 'pointer',
-                      background: isSelected ? `${accent}18` : 'transparent',
-                      border: `1px solid ${isSelected ? accent + '45' : 'transparent'}`,
-                      marginBottom: '4px', transition: 'background 0.1s',
-                      flexWrap: 'wrap',
+                      ...card({ padding: '16px 20px' }),
+                      display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap',
+                      cursor: 'pointer', transition: 'border-color 0.15s',
                     }}
+                    onClick={() => !isOpening && openTool(t.id)}
                   >
-                    <code style={{ fontFamily: MONO, fontSize: '0.7rem', color: muted }}>
-                      {run.run_id.slice(0, 8)}…
-                    </code>
-                    <StatusBadge status={run.status} />
-                    {run.duration_ms != null && (
-                      <span style={{ fontSize: '0.72rem', color: muted }}>{run.duration_ms}ms</span>
-                    )}
-                    {run.started_at && (
-                      <span style={{ fontSize: '0.72rem', color: muted, marginLeft: 'auto' }}>
-                        {new Date(run.started_at).toLocaleTimeString()}
+                    {/* Icon */}
+                    <div style={{
+                      width: '38px', height: '38px', borderRadius: '9px',
+                      background: `${accent}15`, border: `1px solid ${accent}30`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <ToolIcon accent={accent} />
+                    </div>
+
+                    {/* Info */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '3px' }}>
+                        <span style={{ fontSize: '0.9rem', fontWeight: '600', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {title}
+                        </span>
+                        <StatusBadge status={t.status} />
+                      </div>
+                      <span style={{ fontSize: '0.74rem', color: muted }}>
+                        Created {fmtDate(t.created_at)}
+                        {t.updated_at && t.updated_at !== t.created_at && ` · Last run ${fmtRelative(t.updated_at)}`}
                       </span>
-                    )}
-                    {isBusy && <span style={{ fontSize: '0.72rem', color: muted }}>Loading…</span>}
+                    </div>
+
+                    {/* Actions */}
+                    <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                      <button
+                        style={btn('ghost', !canRun || isRunning || isOpening)}
+                        disabled={!canRun || isRunning || isOpening}
+                        title={!canRun ? 'Tool must be Active to run' : 'Run this tool'}
+                        onClick={() => runTool(t.id)}
+                      >
+                        {isRunning ? 'Running…' : 'Run'}
+                      </button>
+                      <button
+                        style={btn('default', isOpening)}
+                        disabled={isOpening}
+                        onClick={() => openTool(t.id)}
+                      >
+                        {isOpening ? 'Opening…' : 'Open'}
+                      </button>
+                    </div>
                   </div>
                 )
               })}
             </div>
           )}
         </div>
-      )}
 
-      {/* ═══ STEP RESULTS DETAIL ═════════════════════════════════════════════ */}
-      {selectedRun && (
-        <div style={card}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
-            <span style={label}>Run Detail</span>
-            <StatusBadge status={selectedRun.status} />
-            {selectedRun.duration_ms != null && (
-              <span style={{ fontSize: '0.74rem', color: muted }}>{selectedRun.duration_ms}ms</span>
+        <Toast toast={toast} success={success} errCol={errCol} />
+      </div>
+    )
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER: Detail
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (view === 'detail' && selectedTool) {
+    const tool   = selectedTool
+    const title  = displayTitle(tool)
+    const nodes  = tool.graph?.nodes ?? []
+    const canRun = tool.status === 'approved'
+    const isRunning = busy === 'run-' + tool.id
+
+    return (
+      <div style={{ fontFamily: FONT, color: text, padding: '28px 32px', maxWidth: '860px' }}>
+
+        {/* Back + header */}
+        <button style={{ ...btn('default', false), marginBottom: '20px', fontSize: '0.77rem' }} onClick={backToList}>
+          ← Back to AI Tools
+        </button>
+
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '24px', flexWrap: 'wrap', gap: '14px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px', flexWrap: 'wrap' }}>
+              <h1 style={{ margin: 0, fontSize: '1.3rem', fontWeight: '700', color: text }}>{title}</h1>
+              <StatusBadge status={tool.status} />
+            </div>
+            {tool.description && tool.description !== title && (
+              <p style={{ margin: 0, fontSize: '0.84rem', color: muted, maxWidth: '560px', lineHeight: 1.6 }}>{tool.description}</p>
             )}
-            <code style={{ fontFamily: MONO, fontSize: '0.7rem', color: muted }}>{selectedRun.run_id}</code>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              style={btn('primary', !canRun || isRunning)}
+              disabled={!canRun || isRunning}
+              title={!canRun ? `Tool must be Active to run (current: ${toolStatusMeta(tool.status).label})` : undefined}
+              onClick={() => runTool(tool.id)}
+            >
+              {isRunning ? 'Running…' : 'Run Tool'}
+            </button>
+            <button style={btn('default', true)} disabled title="Coming soon">Edit Tool</button>
+            <button style={btn('default', true)} disabled title="Coming soon">Duplicate</button>
+            <button style={btn('danger', true)} disabled title="Coming soon">Delete</button>
+          </div>
+        </div>
+
+        {/* Purpose */}
+        {tool.description && (
+          <div style={{ ...card(), marginBottom: '14px' }}>
+            <h3 style={{ ...sectionLabel, margin: '0 0 8px' }}>Purpose</h3>
+            <p style={{ margin: 0, fontSize: '0.88rem', color: text, lineHeight: 1.75 }}>{tool.description}</p>
+          </div>
+        )}
+
+        {/* Workflow Steps */}
+        {nodes.length > 0 && (
+          <div style={{ ...card(), marginBottom: '14px' }}>
+            <h3 style={{ ...sectionLabel, margin: '0 0 14px' }}>Workflow Steps</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {nodes.map((n, i) => (
+                <div
+                  key={n.id ?? i}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '12px',
+                    padding: '10px 14px',
+                    background: `${bg}80`, border: `1px solid ${border}`, borderRadius: '8px',
+                  }}
+                >
+                  <span style={{
+                    width: '24px', height: '24px', borderRadius: '50%', flexShrink: 0,
+                    background: `${accent}18`, border: `1px solid ${accent}40`,
+                    color: accent, fontSize: '0.71rem', fontWeight: '700',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {i + 1}
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: '0.86rem', fontWeight: '500', color: text }}>
+                      {slugToTitle(n.action_type)}
+                    </span>
+                    {n.config?.description && (
+                      <p style={{ margin: '2px 0 0', fontSize: '0.73rem', color: muted }}>{n.config.description}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Execution History */}
+        <div style={card()}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+            <h3 style={{ ...sectionLabel, margin: 0 }}>Execution History</h3>
+            <button style={btn('default', runsLoading)} disabled={runsLoading} onClick={() => loadToolRuns(tool.id)}>
+              {runsLoading ? 'Loading…' : 'Refresh'}
+            </button>
           </div>
 
-          {selectedRun.error && (
-            <p style={{ fontSize: '0.78rem', color: errCol, margin: '0 0 12px',
-              background: `${errCol}12`, padding: '8px 12px', borderRadius: '6px',
-              border: `1px solid ${errCol}30` }}>
-              {selectedRun.error}
+          {runsLoading && selectedRuns.length === 0 ? (
+            <p style={{ color: muted, fontSize: '0.82rem', margin: 0, fontStyle: 'italic' }}>Loading runs…</p>
+          ) : selectedRuns.length === 0 ? (
+            <p style={{ color: muted, fontSize: '0.82rem', margin: 0, fontStyle: 'italic' }}>
+              No runs yet. Click "Run Tool" to execute this tool.
             </p>
-          )}
-
-          {(selectedRun.step_results ?? []).length === 0 ? (
-            <p style={{ fontSize: '0.77rem', color: muted, margin: 0, fontStyle: 'italic' }}>No step results.</p>
           ) : (
-            (selectedRun.step_results ?? []).map((sr, i) => (
-              <div key={i} style={{
-                background: `${bg}bb`, border: `1px solid ${border}`,
-                borderRadius: '8px', padding: '10px 13px', marginBottom: '8px',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: sr.error || Object.keys(sr.output ?? {}).length ? '8px' : 0, flexWrap: 'wrap' }}>
-                  <code style={{ fontFamily: MONO, fontSize: '0.71rem', color: accent }}>{sr.node_id}</code>
-                  <span style={{ fontSize: '0.77rem', color: text, fontWeight: '500' }}>{sr.action_type}</span>
-                  <StatusBadge status={sr.status} />
-                  {sr.duration_ms != null && (
-                    <span style={{ fontSize: '0.7rem', color: muted, marginLeft: 'auto' }}>{sr.duration_ms}ms</span>
-                  )}
-                </div>
-                {sr.error && (
-                  <p style={{ margin: '0 0 6px', fontSize: '0.73rem', color: errCol }}>{sr.error}</p>
-                )}
-                {sr.output && Object.keys(sr.output).length > 0 && (
-                  <pre style={{ ...preStyle, maxHeight: '130px', fontSize: '0.69rem' }}>
-                    {JSON.stringify(sr.output, null, 2)}
-                  </pre>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {selectedRuns.map(run => {
+                const rm = runStatusMeta(run.status)
+                return (
+                  <div
+                    key={run.run_id}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '12px',
+                      padding: '10px 14px',
+                      background: `${bg}80`, border: `1px solid ${border}`, borderRadius: '8px',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: rm.color, flexShrink: 0 }} />
+                    <span style={{ fontSize: '0.83rem', fontWeight: '600', color: text }}>{rm.label}</span>
+                    {run.duration_ms != null && (
+                      <span style={{ fontSize: '0.73rem', color: muted }}>{run.duration_ms.toLocaleString()}ms</span>
+                    )}
+                    <span style={{ fontSize: '0.73rem', color: muted, marginLeft: 'auto' }}>
+                      {run.started_at ? fmtRelative(run.started_at) : '—'}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Status warning for non-active tools */}
+        {!canRun && (
+          <div style={{
+            marginTop: '16px', padding: '12px 16px',
+            background: `${warn}10`, border: `1px solid ${warn}30`,
+            borderRadius: '8px', fontSize: '0.82rem', color: warn, lineHeight: 1.6,
+          }}>
+            This tool is in <strong>{toolStatusMeta(tool.status).label}</strong> status and cannot be run yet.
+            {tool.status === 'draft' && ' It needs to be saved and activated before execution.'}
+            {tool.status === 'pending_approval' && ' It is awaiting review before it can be executed.'}
+          </div>
+        )}
+
+        <Toast toast={toast} success={success} errCol={errCol} />
+      </div>
+    )
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RENDER: Create
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (view === 'create') {
+    const planTitle = pendingPlan ? displayTitle(pendingPlan) : null
+    const planNodes = pendingPlan?.graph?.nodes ?? []
+
+    return (
+      <div style={{ fontFamily: FONT, color: text, padding: '28px 32px', maxWidth: '760px' }}>
+
+        {/* Header */}
+        <button style={{ ...btn('default', false), marginBottom: '20px', fontSize: '0.77rem' }} onClick={backToList}>
+          ← Back to AI Tools
+        </button>
+        <h1 style={{ margin: '0 0 4px', fontSize: '1.3rem', fontWeight: '700', color: text }}>Create AI Tool</h1>
+        <p style={{ margin: '0 0 28px', fontSize: '0.82rem', color: muted }}>
+          Describe what you want this tool to do and AI will generate it for you.
+        </p>
+
+        {/* Step 1: Describe intent */}
+        <div style={{ ...card(), marginBottom: '14px' }}>
+          <h3 style={{ ...sectionLabel, margin: '0 0 12px' }}>What should this tool do?</h3>
+          <textarea
+            style={{
+              width: '100%', background: `${bg}cc`, border: `1px solid ${border}`,
+              borderRadius: '8px', color: text, fontFamily: FONT, fontSize: '0.88rem',
+              padding: '12px 14px', resize: 'vertical', boxSizing: 'border-box',
+              outline: 'none', minHeight: '100px', lineHeight: 1.65,
+            }}
+            placeholder='e.g. "Analyze dataset quality and send a summary report by email"'
+            value={intent}
+            onChange={e => setIntent(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !pendingPlan) handleGenerate() }}
+          />
+          <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              style={btn('primary', !intent.trim() || busy === 'plan')}
+              disabled={!intent.trim() || busy === 'plan'}
+              onClick={handleGenerate}
+            >
+              {busy === 'plan' ? 'Generating…' : pendingPlan ? 'Regenerate' : 'Generate Tool'}
+            </button>
+            {!pendingPlan && (
+              <span style={{ fontSize: '0.72rem', color: muted }}>Ctrl/⌘+Enter to generate</span>
+            )}
+          </div>
+        </div>
+
+        {/* Step 2: Preview generated plan */}
+        {pendingPlan && (
+          <div style={{ ...card(), marginBottom: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h2 style={{ margin: '0 0 4px', fontSize: '1.05rem', fontWeight: '700', color: text }}>{planTitle}</h2>
+                {pendingPlan.description && pendingPlan.description !== planTitle && (
+                  <p style={{ margin: 0, fontSize: '0.82rem', color: muted, lineHeight: 1.6 }}>{pendingPlan.description}</p>
                 )}
               </div>
-            ))
-          )}
-        </div>
-      )}
+              <StatusBadge status="draft" />
+            </div>
 
-      {/* ── Toast notification ── */}
-      {toast && (
-        <div style={{
-          position: 'fixed', bottom: '24px', right: '24px',
-          background: toast.ok ? `${success}20` : `${errCol}20`,
-          border: `1px solid ${toast.ok ? success + '50' : errCol + '50'}`,
-          color: toast.ok ? success : errCol,
-          borderRadius: '10px', padding: '10px 18px',
-          fontSize: '0.81rem', fontFamily: FONT, fontWeight: '500',
-          maxWidth: '380px', zIndex: 9999,
-          boxShadow: '0 4px 24px rgba(0,0,0,0.45)',
-        }}>
-          {toast.text}
-        </div>
-      )}
-    </div>
-  )
+            {planNodes.length > 0 && (
+              <div style={{ marginBottom: '16px' }}>
+                <p style={{ margin: '0 0 10px', fontSize: '0.72rem', fontWeight: '700', color: muted, textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                  Workflow Steps
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {planNodes.map((n, i) => (
+                    <div
+                      key={n.id ?? i}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '10px',
+                        padding: '8px 12px',
+                        background: `${bg}80`, border: `1px solid ${border}`, borderRadius: '7px',
+                      }}
+                    >
+                      <span style={{
+                        width: '20px', height: '20px', borderRadius: '50%', flexShrink: 0,
+                        background: `${accent}18`, border: `1px solid ${accent}40`,
+                        color: accent, fontSize: '0.67rem', fontWeight: '700',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {i + 1}
+                      </span>
+                      <span style={{ fontSize: '0.85rem', color: text }}>{slugToTitle(n.action_type)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ borderTop: `1px solid ${border}`, paddingTop: '14px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                style={btn('primary', busy === 'save')}
+                disabled={busy === 'save'}
+                onClick={handleSaveAndActivate}
+              >
+                {busy === 'save' ? 'Activating…' : 'Save & Activate Tool'}
+              </button>
+              <span style={{ fontSize: '0.73rem', color: muted }}>
+                Tool will be saved and activated automatically.
+              </span>
+            </div>
+          </div>
+        )}
+
+        <Toast toast={toast} success={success} errCol={errCol} />
+      </div>
+    )
+  }
+
+  return null
 }

@@ -3,3 +3,9 @@ __pycache__/
 .env
 *.db
 *.log
+
+# Runtime user data — never commit uploaded files
+data/uploads/
+
+# Local dev artifacts
+test_email_renderer.txt

@@ -600,6 +600,59 @@ function QualityTab({ ds, quality, C }) {
   )
 }
 
+// ─── Tab: Preview ─────────────────────────────────────────────────────────────
+function PreviewTab({ ds, C }) {
+  const rows = ds.sample_rows || []
+  const cols = ds.columns || []
+
+  if (rows.length === 0) {
+    return (
+      <div style={{ textAlign: 'center', color: C.textMuted, fontSize: '0.82rem', padding: '32px 0' }}>
+        No preview rows available.
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <SecLabel text={`Sample Rows (${rows.length})`} C={C} />
+      <div style={{ overflowX: 'auto', borderRadius: '8px', border: `1px solid ${C.border}` }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.77rem', fontFamily: MONO }}>
+          <thead>
+            <tr style={{ background: C.bg }}>
+              {cols.map(col => (
+                <th key={col} style={{ padding: '9px 14px', textAlign: 'left', color: C.textSec, fontWeight: '600', borderBottom: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} style={{ background: i % 2 === 1 ? `${C.border}18` : 'transparent' }}>
+                {cols.map(col => {
+                  const val = row[col]
+                  const isEmpty = val === '' || val == null
+                  return (
+                    <td key={col} style={{
+                      padding: '8px 14px',
+                      color: isEmpty ? C.textMuted : C.text,
+                      borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : 'none',
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {isEmpty ? '—' : String(val)}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 export default function DatasetIntelligence({ ds, C, S, onGenerateReport, hasReport, report }) {
   const [tab, setTab] = useState('overview')
@@ -610,6 +663,7 @@ export default function DatasetIntelligence({ ds, C, S, onGenerateReport, hasRep
     { id: 'columns',      label: 'Columns'       },
     { id: 'correlations', label: 'Correlations'  },
     { id: 'quality',      label: `Quality · ${quality.grade}` },
+    { id: 'preview',      label: 'Preview'       },
   ]
 
   const TAB_ICONS = {
@@ -617,6 +671,7 @@ export default function DatasetIntelligence({ ds, C, S, onGenerateReport, hasRep
     columns:      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
     correlations: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="m13.5 12.5-7 7"/><path d="m10.5 11.5 7-7"/></svg>,
     quality:      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+    preview:      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="9" x2="9" y2="21"/></svg>,
   }
 
   return (
@@ -670,6 +725,7 @@ export default function DatasetIntelligence({ ds, C, S, onGenerateReport, hasRep
         {tab === 'columns'      && <ColumnsTab       ds={ds} C={C} />}
         {tab === 'correlations' && <CorrelationsTab  ds={ds} C={C} />}
         {tab === 'quality'      && <QualityTab        ds={ds} quality={quality} C={C} />}
+        {tab === 'preview'      && <PreviewTab        ds={ds} C={C} />}
       </div>
     </div>
   )

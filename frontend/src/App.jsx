@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, lazy, Suspense } from 'react'
+﻿import { useState, useEffect, useRef, lazy, Suspense, Fragment } from 'react'
 import { interpretTask, registerUser, loginUser, verifyEmail, registerAdmin, changePassword, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
@@ -301,7 +301,7 @@ const NAV_ITEMS = [
   { id: 'workspaces', label: 'Workspaces',   icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg> },
   { id: 'reports',   label: 'Reports',      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> },
   { id: 'usage',     label: 'Usage',        icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> },
-  { id: 'engine',    label: 'Engine Lab',   icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> },
+  { id: 'engine',    label: 'AI Tools',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg> },
   { id: 'settings',  label: 'Settings',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg> },
 ]
 
@@ -404,8 +404,10 @@ function LoginView({ onSignIn, sessionExpired }) {
   const [mode,         setMode]         = useState('login')
   const [regName,      setRegName]      = useState('')
   const [regEmail,     setRegEmail]     = useState('')
-  const [regPassword,  setRegPassword]  = useState('')
-  const [regConfirm,   setRegConfirm]   = useState('')
+  const [regPassword,      setRegPassword]      = useState('')
+  const [regConfirm,       setRegConfirm]       = useState('')
+  const [showRegPassword,  setShowRegPassword]  = useState(false)
+  const [showRegConfirm,   setShowRegConfirm]   = useState(false)
   const [regError,     setRegError]     = useState('')
   const [regSuccess,   setRegSuccess]   = useState(false)
   const [regLoading,   setRegLoading]   = useState(false)
@@ -839,7 +841,7 @@ function LoginView({ onSignIn, sessionExpired }) {
               fontSize: '14px',
               color: '#6ee7b7',
             }}>
-              Account created. You can now sign in.
+              Account created. Check your email to verify your account before signing in.
             </div>
           )}
 
@@ -1149,7 +1151,7 @@ function LoginView({ onSignIn, sessionExpired }) {
               fontSize: '14px',
               color: '#6ee7b7',
             }}>
-              Account created. You can now sign in.
+              Account created. Check your email to verify your account before signing in.
             </div>
           )}
 
@@ -1225,7 +1227,7 @@ function LoginView({ onSignIn, sessionExpired }) {
               </svg>
             </span>
             <input
-              type="password"
+              type={showRegPassword ? 'text' : 'password'}
               placeholder="Minimum 6 characters"
               value={regPassword}
               onChange={e => setRegPassword(e.target.value)}
@@ -1239,11 +1241,23 @@ function LoginView({ onSignIn, sessionExpired }) {
                 color: '#ffffff',
                 fontSize: '14px',
                 paddingLeft: '54px',
-                paddingRight: '20px',
+                paddingRight: '48px',
                 outline: 'none',
                 fontFamily: FONT,
               }}
             />
+            <button
+              type="button"
+              onClick={() => setShowRegPassword(v => !v)}
+              style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#5a6080' }}
+              aria-label={showRegPassword ? 'Hide password' : 'Show password'}
+            >
+              {showRegPassword ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              )}
+            </button>
           </div>
 
           {/* Confirm password */}
@@ -1256,7 +1270,7 @@ function LoginView({ onSignIn, sessionExpired }) {
               </svg>
             </span>
             <input
-              type="password"
+              type={showRegConfirm ? 'text' : 'password'}
               placeholder="Re-enter your password"
               value={regConfirm}
               onChange={e => setRegConfirm(e.target.value)}
@@ -1271,11 +1285,23 @@ function LoginView({ onSignIn, sessionExpired }) {
                 color: '#ffffff',
                 fontSize: '14px',
                 paddingLeft: '54px',
-                paddingRight: '20px',
+                paddingRight: '48px',
                 outline: 'none',
                 fontFamily: FONT,
               }}
             />
+            <button
+              type="button"
+              onClick={() => setShowRegConfirm(v => !v)}
+              style={{ position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: '#5a6080' }}
+              aria-label={showRegConfirm ? 'Hide password' : 'Show password'}
+            >
+              {showRegConfirm ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              )}
+            </button>
           </div>
 
           {/* Create Account button */}
@@ -2228,6 +2254,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [datasetList,         setDatasetList]         = useState([])
   const [datasetListLoading,  setDatasetListLoading]  = useState(false)
   const [selectedDatasetId,   setSelectedDatasetId]   = useState(null)
+  const [expandedDsId,        setExpandedDsId]        = useState(null)
   const [datasetExplicit,     setDatasetExplicit]     = useState(false)
   const [scheduledList,       setScheduledList]       = useState([])
   const [scheduledLoading,    setScheduledLoading]    = useState(false)
@@ -2831,7 +2858,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
       const data = await uploadDataset(file, token)
       setDatasetSummary(data.data)
       setSelectedDatasetId(data.data.dataset_id)
-      setDatasetExplicit(false)
+      setDatasetExplicit(true)
       refreshDatasets()
     } catch (err) {
       if (is401(err)) { onSessionExpired(); return }
@@ -3218,19 +3245,22 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                     }}
                     contextStats={{
                       workflowCount: workflowList.length,
-                      nextScheduledAt: scheduledList
-                        .filter(s => s.enabled && s.next_run_at)
-                        .sort((a, b) => new Date(a.next_run_at) - new Date(b.next_run_at))[0]?.next_run_at ?? null,
-                      recentExecution: history[0] ?? null,
+                      datasetCount: datasetList.length,
+                      reportsToday: reportList.length,
+                      successRate: (() => {
+                        const total = history.length
+                        if (total === 0) return null
+                        const ok = history.filter(h => h.status === 'success' || h.status === 'completed').length
+                        return ((ok / total) * 100).toFixed(1)
+                      })(),
                       alertCount: notifications.filter(n => !n.read).length,
-                      suggestedAction: recList[0]?.intent ?? null,
                     }}
                   />
                 </Suspense>
               </ErrorBoundary>
             )}
 
-            {/* ── Engine Lab ───────────────────────────────────────── */}
+            {/* ── AI Tools ─────────────────────────────────────────── */}
             {activeNav === 'engine' && (
               <ErrorBoundary C={C}>
                 <Suspense fallback={<LazyFallback />}>
@@ -3870,7 +3900,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                             const tStyle   = dsTypeStyle(type)
                             const menuOpen = dsOpenMenu === ds.id
                             return (
-                              <div key={ds.id}
+                              <Fragment key={ds.id}>
+                              <div
                                 onClick={() => { if (!renaming) { setSelectedDatasetId(ds.id); setReport(null) } }}
                                 style={{
                                   display: 'grid',
@@ -3932,8 +3963,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                     </>
                                   ) : (
                                     <>
-                                      <button onClick={() => { setSelectedDatasetId(ds.id); setReport(null) }} title="Preview / select"
-                                        style={{ background: active ? C.accentSoft : 'transparent', border: 'none', padding: '5px 6px', borderRadius: '6px', cursor: 'pointer', color: active ? C.accent : C.textSec, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                      <button onClick={e => { e.stopPropagation(); setSelectedDatasetId(ds.id); setExpandedDsId(prev => prev === ds.id ? null : ds.id); setReport(null) }} title="Preview / select"
+                                        style={{ background: expandedDsId === ds.id ? C.accentSoft : 'transparent', border: 'none', padding: '5px 6px', borderRadius: '6px', cursor: 'pointer', color: expandedDsId === ds.id ? C.accent : C.textSec, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                                       </button>
                                       <button onClick={() => { setSelectedDatasetId(ds.id); setReport(null) }} title="Open analytics"
@@ -3979,25 +4010,26 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
                                   )}
                                 </div>
                               </div>
+                              {expandedDsId === ds.id && datasetSummary?.dataset_id === ds.id && (
+                                <div style={{ padding: '16px 24px 20px' }}>
+                                  <Suspense fallback={<LazyFallback />}>
+                                    <DatasetIntelligence
+                                      ds={datasetSummary}
+                                      C={C}
+                                      S={S}
+                                      onGenerateReport={() => setReport(buildReport(datasetSummary))}
+                                      hasReport={Boolean(report)}
+                                      report={report}
+                                    />
+                                  </Suspense>
+                                </div>
+                              )}
+                              </Fragment>
                             )
                           })}
                         </>
                       )}
                     </div>
-
-                    {/* Dataset Intelligence Center */}
-                    {datasetSummary && (
-                      <Suspense fallback={<LazyFallback />}>
-                        <DatasetIntelligence
-                          ds={datasetSummary}
-                          C={C}
-                          S={S}
-                          onGenerateReport={() => setReport(buildReport(datasetSummary))}
-                          hasReport={Boolean(report)}
-                          report={report}
-                        />
-                      </Suspense>
-                    )}
 
                     {/* LEGACY BLOCK — kept for reference, unreachable when datasetSummary is set */}
                     {false && datasetSummary && <>
@@ -5140,6 +5172,11 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
 }
 
 // ─── Email verification page ───────────────────────────────────────────────────
+// Module-level guard: persists across React StrictMode's unmount/remount cycle.
+// Prevents the single-use token from being consumed twice when StrictMode fires
+// useEffect a second time in development.
+const _tokensAttempted = new Set()
+
 function VerifyEmail() {
   const [status, setStatus] = useState('loading') // 'loading' | 'success' | 'error'
   const [errMsg,  setErrMsg]  = useState('')
@@ -5151,6 +5188,8 @@ function VerifyEmail() {
       setErrMsg('No verification token found in the link.')
       return
     }
+    if (_tokensAttempted.has(token)) return
+    _tokensAttempted.add(token)
     verifyEmail(token)
       .then(() => setStatus('success'))
       .catch((err) => {

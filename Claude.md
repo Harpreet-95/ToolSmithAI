@@ -9,4 +9,6 @@
 4. Do not refactor or rewrite large sections unless explicitly instructed.
 5. Show the exact diff of any changes made.
 6. Never proceed without user confirmation when making structural changes.
-7. Keep all changes aligned with the current MVP scope (task interpreter only).
+7.Build this as production-grade ToolSmithAI infrastructure, not an MVP shortcut
+
+

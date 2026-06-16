@@ -4,6 +4,11 @@ input::placeholder {
   opacity: 1;
 }
 
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

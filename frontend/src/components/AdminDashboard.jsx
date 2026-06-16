@@ -121,7 +121,30 @@ function SectionHeading({ C, title, subtitle }) {
 }
 
 // ─── Admin overview panel ─────────────────────────────────────────────────────
-function AdminOverviewPanel({ C, history, scheduledList, workflowList, toolList, usage, notifications }) {
+function AdminOverviewPanel({ C, user, history, scheduledList, workflowList, toolList, usage, notifications }) {
+  const hour = new Date().getHours()
+  const greeting =
+    hour >= 5  && hour < 12 ? 'Good Morning' :
+    hour >= 12 && hour < 17 ? 'Good Afternoon' :
+    hour >= 17 && hour < 22 ? 'Good Evening' :
+    'Welcome Back'
+  const greetName = user?.name || 'Administrator'
+
+  const alreadyGreeted = sessionStorage.getItem('admin_greeted') === '1'
+
+  const [greetVisible, setGreetVisible] = useState(!alreadyGreeted)
+  const [greetFading,  setGreetFading]  = useState(false)
+
+  useEffect(() => {
+    if (alreadyGreeted) return
+    const t1 = setTimeout(() => {
+      sessionStorage.setItem('admin_greeted', '1')
+      setGreetFading(true)
+    }, 5000)
+    const t2 = setTimeout(() => setGreetVisible(false), 5600)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const stats = [
     { label: 'Total Executions', value: history.length, color: C.accent, bg: C.accentSoft },
     { label: 'Active Schedules', value: scheduledList.filter(s => s.enabled).length, color: C.success, bg: C.successSoft },
@@ -135,7 +158,20 @@ function AdminOverviewPanel({ C, history, scheduledList, workflowList, toolList,
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <SectionHeading C={C} title="Admin Overview" subtitle="Platform health, tool governance, and system activity" />
+      <div>
+        {greetVisible && (
+          <div style={{ opacity: greetFading ? 0 : 1, transition: 'opacity 0.6s ease', marginBottom: '10px' }}>
+            <div style={{ fontSize: '1.45rem', fontWeight: '800', color: C.text, letterSpacing: '-0.4px' }}>
+              {greeting},{' '}
+              <span style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+                {greetName}
+              </span>
+            </div>
+          </div>
+        )}
+        <h2 style={{ margin: '0 0 4px', fontSize: '1.3rem', fontWeight: '700', color: C.text, letterSpacing: '-0.4px' }}>Admin Overview</h2>
+        <p style={{ margin: 0, color: C.textMuted, fontSize: '0.74rem' }}>Platform health, tool governance, and system activity</p>
+      </div>
 
       {unread > 0 && (
         <div style={{ background: C.accentSoft, border: `1px solid ${C.accent}30`, borderRadius: '8px', padding: '10px 14px', fontSize: '0.8rem', color: C.accent, display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1142,13 +1178,6 @@ export default function AdminDashboard({ token, user, onLogout, onSessionExpired
           <span style={{ fontWeight: '700', fontSize: '0.92rem', letterSpacing: '-0.2px' }}>ToolSmithAI</span>
         </div>
 
-        {/* Admin badge */}
-        <div style={{ padding: '10px 12px 2px', flexShrink: 0 }}>
-          <div style={{ background: '#6366f115', border: '1px solid #6366f135', borderRadius: '6px', padding: '4px 0', fontSize: '0.63rem', fontWeight: '700', color: '#6366f1', letterSpacing: '0.09em', textTransform: 'uppercase', textAlign: 'center' }}>
-            Admin Console
-          </div>
-        </div>
-
         {/* Nav */}
         <nav style={{ flex: 1, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: '2px', overflowY: 'auto' }}>
           {ADMIN_NAV.map(({ id, label, icon }) => {
@@ -1172,7 +1201,7 @@ export default function AdminDashboard({ token, user, onLogout, onSessionExpired
           })}
         </nav>
 
-        {/* User card + logout */}
+        {/* User card */}
         <div style={{ padding: '10px 10px', borderTop: `1px solid ${C.border}`, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '7px 8px', borderRadius: '8px' }}>
             <div style={{ width: '30px', height: '30px', borderRadius: '50%', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '700', color: '#fff', flexShrink: 0 }}>
@@ -1183,22 +1212,16 @@ export default function AdminDashboard({ token, user, onLogout, onSessionExpired
               <div style={{ fontSize: '0.64rem', color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email}</div>
             </div>
           </div>
-          <button onClick={onLogout} style={{ width: '100%', marginTop: '5px', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '7px', padding: '7px 12px', fontSize: '0.78rem', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '500' }}
-            onMouseEnter={e => e.currentTarget.style.background = C.borderAlt}
-            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-            Sign out
-          </button>
         </div>
+
       </aside>
 
       {/* ─── Main area ───────────────────────────────────────────────────── */}
       <div style={{ marginLeft: `${SIDEBAR_W}px`, flex: 1, display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
 
         {/* Header */}
-        <header style={{ position: 'sticky', top: 0, height: `${HEADER_H}px`, background: C.bg, borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px', zIndex: 50, flexShrink: 0 }}>
-          <div style={{ fontSize: '0.95rem', fontWeight: '700', color: C.text, letterSpacing: '-0.2px' }}>
-            {ADMIN_NAV.find(n => n.id === activeNav)?.label ?? ''}
-          </div>
+        <header style={{ position: 'sticky', top: 0, height: `${HEADER_H}px`, background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 28px', zIndex: 50, flexShrink: 0 }}>
+          <div />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
             {/* Notifications bell */}
@@ -1240,14 +1263,26 @@ export default function AdminDashboard({ token, user, onLogout, onSessionExpired
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
               )}
             </div>
+
+            {/* Sign out */}
+            <button
+              onClick={onLogout}
+              className="adm-icon-btn"
+              style={{ marginLeft: '6px', background: 'transparent', border: `1px solid ${C.border}`, borderRadius: '8px', padding: '6px 14px', fontSize: '0.78rem', fontWeight: '500', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}
+              onMouseEnter={e => { e.currentTarget.style.background = C.borderAlt; e.currentTarget.style.color = C.text }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.textSec }}
+            >
+              Sign out
+            </button>
           </div>
         </header>
 
         {/* Content */}
-        <main style={{ flex: 1, padding: '28px', overflowY: 'auto' }}>
+        <main style={{ flex: 1, padding: '14px 28px 28px', overflowY: 'auto' }}>
           {activeNav === 'overview' && (
             <AdminOverviewPanel
               C={C}
+              user={user}
               history={history}
               scheduledList={scheduledList}
               workflowList={workflowList}

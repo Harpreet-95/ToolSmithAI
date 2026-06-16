@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { composeIntent, interpretTask, askReport, planEngineTool, saveEngineTool, listEngineTools, executeEngineTool, getEngineRun, submitEngineTool, approveEngineTool } from '../api/client'
+import { composeIntent, interpretTask, askReport, askDataset, planEngineTool, saveEngineTool, listEngineTools, executeEngineTool, getEngineRun, submitEngineTool, approveEngineTool } from '../api/client'
 import ProposalPreview from './ProposalPreview'
 import ChartSection from './ChartSection'
 
@@ -2861,7 +2861,26 @@ function IntelligenceCanvas({ intel, C, onOpenReport, onExportReport, setActiveN
 // WorkspaceLoading replaced by AIExecutionFlow (defined above with EXEC_PHASES)
 
 // ── Empty AI Assistant panel — matches screenshot exactly ─────────────────────
-function EmptyAssistantPanel({ C, proposal }) {
+function EmptyAssistantPanel({ C, proposal, onSuggestionSelect, activeDs, wsInput, token }) {
+  const [question,     setQuestion]     = useState('')
+  const [answer,       setAnswer]       = useState(null)
+  const [loading,      setLoading]      = useState(false)
+  const [error,        setError]        = useState(null)
+
+  async function handleAsk(q) {
+    const trimmed = (q ?? question).trim()
+    if (!trimmed || !activeDs) return
+    if (q != null) setQuestion(q)
+    setLoading(true); setError(null); setAnswer(null)
+    try {
+      const data = await askDataset(activeDs.id, trimmed, wsInput || null, token)
+      setAnswer(data?.data ?? null)
+      setQuestion('')
+    } catch (err) {
+      setError(err.message?.replace(/^\d+:\s*/, '') || 'Could not get an answer.')
+    } finally { setLoading(false) }
+  }
+
   return (
     <div style={{
       background: C.surface,
@@ -2977,9 +2996,11 @@ function EmptyAssistantPanel({ C, proposal }) {
         </div>
 
         <p style={{ margin: 0, fontSize: '0.72rem', color: C.textSec, lineHeight: 1.65, padding: '0 8px' }}>
-          {proposal
-            ? 'Review the plan on the left, then approve and run to see full results.'
-            : 'AI reasoning will appear after you compose or run an analysis.'}
+          {activeDs
+            ? `Analyzing ${activeDs.filename} — ask a question below.`
+            : proposal
+              ? 'Review the plan on the left, then approve and run to see full results.'
+              : 'Select a dataset to enable AI Assistant.'}
         </p>
       </div>
 
@@ -3030,10 +3051,12 @@ function EmptyAssistantPanel({ C, proposal }) {
             <div
               key={q}
               className="ws-suggest-row"
+              onClick={() => handleAsk(q)}
               style={{
                 display: 'flex', alignItems: 'center', gap: '10px',
                 padding: '11px 18px',
                 borderTop: `1px solid rgba(30,43,82,0.18)`,
+                cursor: activeDs ? 'pointer' : 'default',
               }}
             >
               <span style={{ flex: 1, fontSize: '0.7rem', color: C.textSec, lineHeight: 1.4 }}>{q}</span>
@@ -3045,24 +3068,72 @@ function EmptyAssistantPanel({ C, proposal }) {
         </div>
       </div>
 
+      {/* ── Answer ── */}
+      {(answer || loading || error) && (
+        <div style={{ padding: '0 18px 8px' }}>
+          {loading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 0' }}>
+              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#6366f1', animation: 'ws-dot-blink 1.2s ease infinite', flexShrink: 0 }} />
+              <span style={{ fontSize: '0.70rem', color: C.textMuted }}>Thinking…</span>
+            </div>
+          )}
+          {error && !loading && (
+            <div style={{ padding: '8px 12px', background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.20)', borderRadius: '9px' }}>
+              <span style={{ fontSize: '0.70rem', color: '#f87171' }}>{error}</span>
+            </div>
+          )}
+          {answer && !loading && (() => {
+            const confColor = { high: '#10b981', medium: '#f59e0b', low: '#9ca3af' }[answer.confidence] ?? '#9ca3af'
+            return (
+              <div style={{ background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '10px', padding: '10px 13px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill={confColor}><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
+                  <span style={{ fontSize: '0.58rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.1em', color: confColor }}>{answer.confidence ?? 'low'}</span>
+                </div>
+                <p style={{ margin: '0 0 8px', fontSize: '0.73rem', color: C.text, lineHeight: 1.6 }}>{answer.answer}</p>
+                {answer.suggested_actions?.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {answer.suggested_actions.map(a => (
+                      <button key={a} onClick={() => handleAsk(a)} style={{
+                        background: 'rgba(99,102,241,0.10)', border: '1px solid rgba(99,102,241,0.22)',
+                        borderRadius: '7px', padding: '5px 10px', fontSize: '0.68rem', color: '#a5b4fc',
+                        cursor: 'pointer', fontFamily: FONT, textAlign: 'left', lineHeight: 1.4,
+                      }}>{a}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
       {/* ── Ask input ── */}
       <div style={{ padding: '12px 18px 8px', borderTop: `1px solid rgba(30,43,82,0.18)` }}>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', opacity: 0.45 }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', opacity: activeDs ? 1 : 0.45 }}>
           <input
-            disabled
-            placeholder="Ask anything about your data…"
+            disabled={!activeDs || loading}
+            value={question}
+            onChange={e => setQuestion(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAsk() } }}
+            placeholder={activeDs ? `Ask about ${activeDs.filename}…` : 'Ask anything about your data…'}
             style={{
               flex: 1, background: C.bg, border: `1px solid rgba(30,43,82,0.18)`,
               borderRadius: '24px', padding: '9px 16px', fontSize: '0.71rem',
-              color: C.textMuted, outline: 'none', fontFamily: FONT, cursor: 'not-allowed',
+              color: activeDs ? C.text : C.textMuted, outline: 'none', fontFamily: FONT,
+              cursor: activeDs ? 'text' : 'not-allowed',
             }}
           />
-          <button disabled style={{
-            width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
-            background: 'linear-gradient(135deg,#6366f1,#4f46e5)',
-            border: 'none', cursor: 'not-allowed',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
+          <button
+            disabled={!activeDs || loading || !question.trim()}
+            onClick={() => handleAsk()}
+            style={{
+              width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
+              background: 'linear-gradient(135deg,#6366f1,#4f46e5)',
+              border: 'none', cursor: activeDs && !loading && question.trim() ? 'pointer' : 'not-allowed',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              opacity: activeDs && !loading && question.trim() ? 1 : 0.5,
+            }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
             </svg>
@@ -3107,7 +3178,8 @@ function inputFriendlyLabel(name) {
   if (name === 'report_id')   return 'Report'
   if (name === 'user_id')     return 'User'
   if (name === 'email')       return 'Email address'
-  if (name === 'recipient')   return 'Recipient'
+  if (name === 'recipient')    return 'Recipient'
+  if (name === 'report_format') return 'Output Type'
   return name.replace(/_id$/, '').split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 }
 
@@ -3180,7 +3252,6 @@ function EngineOrchestrationPlan({
   const nodes      = plan?.graph?.nodes ?? []
   const allInputs  = plan?.inputs ?? []
   const reqInputs  = allInputs.filter(i => i.required)
-  const optInputs  = allInputs.filter(i => !i.required)
   const canSave    = !!plan && !savedToolId
   const canSubmit  = !!savedToolId && toolStatus === 'draft'
   const canApprove = !!savedToolId && toolStatus === 'pending_approval'
@@ -3207,7 +3278,31 @@ function EngineOrchestrationPlan({
           Back to Composer
         </button>
         <span style={{ fontSize: '0.72rem', color: C.textMuted, opacity: 0.4 }}>›</span>
-        <span style={{ fontSize: '0.78rem', fontWeight: '500', color: C.textSec }}>Orchestration Plan</span>
+        <span style={{ fontSize: '0.78rem', fontWeight: '500', color: C.textSec }}>AI Tool Preview</span>
+      </div>
+
+      {/* ── Progress steps ── */}
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        {[
+          { label: 'Dataset', done: !!planDatasetId },
+          { label: 'Plan Ready', done: true },
+          { label: 'Actions Reviewed', done: true },
+          { label: 'Tool Saved', done: !!savedToolId },
+        ].map((step, i, arr) => (
+          <div key={step.label} style={{ display: 'flex', alignItems: 'center', flex: i < arr.length - 1 ? 1 : 'none' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
+              <div style={{ width: '18px', height: '18px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: step.done ? '#10b981' : 'rgba(148,163,184,0.15)', border: step.done ? 'none' : '1.5px solid rgba(148,163,184,0.35)', flexShrink: 0 }}>
+                {step.done
+                  ? <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  : <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(148,163,184,0.5)' }} />}
+              </div>
+              <span style={{ fontSize: '0.67rem', fontWeight: step.done ? '600' : '500', color: step.done ? '#10b981' : C.textMuted, whiteSpace: 'nowrap' }}>{step.label}</span>
+            </div>
+            {i < arr.length - 1 && (
+              <div style={{ flex: 1, height: '1.5px', background: step.done ? 'rgba(16,185,129,0.3)' : 'rgba(148,163,184,0.18)', margin: '0 8px' }} />
+            )}
+          </div>
+        ))}
       </div>
 
       {/* ── Plan header card ── */}
@@ -3222,7 +3317,7 @@ function EngineOrchestrationPlan({
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '20px', padding: '4px 11px 4px 8px' }}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="#a5b4fc"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z"/></svg>
-                  <span style={{ fontSize: '0.55rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Orchestration Plan</span>
+                  <span style={{ fontSize: '0.55rem', fontWeight: '800', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.16em' }}>AI-Generated Plan</span>
                 </div>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: `${statusMeta.color}18`, border: `1px solid ${statusMeta.color}40`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.57rem', fontWeight: '700', color: statusMeta.color, textTransform: 'uppercase', letterSpacing: '0.10em' }}>
                   <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: statusMeta.color, flexShrink: 0 }} />
@@ -3249,7 +3344,7 @@ function EngineOrchestrationPlan({
                     {engineBusy === 'save'
                       ? <div style={{ width: '10px', height: '10px', borderRadius: '50%', border: '2px solid rgba(255,255,255,0.35)', borderTopColor: '#fff', animation: 'ws-spin 0.75s linear infinite' }} />
                       : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>}
-                    Save Tool
+                    Save as Reusable Tool
                   </button>
                 )}
                 {canSubmit && (
@@ -3276,19 +3371,29 @@ function EngineOrchestrationPlan({
 
           {/* ── Required inputs as business-friendly prompts ── */}
           {reqInputs.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: optInputs.length > 0 ? '10px' : 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {reqInputs.map(inp => {
                 const label = inputFriendlyLabel(inp.name)
                 const isDataset = inp.name === 'dataset_id'
 
                 if (isDataset) {
                   const activeDs = datasetList?.find(d => d.id === planDatasetId) || null
+                  if (activeDs) {
+                    return (
+                      <div key={inp.name} style={{ padding: '12px 16px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.22)', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                        <span style={{ fontSize: '0.75rem', fontWeight: '600', color: '#10b981' }}>Selected Dataset</span>
+                        <span style={{ fontSize: '0.8rem', color: C.text, fontWeight: '600' }}>{activeDs.filename}</span>
+                        <button onClick={() => setPlanDatasetId(null)} style={{ marginLeft: 'auto', fontSize: '0.68rem', color: C.textMuted, background: 'none', border: `1px solid ${C.border}`, borderRadius: '6px', padding: '2px 8px', cursor: 'pointer', fontFamily: FONT }}>Change</button>
+                      </div>
+                    )
+                  }
                   return (
                     <div key={inp.name} style={{ padding: '13px 16px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.22)', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexShrink: 0 }}>
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-                        <span style={{ fontSize: '0.8rem', fontWeight: '700', color: '#fbbf24' }}>Dataset required</span>
-                        <span style={{ fontSize: '0.76rem', color: C.textSec }}>— choose a dataset to use</span>
+                        <span style={{ fontSize: '0.8rem', fontWeight: '600', color: '#fbbf24' }}>Select your dataset</span>
+                        <span style={{ fontSize: '0.76rem', color: C.textSec }}>— choose which dataset this tool will analyze</span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: '200px', flexWrap: 'wrap' }}>
                         {!datasetList?.length ? (
@@ -3300,23 +3405,17 @@ function EngineOrchestrationPlan({
                             {datasetList.map(ds => <option key={ds.id} value={ds.id}>{ds.filename}</option>)}
                           </select>
                         )}
-                        {activeDs && (
-                          <span style={{ fontSize: '0.7rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0, fontWeight: '600' }}>
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                            {activeDs.filename}
-                          </span>
-                        )}
                       </div>
                     </div>
                   )
                 }
 
                 return (
-                  <div key={inp.name} style={{ padding: '11px 16px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                  <div key={inp.name} style={{ padding: '11px 16px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                     <span style={{ fontSize: '0.8rem', color: C.textSec }}>
-                      <span style={{ fontWeight: '700', color: '#fbbf24' }}>{label}</span> required
-                      {inp.description ? ` — ${inp.description}` : ''}
+                      <span style={{ fontWeight: '600', color: C.text }}>{label}</span>
+                      {inp.description ? ` — ${inp.description}` : ' — will be configured when this tool runs'}
                     </span>
                   </div>
                 )
@@ -3324,17 +3423,6 @@ function EngineOrchestrationPlan({
             </div>
           )}
 
-          {/* Optional inputs — shown as compact summary */}
-          {optInputs.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', flexShrink: 0 }}>Optional</span>
-              {optInputs.map(inp => (
-                <span key={inp.name} style={{ fontSize: '0.74rem', color: C.textMuted, background: C.bg, border: `1px solid ${C.border}`, borderRadius: '6px', padding: '2px 9px' }}>
-                  {inputFriendlyLabel(inp.name)}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
@@ -3386,138 +3474,198 @@ function EngineOrchestrationPlan({
         </div>
       )}
 
-      {/* ── Developer details — visually secondary, collapsed by default ── */}
-      <div style={{ border: `1px solid ${C.border}`, borderRadius: '10px', overflow: 'hidden', opacity: 0.72 }}>
-        <button onClick={() => setShowRawJson(p => !p)}
-          style={{ width: '100%', background: 'none', border: 'none', padding: '9px 16px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontFamily: FONT, outline: 'none' }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            {showRawJson ? <polyline points="18 15 12 9 6 15" /> : <polyline points="6 9 12 15 18 9" />}
-          </svg>
-          <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted, letterSpacing: '0.04em' }}>Technical Details</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: C.textMuted, opacity: 0.55 }}>Tool configuration · Schema · Identifiers</span>
-        </button>
-        {showRawJson && (
-          <div style={{ borderTop: `1px solid ${C.border}`, padding: '14px 16px', background: C.bg, display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {/* Internal identifiers */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted }}>System Name</span>
-                <code style={{ fontFamily: MONO, fontSize: '0.68rem', color: C.textSec, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '5px', padding: '2px 7px' }}>{internalName || '—'}</code>
-              </div>
-              {savedToolId && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <span style={{ fontSize: '0.62rem', fontWeight: '600', color: C.textMuted }}>Tool ID</span>
-                  <code style={{ fontFamily: MONO, fontSize: '0.68rem', color: C.textSec, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '5px', padding: '2px 7px' }}>{savedToolId}</code>
-                </div>
-              )}
+      {/* ── Save success ── */}
+      {savedToolId && (
+        <div style={{ background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.28)', borderRadius: '16px', padding: '20px 24px', animation: 'ws-fadein 0.3s ease' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px', flexWrap: 'wrap' }}>
+            <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
             </div>
-            {/* Raw JSON schema */}
-            <pre style={{ margin: 0, fontFamily: MONO, fontSize: '0.69rem', color: C.textSec, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '12px', overflow: 'auto', maxHeight: '300px', whiteSpace: 'pre' }}>
-              {JSON.stringify(plan, null, 2)}
-            </pre>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '0.9rem', fontWeight: '700', color: '#10b981', marginBottom: '4px' }}>Tool Saved Successfully</div>
+              <div style={{ fontSize: '0.82rem', color: C.textSec, marginBottom: '12px' }}>
+                <strong style={{ color: C.text }}>{displayTitle}</strong> is now available in:
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+                {['AI Workspace — Saved Workflows panel', 'Tool Library'].map(loc => (
+                  <div key={loc} style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '0.78rem', color: C.textSec }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    {loc}
+                  </div>
+                ))}
+              </div>
+              <button onClick={onClear}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', background: '#10b981', border: 'none', borderRadius: '10px', padding: '8px 18px', fontSize: '0.78rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT, boxShadow: '0 4px 14px rgba(16,185,129,0.3)' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Run Now
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
 
 // ─── Contextual Intelligence Strip ───────────────────────────────────────────
 
-function ContextualIntelligenceStrip({ workflowCount, nextScheduledAt, recentExecution, alertCount, suggestedAction, C, onNavigate }) {
-  function fmtNext(ts) {
-    if (!ts) return 'None scheduled'
-    const diff = new Date(ts) - Date.now()
-    if (diff < 0) return 'Overdue'
-    const h = Math.floor(diff / 3600000)
-    if (h < 1) return '< 1h'
-    if (h < 24) return `${h}h`
-    return `${Math.floor(h / 24)}d`
-  }
-
-  const recentOk = recentExecution
-    ? (recentExecution.status === 'success' || recentExecution.status === 'completed')
-    : null
+function ContextualIntelligenceStrip({ workflowCount, datasetCount, reportsToday, successRate, alertCount, C, onNavigate }) {
+  const rate = successRate !== null && successRate !== undefined ? parseFloat(successRate) : null
+  const rateStr   = rate !== null ? `${rate.toFixed(1)}%` : '—'
+  const rateColor = rate === null ? C.textMuted : rate >= 95 ? '#10b981' : rate >= 80 ? '#f59e0b' : '#f87171'
+  const hasAlerts = (alertCount ?? 0) > 0
 
   const cards = [
     {
       label: 'Active Workflows',
       value: workflowCount ?? 0,
-      sub: 'saved',
+      sub: 'currently active',
       color: '#a5b4fc',
       nav: 'workflows',
-      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>,
+      trend: null,
+      critical: false,
+      emphasized: false,
+      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>,
     },
     {
-      label: 'Next Scheduled',
-      value: fmtNext(nextScheduledAt),
-      sub: 'automation run',
+      label: 'Datasets Connected',
+      value: datasetCount ?? 0,
+      sub: 'data assets available',
       color: '#38bdf8',
-      nav: 'scheduled',
-      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+      nav: 'datasets',
+      trend: null,
+      critical: false,
+      emphasized: false,
+      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4.03 3 9 3s9-1.34 9-3"/></svg>,
     },
     {
-      label: 'Recent Execution',
-      value: recentOk === null ? 'None yet' : recentOk ? 'Success' : 'Failed',
-      sub: recentExecution?.started_at
-        ? new Date(recentExecution.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-        : '—',
-      color: recentOk === null ? C.textMuted : recentOk ? '#10b981' : '#f87171',
+      label: 'Reports Generated',
+      value: reportsToday ?? 0,
+      sub: 'total reports',
+      color: '#f472b6',
+      nav: 'reports',
+      trend: { dir: 'up', label: 'growing' },
+      critical: false,
+      emphasized: false,
+      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+    },
+    {
+      label: 'Success Rate',
+      value: rateStr,
+      sub: 'workflow executions',
+      color: rateColor,
       nav: 'history',
-      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>,
+      trend: rate !== null && rate >= 95 ? { dir: 'up', label: 'excellent' } : null,
+      critical: false,
+      emphasized: true,
+      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>,
     },
     {
       label: 'Alerts',
-      value: alertCount ?? 0,
-      sub: (alertCount ?? 0) > 0 ? 'unread' : 'all clear',
-      color: (alertCount ?? 0) > 0 ? '#f59e0b' : '#10b981',
+      value: hasAlerts ? alertCount : 'None',
+      sub: hasAlerts ? 'action required' : 'all clear',
+      color: hasAlerts ? '#f87171' : '#10b981',
       nav: 'operations',
-      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+      trend: null,
+      critical: hasAlerts,
+      emphasized: false,
+      icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
     },
-    (() => {
-      const hasAlerts = (alertCount ?? 0) > 0
-      const lastFailed = recentOk === false
-      const status = (hasAlerts || lastFailed) ? 'Warning' : 'Healthy'
-      const color  = (hasAlerts || lastFailed) ? '#f59e0b' : '#10b981'
-      const sub    = hasAlerts ? `${alertCount} alert${alertCount !== 1 ? 's' : ''} active` : lastFailed ? 'Last run failed' : 'All systems normal'
-      return {
-        label: 'Operational Health',
-        value: status,
-        sub,
-        color,
-        nav: 'operations',
-        icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-      }
-    })(),
   ]
 
   return (
-    <div style={{ display: 'flex', gap: '8px' }}>
+    <div role="region" aria-label="Platform KPIs" style={{ display: 'flex', gap: '8px' }}>
       {cards.map((card, i) => (
         <div key={i}
+          role={card.nav ? 'button' : undefined}
+          tabIndex={card.nav ? 0 : undefined}
+          aria-label={`${card.label}: ${card.value}`}
           onClick={() => card.nav && onNavigate?.(card.nav)}
+          onKeyDown={e => { if (card.nav && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onNavigate?.(card.nav) } }}
           style={{
             flex: 1, minWidth: 0,
-            background: C.surface, border: `1px solid ${C.border}`,
+            background: card.emphasized
+              ? `linear-gradient(135deg, ${card.color}12 0%, ${card.color}06 100%)`
+              : C.surface,
+            border: `1px solid ${card.critical ? card.color : card.emphasized ? `${card.color}50` : C.border}`,
             borderRadius: '10px', padding: '8px 10px',
             display: 'flex', flexDirection: 'column', gap: '4px',
             cursor: card.nav ? 'pointer' : 'default',
-            transition: 'border-color 0.15s, transform 0.15s',
+            transition: 'border-color 0.15s, transform 0.15s, box-shadow 0.15s',
+            boxShadow: card.emphasized ? `0 0 0 1px ${card.color}20, 0 2px 8px ${card.color}10` : 'none',
+            position: 'relative', overflow: 'hidden',
           }}
-          onMouseEnter={e => { if (card.nav) { e.currentTarget.style.borderColor = card.color; e.currentTarget.style.transform = 'translateY(-1px)' } }}
-          onMouseLeave={e => { if (card.nav) { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.transform = 'translateY(0)' } }}
+          onMouseEnter={e => {
+            if (card.nav) {
+              e.currentTarget.style.borderColor = card.color
+              e.currentTarget.style.transform = 'translateY(-1px)'
+              e.currentTarget.style.boxShadow = `0 4px 12px ${card.color}25`
+            }
+          }}
+          onMouseLeave={e => {
+            if (card.nav) {
+              e.currentTarget.style.borderColor = card.critical ? card.color : card.emphasized ? `${card.color}50` : C.border
+              e.currentTarget.style.transform = 'translateY(0)'
+              e.currentTarget.style.boxShadow = card.emphasized ? `0 0 0 1px ${card.color}20, 0 2px 8px ${card.color}10` : 'none'
+            }
+          }}
         >
-          {/* Label left, icon right */}
+          {/* Critical pulse indicator */}
+          {card.critical && (
+            <span style={{
+              position: 'absolute', top: '7px', right: '7px',
+              width: '6px', height: '6px', borderRadius: '50%',
+              background: card.color,
+              boxShadow: `0 0 0 0 ${card.color}`,
+              animation: 'kpi-pulse 1.8s ease-in-out infinite',
+            }} aria-hidden="true" />
+          )}
+
+          {/* Label row */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '0.6rem', fontWeight: '600', color: card.color, textTransform: 'uppercase', letterSpacing: '0.07em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.label}</span>
-            <span style={{ color: card.color, flexShrink: 0, opacity: 0.8 }}>{card.icon}</span>
+            <span style={{
+              fontSize: '0.6rem', fontWeight: '600', color: card.color,
+              textTransform: 'uppercase', letterSpacing: '0.07em',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              paddingRight: card.critical ? '12px' : 0,
+            }}>{card.label}</span>
+            {!card.critical && (
+              <span style={{ color: card.color, flexShrink: 0, opacity: 0.8 }}>{card.icon}</span>
+            )}
           </div>
-          {/* Large value */}
-          <div style={{ fontSize: '1.05rem', fontWeight: '600', color: card.color, letterSpacing: '-0.3px', lineHeight: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.value}</div>
-          {/* Subtitle */}
-          <div style={{ fontSize: '0.6rem', color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.sub}</div>
+
+          {/* Value */}
+          <div style={{
+            fontSize: card.emphasized ? '1.15rem' : '1.05rem',
+            fontWeight: card.emphasized ? '700' : '600',
+            color: card.color,
+            letterSpacing: '-0.3px', lineHeight: 1,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{card.value}</div>
+
+          {/* Subtitle + trend */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontSize: '0.6rem', color: C.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.sub}</span>
+            {card.trend && (
+              <span style={{
+                fontSize: '0.55rem', fontWeight: '600',
+                color: card.trend.dir === 'up' ? '#10b981' : '#f87171',
+                flexShrink: 0,
+              }} aria-label={card.trend.label}>
+                {card.trend.dir === 'up' ? '↑' : '↓'}
+              </span>
+            )}
+          </div>
         </div>
       ))}
+
+      <style>{`
+        @keyframes kpi-pulse {
+          0%   { box-shadow: 0 0 0 0 rgba(248,113,113,0.6); }
+          70%  { box-shadow: 0 0 0 5px rgba(248,113,113,0); }
+          100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
+        }
+      `}</style>
     </div>
   )
 }
@@ -3629,10 +3777,11 @@ export default function AIWorkspace({
     setPlanDatasetId(selectedDatasetId || null)
     setEnginePlanLoading(true)
     try {
-      const data = await planEngineTool(trimmed, token)
+      const data = await planEngineTool(trimmed, token, selectedDatasetId ? { dataset_id: selectedDatasetId } : null)
       const plan = data?.data ?? data
       setEnginePlan(plan)
-      showToast(`Orchestration plan ready — "${plan?.name || 'Tool'}"`)
+      const planTitle = plan?.description || slugToTitle(plan?.name || 'Tool')
+      showToast(`Orchestration plan ready — "${planTitle}"`)
     } catch (err) {
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
       // Fallback to compose flow
@@ -3661,7 +3810,8 @@ export default function AIWorkspace({
       const d = res?.data ?? res
       setSavedToolId(d.tool_id)
       setToolStatus(d.status ?? 'draft')
-      showToast(`Tool saved — ${(d.tool_id || '').slice(0, 8)}…`)
+      const savedTitle = enginePlan?.description || slugToTitle(enginePlan?.name || 'Tool')
+      showToast(`"${savedTitle}" saved to your Tool Library.`)
     } catch (err) {
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
       showToast(err.message?.replace(/^\d+:\s*/, '') || 'Failed to save tool.', false)
@@ -3923,8 +4073,8 @@ export default function AIWorkspace({
         onChange={e => { const f = e.target.files?.[0]; if (f && onUploadDataset) onUploadDataset(f); e.target.value = '' }}
       />
 
-      {/* ── Page header — only on composer/workspace, hidden during execution and result ── */}
-      {!activeLoading && (!hasResult || backToComposer) && (
+      {/* ── Page header — only on composer/workspace, hidden during execution, result, and plan screen ── */}
+      {!activeLoading && (!hasResult || backToComposer) && !enginePlan && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '12px', marginTop: '2px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
@@ -4310,7 +4460,20 @@ export default function AIWorkspace({
         {/* ── Right column — hidden during execution (console is full-width), shown otherwise ── */}
         {!activeLoading && (!hasResult || backToComposer) && (
           <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-            <EmptyAssistantPanel proposal={wsProposal} C={C} />
+            <EmptyAssistantPanel proposal={wsProposal} C={C} onSuggestionSelect={q => setWsInput(q)} activeDs={activeDs} wsInput={wsInput} token={token} />
+          </div>
+        )}
+        {!activeLoading && hasResult && !backToComposer && (
+          <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+            <CopilotPanel
+              reportId={intel?.reportId ?? null}
+              aiMeta={intel?.aiMeta ?? null}
+              intel={intel}
+              user={user}
+              token={token}
+              onSessionExpired={onSessionExpired}
+              C={C}
+            />
           </div>
         )}
       </div>

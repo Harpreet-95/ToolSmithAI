@@ -80,8 +80,10 @@ def send_admin_invite_email(
         <table width="560" cellpadding="0" cellspacing="0" style="background:#1a1d2e;border-radius:12px;overflow:hidden;border:1px solid #2d3148;">
           <tr>
             <td style="background:linear-gradient(135deg,#6366f1,#4f46e5);padding:32px 40px;text-align:center;">
-              <img src="{FRONTEND_BASE_URL}/toolsmith-logo-transparent.png" alt="ToolSmithAI" width="52" height="52" style="display:block;margin:0 auto 10px;border:0;" />
-              <div style="font-size:1.5rem;font-weight:800;color:#ffffff;letter-spacing:0.02em;">ToolSmithAI</div>
+              <div style="margin-bottom:10px;">
+                <img src="{FRONTEND_BASE_URL}/toolsmith-logo-transparent.png" alt="ToolSmithAI" width="38" height="38" style="display:inline-block;vertical-align:middle;border:0;margin-right:8px;" />
+                <span style="display:inline-block;vertical-align:middle;font-size:1.5rem;font-weight:800;color:#ffffff;letter-spacing:0.02em;">ToolSmithAI</span>
+              </div>
               <div style="font-size:0.85rem;color:#c7d2fe;margin-top:4px;letter-spacing:0.05em;text-transform:uppercase;font-weight:600;">Admin Invitation</div>
             </td>
           </tr>

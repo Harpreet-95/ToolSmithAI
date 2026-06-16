@@ -1880,6 +1880,22 @@ def get_dataset_detail_route(dataset_id: int, user: AuthenticatedUser = Depends(
         except Exception:
             return None
 
+    def _load_sample_rows() -> list:
+        try:
+            fp = row.get("file_path")
+            if not fp or not os.path.exists(fp):
+                return []
+            fp_lower = fp.lower()
+            if fp_lower.endswith(".csv"):
+                df = pd.read_csv(fp, nrows=5)
+            elif fp_lower.endswith(".xlsx"):
+                df = pd.read_excel(fp, engine="openpyxl", nrows=5)
+            else:
+                df = pd.read_excel(fp, engine="xlrd", nrows=5)
+            return df.fillna("").to_dict(orient="records")
+        except Exception:
+            return []
+
     return {
         "status": "success",
         "data": {
@@ -1897,7 +1913,7 @@ def get_dataset_detail_route(dataset_id: int, user: AuthenticatedUser = Depends(
             "date_profile":        _safe_json("date_profile_json"),
             "categorical_meta":    _safe_json("categorical_meta_json"),
             "semantic_profile":    _safe_json("semantic_profile_json"),
-            "sample_rows":         [],
+            "sample_rows":         _load_sample_rows(),
         },
     }
 
@@ -2272,10 +2288,152 @@ def _build_execution_context(row: dict) -> str:
 
 def _build_report_sections_context(sections: list) -> str:
     lines: list[str] = []
-    for section in sections:
-        lines.append(f"{section.get('heading', '')}:")
-        for item in (section.get("items") or [])[:4]:
+    for sec in sections:
+        heading = sec.get("heading") or ""
+        if heading:
+            lines.append(f"\n## {heading}")
+
+        # Plain-text bullets (Overview, Numeric Insights, Missing Data, etc.)
+        for item in sec.get("items") or []:
             lines.append(f"  - {item}")
+
+        # KPI cards (kpi, business_kpis sections)
+        for kpi in sec.get("kpis") or []:
+            label = kpi.get("label") or ""
+            value = kpi.get("value_formatted") or str(kpi.get("value", ""))
+            desc  = kpi.get("description") or ""
+            lines.append(f"  - {label}: {value}" + (f" ({desc})" if desc else ""))
+
+        # Recommendations (recommendation section)
+        for rec in sec.get("recommendations") or []:
+            priority = rec.get("priority") or ""
+            title    = rec.get("title") or ""
+            reason   = rec.get("reason") or ""
+            lines.append(f"  - [{priority}] {title}: {reason}")
+
+        # Anomalies with evidence (anomaly section)
+        for anom in sec.get("anomalies") or []:
+            sev      = (anom.get("severity") or "").upper()
+            title    = anom.get("title") or ""
+            evidence = anom.get("evidence") or anom.get("description") or ""
+            lines.append(f"  - [{sev}] {title}: {evidence}")
+
+        # Executive summary fields
+        if sec.get("summary"):
+            lines.append(f"  {sec['summary']}")
+        for tkw in sec.get("key_takeaways") or []:
+            lines.append(f"  - Takeaway: {tkw}")
+        for risk in sec.get("risks") or []:
+            lines.append(f"  - Risk: {risk}")
+        for opp in sec.get("opportunities") or []:
+            lines.append(f"  - Opportunity: {opp}")
+
+        # Chart sections — prose explanation + full categorical breakdown
+        if sec.get("explanation"):
+            lines.append(f"  {sec['explanation']}")
+        chart  = sec.get("chart") or {}
+        labels = chart.get("labels") or []
+        series = chart.get("series") or []
+        if labels and series:
+            data  = (series[0].get("data") or []) if series else []
+            total = sum(data) if data else 0
+            for lbl, cnt in zip(labels, data):
+                pct = f" ({round(cnt / total * 100)}%)" if total > 0 else ""
+                lines.append(f"  - {lbl}: {cnt:,}{pct}")
+
+        # Prioritised insights (insight_priority section)
+        for ins in sec.get("insights") or []:
+            text = ins.get("insight") or ins.get("title") or "" if isinstance(ins, dict) else str(ins)
+            lines.append(f"  - {text}")
+
+        # Trend objects (trend section)
+        for tr in sec.get("trends") or []:
+            title = tr.get("title") or ""
+            desc  = tr.get("description") or ""
+            lines.append(f"  - {title}: {desc}")
+
+    return "\n".join(lines)
+
+
+def _build_dataset_profile_context(dataset_row: dict) -> str:
+    """Serialise a dataset's stored profile into a compact, GPT-readable context string.
+
+    Reads only pre-computed profile summaries — never the raw source file.
+    All JSON parsing is guarded so a missing or corrupt column produces no output
+    rather than raising.
+    """
+    import json as _json
+
+    def _safe_parse(key: str) -> dict | list | None:
+        raw = dataset_row.get(key)
+        if not raw:
+            return None
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return None
+
+    lines: list[str] = []
+    filename     = dataset_row.get("filename") or "dataset"
+    row_count    = dataset_row.get("row_count") or 0
+    column_count = dataset_row.get("column_count") or 0
+    lines.append(f"## Dataset: {filename} ({row_count:,} rows, {column_count} columns)")
+
+    numeric_profile     = _safe_parse("numeric_profile_json") or {}
+    categorical_profile = _safe_parse("categorical_profile_json") or {}
+    missing_values      = _safe_parse("missing_values_json") or {}
+    categorical_meta    = _safe_parse("categorical_meta_json") or {}
+
+    # Numeric columns — key stats only; skip histogram bins
+    if numeric_profile:
+        lines.append("\n### Numeric Columns")
+        for col, stats in numeric_profile.items():
+            if not isinstance(stats, dict):
+                continue
+            mean    = stats.get("mean")
+            median  = stats.get("median")
+            mn      = stats.get("min")
+            mx      = stats.get("max")
+            nn      = stats.get("non_null_count")
+            null_c  = stats.get("null_count", 0)
+            parts: list[str] = []
+            if mean    is not None: parts.append(f"mean={mean}")
+            if median  is not None: parts.append(f"median={median}")
+            if mn      is not None: parts.append(f"min={mn}")
+            if mx      is not None: parts.append(f"max={mx}")
+            if nn      is not None: parts.append(f"non_null={nn:,}")
+            if null_c:              parts.append(f"missing={null_c:,}")
+            lines.append(f"  {col}: " + ", ".join(parts))
+
+    # Categorical columns — top-5 value counts with % of total rows
+    if categorical_profile:
+        lines.append("\n### Categorical Columns")
+        for col, top_vals in categorical_profile.items():
+            if not isinstance(top_vals, list):
+                continue
+            meta         = categorical_meta.get(col) or {}
+            unique_count = meta.get("unique_count")
+            label        = f"{col} ({unique_count} unique)" if unique_count is not None else col
+            lines.append(f"  {label}:")
+            for entry in top_vals:
+                if not isinstance(entry, dict):
+                    continue
+                val = entry.get("value", "")
+                cnt = entry.get("count", 0)
+                pct = f" ({round(cnt / row_count * 100)}%)" if row_count > 0 else ""
+                lines.append(f"    - {val}: {cnt:,}{pct}")
+
+    # Missing values — only columns that have gaps
+    cols_with_missing = {
+        col: cnt for col, cnt in missing_values.items()
+        if isinstance(cnt, int) and cnt > 0
+    }
+    if cols_with_missing:
+        lines.append("\n### Missing Values")
+        for col, cnt in cols_with_missing.items():
+            pct = f" ({round(cnt / row_count * 100)}%)" if row_count > 0 else ""
+            lines.append(f"  - {col}: {cnt:,} missing{pct}")
+
     return "\n".join(lines)
 
 
@@ -2534,10 +2692,11 @@ class AskReportRequest(BaseModel):
 
 _ASK_REPORT_SYSTEM_PROMPT = """\
 You are an AI analyst answering questions about a saved business report.
-You ONLY have access to the report sections provided. Do NOT invent data or make up statistics.
+You have access to two sources: the report sections and the dataset profile provided below.
+Do NOT invent data or make up statistics. Use only what is explicitly stated in the provided content.
 Return exactly this JSON:
 {
-  "answer": "<clear, concise answer based solely on the report content, max 600 characters>",
+  "answer": "<clear, concise answer based solely on the report sections and dataset profile, max 600 characters>",
   "cited_sections": ["<section heading 1>", "<up to 3 section headings cited>"],
   "confidence": "low" | "medium" | "high"
 }
@@ -2547,10 +2706,15 @@ Return exactly this JSON:
 """
 
 
-def _ai_answer_report_question(sections: list, question: str) -> dict | None:
-    """Ask GPT to answer a question using only the report sections as context.
+def _ai_answer_report_question(
+    sections: list,
+    question: str,
+    dataset_row: dict | None = None,
+) -> dict | None:
+    """Ask GPT to answer a question using report sections and, when available, the dataset profile.
 
-    Safety: GPT receives only sanitized section text — no raw data, no secrets.
+    Safety: GPT receives only sanitized section text and pre-computed profile summaries —
+    never raw source files, never secrets.
     Returns None on any failure so the caller falls back to the deterministic answer.
     """
     import json as _json
@@ -2568,7 +2732,14 @@ def _ai_answer_report_question(sections: list, question: str) -> dict | None:
     except ImportError:
         return None
 
-    context = _build_report_sections_context(sections)
+    sections_context = _build_report_sections_context(sections)
+    profile_context  = _build_dataset_profile_context(dataset_row) if dataset_row else ""
+
+    if profile_context:
+        context = f"{profile_context}\n\n---\n\n## Report Sections\n{sections_context}"
+    else:
+        context = sections_context
+
     user_msg = f"Report content:\n\n{context}\n\nQuestion: {question[:500]}"
 
     try:
@@ -2618,7 +2789,10 @@ def ask_report_route(
 
         sections = (report.get("content") or {}).get("sections", [])
 
-        ai_result = _ai_answer_report_question(sections, question)
+        dataset_id  = report.get("dataset_id")
+        dataset_row = get_dataset_by_id(dataset_id) if dataset_id else None
+
+        ai_result = _ai_answer_report_question(sections, question, dataset_row=dataset_row)
         if ai_result:
             return {
                 "status": "success",
@@ -2653,6 +2827,165 @@ def delete_report_route(report_id: int, user: AuthenticatedUser = Depends(requir
     except Exception as e:
         return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
+
+# ─── Dataset Ask AI ───────────────────────────────────────────────────────────
+
+_ASK_DATASET_SYSTEM_PROMPT = """\
+You are a data analyst assistant for ToolSmithAI.
+You are given a dataset profile containing pre-computed statistical summaries only — never raw rows.
+Answer the user's question factually and concisely using only what is present in the profile.
+Return exactly this JSON:
+{
+  "answer": "<plain-English answer based solely on the profile, max 600 characters>",
+  "confidence": "low" | "medium" | "high",
+  "suggested_actions": ["<imperative composer-ready phrase, max 80 characters>"]
+}
+- suggested_actions: 1–3 items. Each should be a short prompt the user could run next in the workspace.
+- confidence: "high" if directly derivable from the profile, "medium" if inferred, "low" if uncertain.
+- Do NOT invent statistics. Do NOT reference raw CSV data or file contents.
+- Return ONLY the JSON. No markdown. No code fences.
+"""
+
+
+def _ai_answer_dataset_question(
+    dataset_row: dict,
+    question: str,
+    composer_text: str | None = None,
+) -> dict | None:
+    """Answer a question about a dataset using its pre-computed profile.
+
+    Safety: GPT receives only sanitized profile summaries — never raw CSV rows or secrets.
+    Returns None on any failure so the caller falls back to the deterministic answer.
+    """
+    import json as _json
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    from core.config import (
+        ENABLE_AI_REPORT_NARRATIVE, OPENAI_API_KEY, OPENAI_MODEL, OPENAI_TIMEOUT_SECONDS,
+    )
+    if not ENABLE_AI_REPORT_NARRATIVE or not OPENAI_API_KEY:
+        return None
+
+    try:
+        import openai as _openai
+    except ImportError:
+        return None
+
+    profile_context = _build_dataset_profile_context(dataset_row)
+    user_msg = f"Dataset profile:\n\n{profile_context}"
+    if composer_text and composer_text.strip():
+        user_msg += f"\n\nUser is currently composing: {composer_text.strip()[:200]}"
+    user_msg += f"\n\nQuestion: {question[:500]}"
+
+    try:
+        client = _openai.OpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_SECONDS)
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": _ASK_DATASET_SYSTEM_PROMPT},
+                {"role": "user",   "content": user_msg},
+            ],
+            max_tokens=400,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        raw = _json.loads(resp.choices[0].message.content or "")
+        if not isinstance(raw, dict) or not raw.get("answer"):
+            return None
+        actions = [
+            str(a)[:80]
+            for a in (raw.get("suggested_actions") or [])[:3]
+            if isinstance(a, str) and a.strip()
+        ]
+        return {
+            "answer":            str(raw["answer"]).strip()[:600],
+            "confidence":        str(raw.get("confidence", "medium")) if raw.get("confidence") in ("low", "medium", "high") else "medium",
+            "suggested_actions": actions,
+        }
+    except Exception as exc:
+        _log.warning("[ask_dataset] ai failed: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _deterministic_dataset_answer(dataset_row: dict) -> dict:
+    """Return a useful answer from the stored profile without any AI call."""
+    import json as _json
+
+    filename     = dataset_row.get("filename") or "dataset"
+    row_count    = dataset_row.get("row_count") or 0
+    column_count = dataset_row.get("column_count") or 0
+
+    def _safe_parse(key: str) -> dict:
+        raw = dataset_row.get(key)
+        if not raw:
+            return {}
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return {}
+
+    missing_values    = _safe_parse("missing_values_json")
+    cols_with_missing = [c for c, v in missing_values.items() if isinstance(v, int) and v > 0]
+
+    answer = f"{filename} has {row_count:,} rows and {column_count} columns."
+    if cols_with_missing:
+        listed = ", ".join(cols_with_missing[:3])
+        answer += f" {len(cols_with_missing)} column(s) have missing values: {listed}."
+
+    actions = [
+        f"Analyze {filename}",
+        "Generate a dataset report",
+    ]
+    if cols_with_missing:
+        actions.append(f"Identify missing values in {cols_with_missing[0]}")
+
+    return {
+        "answer":            answer[:600],
+        "confidence":        "low",
+        "suggested_actions": actions[:3],
+    }
+
+
+class AskDatasetRequest(BaseModel):
+    question:      str
+    composer_text: str | None = None
+
+
+@router.post("/datasets/{dataset_id}/ask")
+def ask_dataset_route(
+    dataset_id: int,
+    request:    AskDatasetRequest,
+    user:       AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Ask a natural-language question about a dataset using its pre-computed profile.
+
+    GPT receives only sanitized profile summaries — never raw CSV rows or secrets.
+    Falls back to a deterministic answer when AI is disabled or unavailable.
+    """
+    question = (request.question or "").strip()
+    if not question:
+        return JSONResponse(status_code=400, content=build_error_response("question must not be empty"))
+
+    try:
+        row = get_dataset_by_id(dataset_id)
+        if row is None or str(row.get("user_id", "")) != str(user.user_id):
+            return JSONResponse(status_code=404, content=build_error_response("Dataset not found"))
+
+        ai_result = _ai_answer_dataset_question(row, question, composer_text=request.composer_text)
+        if ai_result:
+            return {
+                "status": "success",
+                "data": {**ai_result, "dataset_id": dataset_id, "enhanced_mode": True},
+            }
+
+        fallback = _deterministic_dataset_answer(row)
+        return {
+            "status": "success",
+            "data": {**fallback, "dataset_id": dataset_id, "enhanced_mode": False},
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content=build_error_response("Internal server error", str(e)))
 
 
 _XLSX_BRANDING = {

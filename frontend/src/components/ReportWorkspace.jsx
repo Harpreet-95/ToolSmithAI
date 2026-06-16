@@ -506,6 +506,50 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
           </div>
         </div>
 
+        {/* ── Tab navigation ── */}
+        <div style={{ display: 'flex', borderBottom: `1px solid ${C.border}` }}>
+          {TABS.map(t => {
+            if (t.key === 'ask') return null
+            const count = tabCount[t.key]
+            return (
+              <button key={t.key} onClick={() => setActiveTab(t.key)}
+                style={{
+                  background: 'none', border: 'none',
+                  borderBottom: activeTab === t.key ? `2px solid ${C.accent}` : '2px solid transparent',
+                  marginBottom: '-1px',
+                  padding: '10px 18px', fontSize: '0.78rem',
+                  color: activeTab === t.key ? C.accent : C.textSec,
+                  cursor: 'pointer', fontFamily: FONT,
+                  fontWeight: activeTab === t.key ? '600' : '400',
+                  transition: 'color 0.12s, border-color 0.12s',
+                }}>
+                {t.label}{count ? ` (${count})` : ''}
+              </button>
+            )
+          })}
+          {/* Ask AI — premium pill, pushed to the right */}
+          <button
+            onClick={() => setActiveTab('ask')}
+            style={{
+              marginLeft: 'auto', alignSelf: 'center', marginRight: '4px',
+              display: 'flex', alignItems: 'center', gap: '5px',
+              background: activeTab === 'ask' ? C.accent : `${C.accent}15`,
+              border: `1px solid ${activeTab === 'ask' ? C.accent : `${C.accent}45`}`,
+              borderRadius: '7px', padding: '5px 12px',
+              fontSize: '0.74rem', fontFamily: FONT, fontWeight: '600',
+              color: activeTab === 'ask' ? '#fff' : C.accent,
+              cursor: 'pointer',
+              transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+            }}
+            onMouseEnter={e => { if (activeTab !== 'ask') { e.currentTarget.style.background = `${C.accent}28`; e.currentTarget.style.borderColor = `${C.accent}70` } }}
+            onMouseLeave={e => { if (activeTab !== 'ask') { e.currentTarget.style.background = `${C.accent}15`; e.currentTarget.style.borderColor = `${C.accent}45` } }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style={{ flexShrink: 0 }}>
+              <path d="M12 2L13.09 8.26L19 6L14.74 10.91L21 12L14.74 13.09L19 18L13.09 15.74L12 22L10.91 15.74L5 18L9.26 13.09L3 12L9.26 10.91L5 6L10.91 8.26L12 2Z"/>
+            </svg>
+            Ask AI
+          </button>
+        </div>
+
       </div>
 
       {/* ── TAB CONTENT ───────────────────────────────────────────────────── */}
