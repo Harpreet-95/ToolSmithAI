@@ -36,6 +36,7 @@ def log_audit_event(task_result: dict, user_id: str | None = None) -> None:
     except OSError as e:
         logger.error("Failed to write audit log: %s", e)
 
+    conn = None
     try:
         conn = get_connection()
         conn.execute(
@@ -43,9 +44,11 @@ def log_audit_event(task_result: dict, user_id: str | None = None) -> None:
             (record["timestamp"], record["task_type"], record["original_input"], record["status"], record["user_id"]),
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.error("Failed to write audit log to database: %s", e)
+    finally:
+        if conn:
+            conn.close()
 
 
 def delete_audit_log_entries(user_id: str) -> int:
@@ -103,6 +106,7 @@ def purge_old_audit_db(cutoff: str) -> int:
     cutoff must be an ISO 8601 string (e.g. '2026-02-03T14:00:00+00:00').
     Returns count of deleted rows.
     """
+    conn = None
     try:
         conn = get_connection()
         cur = conn.execute(
@@ -111,11 +115,13 @@ def purge_old_audit_db(cutoff: str) -> int:
         )
         deleted = cur.rowcount
         conn.commit()
-        conn.close()
         return deleted
     except Exception as e:
         logger.error("Failed to purge old audit_logs rows: %s", e)
         return 0
+    finally:
+        if conn:
+            conn.close()
 
 
 def purge_old_audit_log_file(cutoff: str) -> int:

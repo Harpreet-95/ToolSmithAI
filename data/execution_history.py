@@ -54,6 +54,7 @@ def log_execution_history(
         "user_id":        user_id,
     }
 
+    conn = None
     try:
         conn = get_connection()
         conn.execute(
@@ -85,9 +86,11 @@ def log_execution_history(
             ),
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.error("Failed to write execution history: %s", e)
+    finally:
+        if conn:
+            conn.close()
 
 
 _FILLER_WORDS = frozenset({
