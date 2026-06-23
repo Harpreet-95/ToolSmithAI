@@ -285,6 +285,30 @@ export default function EngineWorkspace({ C = {}, token }) {
     finally { setBusy(null) }
   }
 
+  async function handleSubmitForApproval(toolId) {
+    setBusy('submit-' + toolId)
+    try {
+      await submitEngineTool(toolId, token)
+      notify('Tool submitted for approval.')
+      const res = await getEngineTool(toolId, token)
+      setSelectedTool(res?.data ?? res)
+      await loadTools()
+    } catch (e) { notifyErr(e) }
+    finally { setBusy(null) }
+  }
+
+  async function handleApprove(toolId) {
+    setBusy('approve-' + toolId)
+    try {
+      await approveEngineTool(toolId, token)
+      notify('Tool approved and now active.')
+      const res = await getEngineTool(toolId, token)
+      setSelectedTool(res?.data ?? res)
+      await loadTools()
+    } catch (e) { notifyErr(e) }
+    finally { setBusy(null) }
+  }
+
   // ── Recently used ─────────────────────────────────────────────────────────
   const recentlyUsed = [...savedTools]
     .filter(t => t.updated_at)
@@ -494,6 +518,24 @@ export default function EngineWorkspace({ C = {}, token }) {
             >
               {isRunning ? 'Running…' : 'Run Tool'}
             </button>
+            {tool.status === 'draft' && (
+              <button
+                style={btn('ghost', busy === 'submit-' + tool.id)}
+                disabled={busy === 'submit-' + tool.id}
+                onClick={() => handleSubmitForApproval(tool.id)}
+              >
+                {busy === 'submit-' + tool.id ? 'Submitting…' : 'Submit for Approval'}
+              </button>
+            )}
+            {tool.status === 'pending_approval' && (
+              <button
+                style={btn('ghost', busy === 'approve-' + tool.id)}
+                disabled={busy === 'approve-' + tool.id}
+                onClick={() => handleApprove(tool.id)}
+              >
+                {busy === 'approve-' + tool.id ? 'Approving…' : 'Approve'}
+              </button>
+            )}
             <button style={btn('default', true)} disabled title="Coming soon">Edit Tool</button>
             <button style={btn('default', true)} disabled title="Coming soon">Duplicate</button>
             <button style={btn('danger', true)} disabled title="Coming soon">Delete</button>

@@ -459,4 +459,519 @@ def init_db() -> None:
     )
     conn.commit()
 
+    # data_source_connections — external data sources; credentials stored in encrypted_config_json.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS data_source_connections (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id               TEXT    NOT NULL,
+            display_name          TEXT    NOT NULL,
+            source_type           TEXT    NOT NULL,
+            source_category       TEXT    NOT NULL,
+            encrypted_config_json TEXT    NOT NULL,
+            config_schema_version INTEGER NOT NULL DEFAULT 1,
+            capabilities_json     TEXT    NOT NULL DEFAULT '[]',
+            metadata_json         TEXT    NOT NULL DEFAULT '{}',
+            source_status         TEXT    NOT NULL DEFAULT 'ACTIVE',
+            is_active             INTEGER NOT NULL DEFAULT 1,
+            last_tested_at        TEXT,
+            last_test_status      TEXT,
+            last_test_message     TEXT,
+            created_at            TEXT    NOT NULL,
+            updated_at            TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dsc_user_id
+            ON data_source_connections (user_id);
+        CREATE INDEX IF NOT EXISTS idx_dsc_source_type
+            ON data_source_connections (source_type);
+        CREATE INDEX IF NOT EXISTS idx_dsc_source_category
+            ON data_source_connections (source_category);
+        CREATE INDEX IF NOT EXISTS idx_dsc_is_active
+            ON data_source_connections (is_active);
+        CREATE INDEX IF NOT EXISTS idx_dsc_source_status
+            ON data_source_connections (source_status);
+    """)
+    conn.commit()
+
+    # schema_snapshots — versioned schema discovery results per data source connection.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS schema_snapshots (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id        INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            snapshot_version INTEGER NOT NULL DEFAULT 1,
+            source_type      TEXT    NOT NULL,
+            table_count      INTEGER NOT NULL DEFAULT 0,
+            view_count       INTEGER NOT NULL DEFAULT 0,
+            column_count     INTEGER NOT NULL DEFAULT 0,
+            snapshot_json    TEXT    NOT NULL,
+            discovered_at    TEXT    NOT NULL,
+            created_at       TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ss_source_id
+            ON schema_snapshots (source_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ss_source_version
+            ON schema_snapshots (source_id, snapshot_version);
+    """)
+    conn.commit()
+
+    # Idempotent migrations for data_source_connections: Phase 2 discovery columns.
+    dsc_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(data_source_connections)").fetchall()
+    }
+    dsc_migrations = [
+        ("last_discovered_at", "ALTER TABLE data_source_connections ADD COLUMN last_discovered_at TEXT"),
+        ("last_snapshot_id",   "ALTER TABLE data_source_connections ADD COLUMN last_snapshot_id INTEGER"),
+    ]
+    for col, stmt in dsc_migrations:
+        if col not in dsc_existing:
+            cursor.execute(stmt)
+    conn.commit()
+
+    # data_dictionary_tables — AI/rule-generated and human-validated table descriptions.
+    # UNIQUE (source_id, table_fqn) enables upsert semantics on re-generation;
+    # human-edited rows are protected in the service layer, not here.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS data_dictionary_tables (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id         INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            snapshot_id       INTEGER NOT NULL REFERENCES schema_snapshots(id),
+            table_fqn         TEXT    NOT NULL,
+            table_name        TEXT    NOT NULL,
+            schema_name       TEXT    NOT NULL,
+            table_type        TEXT    NOT NULL,
+            business_name     TEXT,
+            description       TEXT,
+            domain            TEXT,
+            grain             TEXT,
+            is_approved       INTEGER NOT NULL DEFAULT 0,
+            approved_by       TEXT,
+            approved_at       TEXT,
+            generation_method TEXT    NOT NULL DEFAULT 'rule_based',
+            created_at        TEXT    NOT NULL,
+            updated_at        TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ddt_source_fqn
+            ON data_dictionary_tables (source_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_ddt_source_id
+            ON data_dictionary_tables (source_id);
+        CREATE INDEX IF NOT EXISTS idx_ddt_source_approved
+            ON data_dictionary_tables (source_id, is_approved);
+        CREATE INDEX IF NOT EXISTS idx_ddt_source_domain
+            ON data_dictionary_tables (source_id, domain);
+    """)
+    conn.commit()
+
+    # data_dictionary_columns — AI/rule-generated and human-validated column descriptions.
+    # UNIQUE (source_id, table_fqn, column_name) enables upsert semantics on re-generation.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS data_dictionary_columns (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id         INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            snapshot_id       INTEGER NOT NULL REFERENCES schema_snapshots(id),
+            table_fqn         TEXT    NOT NULL,
+            column_name       TEXT    NOT NULL,
+            business_label    TEXT,
+            meaning           TEXT,
+            semantic_type     TEXT,
+            is_metric         INTEGER NOT NULL DEFAULT 0,
+            is_dimension      INTEGER NOT NULL DEFAULT 0,
+            is_date           INTEGER NOT NULL DEFAULT 0,
+            is_id             INTEGER NOT NULL DEFAULT 0,
+            pii_risk          INTEGER NOT NULL DEFAULT 0,
+            is_approved       INTEGER NOT NULL DEFAULT 0,
+            approved_by       TEXT,
+            approved_at       TEXT,
+            generation_method TEXT    NOT NULL DEFAULT 'rule_based',
+            created_at        TEXT    NOT NULL,
+            updated_at        TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ddc_source_fqn_col
+            ON data_dictionary_columns (source_id, table_fqn, column_name);
+        CREATE INDEX IF NOT EXISTS idx_ddc_source_fqn
+            ON data_dictionary_columns (source_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_ddc_source_approved
+            ON data_dictionary_columns (source_id, is_approved);
+        CREATE INDEX IF NOT EXISTS idx_ddc_source_pii
+            ON data_dictionary_columns (source_id, pii_risk);
+        CREATE INDEX IF NOT EXISTS idx_ddc_source_semantic
+            ON data_dictionary_columns (source_id, semantic_type);
+    """)
+    conn.commit()
+
+    # profiling_snapshots — one record per profiling run per data source.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS profiling_snapshots (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id                INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            schema_snapshot_id       INTEGER NOT NULL REFERENCES schema_snapshots(id),
+            snapshot_version         INTEGER NOT NULL DEFAULT 1,
+            mode                     TEXT    NOT NULL DEFAULT 'full',
+            sample_rate              REAL    NOT NULL DEFAULT 1.0,
+            profiling_rules_version  TEXT    NOT NULL DEFAULT '1.0.0',
+            status                   TEXT    NOT NULL DEFAULT 'PENDING',
+            tables_total             INTEGER NOT NULL DEFAULT 0,
+            tables_profiled          INTEGER NOT NULL DEFAULT 0,
+            tables_skipped           INTEGER NOT NULL DEFAULT 0,
+            tables_failed            INTEGER NOT NULL DEFAULT 0,
+            tables_timed_out         INTEGER NOT NULL DEFAULT 0,
+            columns_total            INTEGER NOT NULL DEFAULT 0,
+            columns_profiled         INTEGER NOT NULL DEFAULT 0,
+            columns_skipped          INTEGER NOT NULL DEFAULT 0,
+            total_rows_profiled      INTEGER NOT NULL DEFAULT 0,
+            pii_columns_found        INTEGER NOT NULL DEFAULT 0,
+            classifications_complete INTEGER NOT NULL DEFAULT 0,
+            started_at               TEXT,
+            completed_at             TEXT,
+            duration_seconds         INTEGER,
+            resumable_state_json     TEXT,
+            created_at               TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prsnap_source_version
+            ON profiling_snapshots (source_id, snapshot_version);
+        CREATE INDEX IF NOT EXISTS idx_prsnap_source_id
+            ON profiling_snapshots (source_id);
+        CREATE INDEX IF NOT EXISTS idx_prsnap_status
+            ON profiling_snapshots (status);
+    """)
+    conn.commit()
+
+    # Idempotent migrations for profiling_snapshots: Phase 4D batch profiling columns.
+    # Placed here — after CREATE TABLE profiling_snapshots — so fresh-DB init succeeds.
+    psnap_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(profiling_snapshots)").fetchall()
+    }
+    psnap_migrations = [
+        ("batch_size",       "ALTER TABLE profiling_snapshots ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 50"),
+        ("next_table_index", "ALTER TABLE profiling_snapshots ADD COLUMN next_table_index INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for col, stmt in psnap_migrations:
+        if col not in psnap_existing:
+            cursor.execute(stmt)
+    conn.commit()
+
+    # profiling_table_profiles — per-table statistical and classification results.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS profiling_table_profiles (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            profiling_snapshot_id       INTEGER NOT NULL REFERENCES profiling_snapshots(id) ON DELETE CASCADE,
+            source_id                   INTEGER NOT NULL,
+            table_fqn                   TEXT    NOT NULL,
+            table_name                  TEXT    NOT NULL,
+            schema_name                 TEXT    NOT NULL,
+            table_type                  TEXT    NOT NULL DEFAULT 'TABLE',
+            exact_row_count             INTEGER,
+            estimated_row_count         INTEGER,
+            row_count_tier              TEXT,
+            has_date_column             INTEGER NOT NULL DEFAULT 0,
+            date_column_name            TEXT,
+            earliest_record             TEXT,
+            latest_record               TEXT,
+            data_span_days              INTEGER,
+            data_currency               TEXT    NOT NULL DEFAULT 'UNKNOWN',
+            column_count                INTEGER NOT NULL DEFAULT 0,
+            pk_column_count             INTEGER NOT NULL DEFAULT 0,
+            fk_count                    INTEGER NOT NULL DEFAULT 0,
+            referenced_by_count         INTEGER NOT NULL DEFAULT 0,
+            is_junction_table           INTEGER NOT NULL DEFAULT 0,
+            is_root_table               INTEGER NOT NULL DEFAULT 0,
+            is_leaf_table               INTEGER NOT NULL DEFAULT 0,
+            has_identity_column         INTEGER NOT NULL DEFAULT 0,
+            avg_null_percentage         REAL,
+            completeness_score          REAL,
+            table_class                 TEXT,
+            classification_confidence   REAL,
+            classification_evidence_json TEXT,
+            competing_classes_json      TEXT,
+            classification_rule_version TEXT,
+            pii_column_count            INTEGER NOT NULL DEFAULT 0,
+            confirmed_pii_count         INTEGER NOT NULL DEFAULT 0,
+            profiling_depth             TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
+            profiling_duration_ms       INTEGER,
+            profiling_status            TEXT    NOT NULL DEFAULT 'PENDING',
+            skip_reason                 TEXT,
+            profiled_at                 TEXT,
+            created_at                  TEXT    NOT NULL,
+            updated_at                  TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prtp_snapshot_fqn
+            ON profiling_table_profiles (profiling_snapshot_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_prtp_source_fqn
+            ON profiling_table_profiles (source_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_prtp_source_class
+            ON profiling_table_profiles (source_id, table_class);
+        CREATE INDEX IF NOT EXISTS idx_prtp_status
+            ON profiling_table_profiles (profiling_status);
+    """)
+    conn.commit()
+
+    # profiling_column_profiles — per-column statistical and semantic-type results.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS profiling_column_profiles (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            profiling_snapshot_id   INTEGER NOT NULL REFERENCES profiling_snapshots(id) ON DELETE CASCADE,
+            source_id               INTEGER NOT NULL,
+            table_fqn               TEXT    NOT NULL,
+            column_name             TEXT    NOT NULL,
+            data_type               TEXT    NOT NULL,
+            raw_type                TEXT,
+            is_nullable             INTEGER NOT NULL DEFAULT 1,
+            is_primary_key          INTEGER NOT NULL DEFAULT 0,
+            is_identity             INTEGER NOT NULL DEFAULT 0,
+            ordinal_position        INTEGER NOT NULL DEFAULT 0,
+            null_count              INTEGER,
+            null_percentage         REAL,
+            populated_count         INTEGER,
+            populated_percentage    REAL,
+            empty_string_count      INTEGER,
+            zero_count              INTEGER,
+            distinct_count          INTEGER,
+            distinct_percentage     REAL,
+            uniqueness_score        REAL,
+            cardinality_tier        TEXT,
+            min_value               TEXT,
+            max_value               TEXT,
+            min_length              INTEGER,
+            max_length_observed     INTEGER,
+            avg_length              REAL,
+            mean_value              REAL,
+            std_deviation           REAL,
+            p5_value                TEXT,
+            p95_value               TEXT,
+            dominant_pattern        TEXT,
+            pattern_coverage        REAL,
+            email_match_rate        REAL,
+            phone_match_rate        REAL,
+            guid_match_rate         REAL,
+            date_string_rate        REAL,
+            numeric_string_rate     REAL,
+            masked_value_rate       REAL,
+            semantic_type           TEXT,
+            semantic_confidence     REAL,
+            semantic_evidence_json  TEXT,
+            semantic_rule_version   TEXT,
+            pii_name_heuristic      INTEGER NOT NULL DEFAULT 0,
+            pii_confirmed           INTEGER NOT NULL DEFAULT 0,
+            pii_signals_json        TEXT,
+            top_values_coverage     REAL,
+            profiling_depth         TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
+            profiling_duration_ms   INTEGER,
+            profiling_status        TEXT    NOT NULL DEFAULT 'PENDING',
+            created_at              TEXT    NOT NULL,
+            updated_at              TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_prcp_snapshot_col
+            ON profiling_column_profiles (profiling_snapshot_id, table_fqn, column_name);
+        CREATE INDEX IF NOT EXISTS idx_prcp_source_fqn
+            ON profiling_column_profiles (source_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_prcp_source_semantic
+            ON profiling_column_profiles (source_id, semantic_type);
+        CREATE INDEX IF NOT EXISTS idx_prcp_source_pii
+            ON profiling_column_profiles (source_id, pii_confirmed);
+    """)
+    conn.commit()
+
+    # profiling_value_samples — top-N and random sample values per column.
+    # value is NULL for PII columns; never stores actual sensitive data.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS profiling_value_samples (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            profiling_column_profile_id INTEGER NOT NULL REFERENCES profiling_column_profiles(id) ON DELETE CASCADE,
+            sample_type                 TEXT    NOT NULL,
+            value                       TEXT,
+            row_count                   INTEGER,
+            percentage                  REAL,
+            rank                        INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_prvs_col_profile
+            ON profiling_value_samples (profiling_column_profile_id);
+    """)
+    conn.commit()
+
+    # metadata_jobs — background metadata collection lifecycle per data source.
+    # Statuses: QUEUED → RUNNING → COMPLETE | FAILED
+    # Steps:    DISCOVERY → STRUCTURAL_PROFILING → READY
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS metadata_jobs (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id        INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            user_id          TEXT    NOT NULL,
+            job_type         TEXT    NOT NULL DEFAULT 'initial_metadata',
+            status           TEXT    NOT NULL DEFAULT 'QUEUED',
+            current_step     TEXT,
+            progress_message TEXT,
+            error_message    TEXT,
+            started_at       TEXT,
+            completed_at     TEXT,
+            created_at       TEXT    NOT NULL,
+            updated_at       TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mj_source_id ON metadata_jobs (source_id);
+        CREATE INDEX IF NOT EXISTS idx_mj_user_id   ON metadata_jobs (user_id);
+        CREATE INDEX IF NOT EXISTS idx_mj_status    ON metadata_jobs (status);
+    """)
+    conn.commit()
+
+    # domain_assignments — one row per (source, table), upserted on each generation run.
+    # Cascades from both data_source_connections and profiling_snapshots so orphan rows
+    # are never left behind when either parent is deleted.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS domain_assignments (
+            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id              INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            profiling_snapshot_id  INTEGER NOT NULL REFERENCES profiling_snapshots(id) ON DELETE CASCADE,
+            table_fqn              TEXT    NOT NULL,
+            domain                 TEXT    NOT NULL,
+            confidence             REAL    NOT NULL DEFAULT 0.0,
+            evidence_json          TEXT    NOT NULL DEFAULT '[]',
+            competing_domains_json TEXT    NOT NULL DEFAULT '[]',
+            created_at             TEXT    NOT NULL,
+            updated_at             TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_da_source_fqn
+            ON domain_assignments (source_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_da_source_id
+            ON domain_assignments (source_id);
+        CREATE INDEX IF NOT EXISTS idx_da_source_domain
+            ON domain_assignments (source_id, domain);
+        CREATE INDEX IF NOT EXISTS idx_da_snapshot_id
+            ON domain_assignments (profiling_snapshot_id);
+    """)
+    conn.commit()
+
+    # domain_learning_rules — per-source learned naming conventions.
+    # UNIQUE(source_id, pattern_type, pattern_value) lets re-runs skip
+    # already-suggested patterns via ON CONFLICT DO NOTHING.
+    # active=1 only when approval_status='APPROVED'.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS domain_learning_rules (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id        INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            pattern_type     TEXT    NOT NULL,
+            pattern_value    TEXT    NOT NULL,
+            domain           TEXT    NOT NULL,
+            confidence       REAL    NOT NULL DEFAULT 0.8,
+            approval_status  TEXT    NOT NULL DEFAULT 'PENDING',
+            created_by       TEXT    NOT NULL,
+            approved_by      TEXT,
+            created_at       TEXT    NOT NULL,
+            approved_at      TEXT,
+            active           INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_dlr_source_type_val
+            ON domain_learning_rules (source_id, pattern_type, pattern_value);
+        CREATE INDEX IF NOT EXISTS idx_dlr_source_id
+            ON domain_learning_rules (source_id);
+        CREATE INDEX IF NOT EXISTS idx_dlr_source_status
+            ON domain_learning_rules (source_id, approval_status);
+        CREATE INDEX IF NOT EXISTS idx_dlr_source_active
+            ON domain_learning_rules (source_id, active);
+    """)
+    conn.commit()
+
+    # domain_rule_refinement_suggestions — sub-rule candidates produced by
+    # analyze_rule_refinement().  Unique on (parent_rule_id, pattern_type,
+    # pattern_value) so re-runs are idempotent via ON CONFLICT DO NOTHING.
+    # Cascades from data_source_connections and domain_learning_rules.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS domain_rule_refinement_suggestions (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id        INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            parent_rule_id   INTEGER NOT NULL REFERENCES domain_learning_rules(id) ON DELETE CASCADE,
+            pattern_type     TEXT    NOT NULL,
+            pattern_value    TEXT    NOT NULL,
+            suggested_domain TEXT    NOT NULL,
+            support_count    INTEGER NOT NULL DEFAULT 0,
+            confidence       REAL    NOT NULL DEFAULT 0.0,
+            approval_status  TEXT    NOT NULL DEFAULT 'PENDING',
+            created_at       TEXT    NOT NULL,
+            approved_at      TEXT,
+            approved_by      TEXT,
+            active           INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_drrs_parent_type_val
+            ON domain_rule_refinement_suggestions (parent_rule_id, pattern_type, pattern_value);
+        CREATE INDEX IF NOT EXISTS idx_drrs_source_id
+            ON domain_rule_refinement_suggestions (source_id);
+        CREATE INDEX IF NOT EXISTS idx_drrs_parent_rule_id
+            ON domain_rule_refinement_suggestions (parent_rule_id);
+        CREATE INDEX IF NOT EXISTS idx_drrs_source_status
+            ON domain_rule_refinement_suggestions (source_id, approval_status);
+        CREATE INDEX IF NOT EXISTS idx_drrs_source_active
+            ON domain_rule_refinement_suggestions (source_id, active);
+    """)
+    conn.commit()
+
+    # entity_assignments — one row per (source, table), upserted on each generation run.
+    # Mirrors domain_assignments but classifies the primary business entity a table represents.
+    # Cascades from both data_source_connections and profiling_snapshots.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS entity_assignments (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id                INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            profiling_snapshot_id    INTEGER NOT NULL REFERENCES profiling_snapshots(id) ON DELETE CASCADE,
+            table_fqn                TEXT    NOT NULL,
+            entity                   TEXT    NOT NULL,
+            confidence               REAL    NOT NULL DEFAULT 0.0,
+            evidence_json            TEXT    NOT NULL DEFAULT '[]',
+            competing_entities_json  TEXT    NOT NULL DEFAULT '[]',
+            created_at               TEXT    NOT NULL,
+            updated_at               TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ea_source_fqn
+            ON entity_assignments (source_id, table_fqn);
+        CREATE INDEX IF NOT EXISTS idx_ea_source_id
+            ON entity_assignments (source_id);
+        CREATE INDEX IF NOT EXISTS idx_ea_source_entity
+            ON entity_assignments (source_id, entity);
+        CREATE INDEX IF NOT EXISTS idx_ea_snapshot_id
+            ON entity_assignments (profiling_snapshot_id);
+    """)
+    conn.commit()
+
+    # entity_learning_rules — per-source learned entity naming conventions.
+    # Mirrors domain_learning_rules but classifies the primary business entity.
+    # UNIQUE(source_id, pattern_type, pattern_value) lets re-runs skip
+    # already-suggested patterns via ON CONFLICT DO NOTHING.
+    # active=1 only when approval_status='APPROVED'.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS entity_learning_rules (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id        INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            pattern_type     TEXT    NOT NULL,
+            pattern_value    TEXT    NOT NULL,
+            entity           TEXT    NOT NULL,
+            confidence       REAL    NOT NULL DEFAULT 0.8,
+            approval_status  TEXT    NOT NULL DEFAULT 'PENDING',
+            created_by       TEXT    NOT NULL,
+            approved_by      TEXT,
+            created_at       TEXT    NOT NULL,
+            approved_at      TEXT,
+            active           INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_elr_source_type_val
+            ON entity_learning_rules (source_id, pattern_type, pattern_value);
+        CREATE INDEX IF NOT EXISTS idx_elr_source_id
+            ON entity_learning_rules (source_id);
+        CREATE INDEX IF NOT EXISTS idx_elr_source_status
+            ON entity_learning_rules (source_id, approval_status);
+        CREATE INDEX IF NOT EXISTS idx_elr_source_active
+            ON entity_learning_rules (source_id, active);
+    """)
+    conn.commit()
+
     conn.close()

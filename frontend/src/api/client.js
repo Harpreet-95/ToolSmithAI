@@ -623,3 +623,251 @@ export async function getAdminEmailLogSummary(token) {
   const res = await fetch('/v1/admin/email-logs/summary', { headers: AUTH_HEADERS(token) })
   return parseResponse(res)
 }
+
+export async function createDataSource(payload, token) {
+  const res = await fetch('/v1/sources', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(res)
+}
+
+export async function listDataSources(token) {
+  const res = await fetch('/v1/sources', {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function testDataSource(id, token) {
+  const res = await fetch(`/v1/sources/${id}/test`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function deleteDataSource(id, token) {
+  const res = await fetch(`/v1/sources/${id}`, {
+    method: 'DELETE',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function discoverDataSourceSchema(id, token) {
+  const res = await fetch(`/v1/sources/${id}/discover`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getDataSourceSchema(id, token) {
+  const res = await fetch(`/v1/sources/${id}/schema`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function listDictionaryTables(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/dictionary`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getDictionaryTable(sourceId, tableFqn, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/dictionary/tables/${encodeURIComponent(tableFqn)}`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function approveDictionaryTable(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/dictionary/tables/${encodeURIComponent(tableFqn)}/approve`,
+    { method: 'POST', headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function approveDictionaryColumn(sourceId, tableFqn, columnName, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/dictionary/tables/${encodeURIComponent(tableFqn)}/columns/${encodeURIComponent(columnName)}/approve`,
+    { method: 'POST', headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+// ---------------------------------------------------------------------------
+// Data Source — metadata pipeline (profile / dictionary / domains / entities)
+// ---------------------------------------------------------------------------
+
+export async function generateDictionaryForSource(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/dictionary/generate`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getProfile(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/profile`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function generateDomains(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domains/generate`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getDomainSummary(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domains/summary`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function generateEntities(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/entities/generate`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getEntitySummary(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/entities/summary`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getMetadataJob(jobId, token) {
+  const res = await fetch(`/v1/metadata-jobs/${jobId}`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function runMetadataJob(jobId, token) {
+  const res = await fetch(`/v1/metadata-jobs/${jobId}/run`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function generateDomainRuleSuggestions(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domain-rules/suggest`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getDomainRuleSuggestions(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domain-rules/suggestions`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getDomainRules(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domain-rules`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function approveDomainRule(ruleId, token) {
+  const res = await fetch(`/v1/domain-rules/${ruleId}/approve`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function rejectDomainRule(ruleId, token) {
+  const res = await fetch(`/v1/domain-rules/${ruleId}/reject`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function generateEntityRuleSuggestions(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/entity-rules/suggest`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getEntityRuleSuggestions(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/entity-rules/suggestions`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getEntityRules(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/entity-rules`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function approveEntityRule(ruleId, token) {
+  const res = await fetch(`/v1/entity-rules/${ruleId}/approve`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function rejectEntityRule(ruleId, token) {
+  const res = await fetch(`/v1/entity-rules/${ruleId}/reject`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function analyzeDomainRefinements(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domain-refinements/analyze`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getDomainRefinements(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domain-refinements`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function approveDomainRefinement(id, token) {
+  const res = await fetch(`/v1/domain-refinements/${id}/approve`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function rejectDomainRefinement(id, token) {
+  const res = await fetch(`/v1/domain-refinements/${id}/reject`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}

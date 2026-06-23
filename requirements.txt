@@ -13,3 +13,8 @@ APScheduler>=3.10,<4.0
 fpdf2>=2.7,<3.0
 openai==2.38.0
 resend>=2.0,<3.0
+
+# Data source connectors (Phase 1: SQL Server)
+# PostgreSQL: psycopg2-binary>=2.9,<3.0  — add when PostgreSQL connector is implemented
+# MySQL:      mysqlclient>=2.2,<3.0       — add when MySQL connector is implemented
+pyodbc>=5.0,<6.0

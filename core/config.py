@@ -167,3 +167,10 @@ DYNAMIC_TOOL_HTTP_ALLOWED_DOMAINS: list[str] = [
     for d in os.getenv("DYNAMIC_TOOL_HTTP_ALLOWED_DOMAINS", "").split(",")
     if d.strip()
 ]
+
+# ---------------------------------------------------------------------------
+# Data source connector secrets backend
+# Supported values in Phase 1: "fernet" (default)
+# Future: "vault" (HashiCorp), "aws" (Secrets Manager), "azure" (Key Vault)
+# ---------------------------------------------------------------------------
+SECRET_BACKEND: str = os.getenv("SECRET_BACKEND", "fernet")

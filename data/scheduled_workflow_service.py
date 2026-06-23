@@ -1,7 +1,10 @@
 import datetime
 import logging
+import threading
 
 from data.db import get_connection
+
+_scheduler_tick_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -333,10 +336,28 @@ def _classify_result(result: dict) -> tuple[str, str | None]:
 
 def run_due_workflows() -> None:
     """APScheduler job — executes all due scheduled workflows."""
+    if not _scheduler_tick_lock.acquire(blocking=False):
+        logger.warning(
+            "run_due_workflows: skipping tick — previous scheduler tick is still running"
+        )
+        return
+
+    try:
+        _run_due_workflows_inner()
+    finally:
+        _scheduler_tick_lock.release()
+
+
+def _run_due_workflows_inner() -> None:
+    import sqlite3 as _sqlite3
     from core.input.input_handler import handle_input
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    due = get_due_scheduled_workflows(now_iso)
+    try:
+        due = get_due_scheduled_workflows(now_iso)
+    except _sqlite3.OperationalError as exc:
+        logger.warning("run_due_workflows: skipping tick — database is locked (%s)", exc)
+        return
     for wf in due:
         wid     = wf["id"]
         user_id = wf["user_id"]
