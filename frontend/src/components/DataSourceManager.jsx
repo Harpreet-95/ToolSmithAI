@@ -59,7 +59,7 @@ function Toast({ toast }) {
   )
 }
 
-export default function DataSourceManager({ C = {}, token, setActiveNav }) {
+export default function DataSourceManager({ C = {}, token, setActiveNav, openSource, dsSelectedSourceId, dsActiveTab, setDsSelectedSourceId, setDsActiveTab }) {
   const bg         = C.bg        ?? '#07091a'
   const surface    = C.surface   ?? '#0d1128'
   const border     = C.border    ?? '#1e2b52'
@@ -729,6 +729,102 @@ export default function DataSourceManager({ C = {}, token, setActiveNav }) {
     )
   }
 
+  // ── Source Workspace shell ───────────────────────────────────────────────
+  if (dsSelectedSourceId != null && setDsSelectedSourceId) {
+    const selectedSrc = sources.find(s => s.id === dsSelectedSourceId)
+    const WORKSPACE_TABS = [
+      { id: 'overview',   label: 'Overview'   },
+      { id: 'schema',     label: 'Schema'     },
+      { id: 'profile',    label: 'Profile'    },
+      { id: 'dictionary', label: 'Dictionary' },
+      { id: 'domains',    label: 'Domains'    },
+      { id: 'entities',   label: 'Entities'   },
+      { id: 'governance', label: 'Governance' },
+      { id: 'lineage',    label: 'Lineage'    },
+      { id: 'runs',       label: 'Runs'       },
+    ]
+    const activeTab = dsActiveTab ?? 'overview'
+    return (
+      <div style={{ fontFamily: FONT, color: text }}>
+
+        {/* ── Breadcrumb ── */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '20px', fontSize: '0.74rem', fontFamily: FONT }}>
+          <button
+            onClick={() => setDsSelectedSourceId(null)}
+            style={{ background: 'none', border: 'none', color: muted, cursor: 'pointer', fontFamily: FONT, fontSize: '0.74rem', padding: 0, display: 'flex', alignItems: 'center', gap: '5px' }}
+            onMouseEnter={e => { e.currentTarget.style.color = accent }}
+            onMouseLeave={e => { e.currentTarget.style.color = muted }}
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
+            </svg>
+            Data Sources
+          </button>
+          <span style={{ color: border }}>/</span>
+          <span style={{ color: textSec }}>{selectedSrc?.display_name ?? `Source #${dsSelectedSourceId}`}</span>
+        </div>
+
+        {/* ── Workspace header ── */}
+        <div style={{ marginBottom: '20px' }}>
+          <h2 style={{ margin: '0 0 6px', fontSize: '1.4rem', fontWeight: '700', color: text, letterSpacing: '-0.4px' }}>
+            {selectedSrc?.display_name ?? `Source #${dsSelectedSourceId}`}
+          </h2>
+          {selectedSrc && (
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '600', letterSpacing: '0.04em', background: `${accent}15`, color: accent, border: `1px solid ${accent}30` }}>
+                {SOURCE_TYPES.find(t => t.value === selectedSrc.source_type)?.label ?? selectedSrc.source_type}
+              </span>
+              {(() => {
+                const sm = SOURCE_STATUS_META[selectedSrc.source_status] ?? { label: selectedSrc.source_status ?? '—', color: '#94a3b8' }
+                return (
+                  <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', background: `${sm.color}20`, color: sm.color, border: `1px solid ${sm.color}50` }}>
+                    {sm.label}
+                  </span>
+                )
+              })()}
+            </div>
+          )}
+        </div>
+
+        {/* ── Tab bar ── */}
+        <div style={{ display: 'flex', marginBottom: '20px', borderBottom: `1px solid ${border}` }}>
+          {WORKSPACE_TABS.map(t => {
+            const isActive = activeTab === t.id
+            return (
+              <button
+                key={t.id}
+                onClick={() => setDsActiveTab && setDsActiveTab(t.id)}
+                style={{
+                  background: 'none', border: 'none',
+                  borderBottom: isActive ? `2px solid ${accent}` : '2px solid transparent',
+                  color: isActive ? accent : muted,
+                  fontFamily: FONT, fontSize: '0.8rem', fontWeight: isActive ? '600' : '400',
+                  padding: '8px 16px', cursor: 'pointer', marginBottom: '-1px',
+                  letterSpacing: '0.01em', whiteSpace: 'nowrap',
+                }}
+              >
+                {t.label}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* ── Tab placeholder ── */}
+        <div style={{ ...card({ padding: '48px 24px' }), textAlign: 'center' }}>
+          <p style={{ margin: '0 0 6px', fontSize: '0.9rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>
+            {WORKSPACE_TABS.find(t => t.id === activeTab)?.label}
+          </p>
+          <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>
+            Workspace shell ready. Detailed tab content will be moved in later phases.
+          </p>
+        </div>
+
+        <Toast toast={toast} />
+        <style>{`@keyframes dsm-spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    )
+  }
+
   return (
     <div style={{ fontFamily: FONT, color: text }}>
 
@@ -915,8 +1011,16 @@ export default function DataSourceManager({ C = {}, token, setActiveNav }) {
                     </div>
                   </div>
 
-                  {/* Actions: Remove (Test Connection lives in pipeline Step 1) */}
+                  {/* Actions: Open Workspace + Remove */}
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+                    {openSource && !delSt?.confirming && (
+                      <button
+                        onClick={() => openSource(src.id, 'overview')}
+                        style={{ ...btnGhost({ padding: '7px 14px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}
+                      >
+                        Open Workspace
+                      </button>
+                    )}
                     {/* Remove button — two-click confirm */}
                     {delSt?.confirming ? (
                       <>

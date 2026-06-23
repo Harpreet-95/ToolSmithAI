@@ -3297,7 +3297,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {activeNav === 'data-sources' && (
               <ErrorBoundary C={C}>
                 <Suspense fallback={<LazyFallback />}>
-                  <DataSourceManager C={C} token={token} setActiveNav={setActiveNav} />
+                  <DataSourceManager C={C} token={token} setActiveNav={setActiveNav} openSource={openSource} dsSelectedSourceId={dsSelectedSourceId} dsActiveTab={dsActiveTab} setDsSelectedSourceId={setDsSelectedSourceId} setDsActiveTab={setDsActiveTab} />
                 </Suspense>
               </ErrorBoundary>
             )}
