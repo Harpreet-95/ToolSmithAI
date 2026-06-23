@@ -3410,16 +3410,33 @@ function EngineOrchestrationPlan({
                   )
                 }
 
-                return (
-                  <div key={inp.name} style={{ padding: '11px 16px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                    <span style={{ fontSize: '0.8rem', color: C.textSec }}>
-                      <span style={{ fontWeight: '600', color: C.text }}>{label}</span>
-                      {inp.description ? ` — ${inp.description}` : ' — will be configured when this tool runs'}
-                    </span>
-                  </div>
-                )
+                return null
               })}
+            </div>
+          )}
+
+          {/* ── What This Tool Does ── */}
+          {nodes.length > 0 && (
+            <div style={{ marginTop: '16px', padding: '16px 18px', background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: '12px' }}>
+              <div style={{ fontSize: '0.66rem', fontWeight: '800', color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '10px' }}>
+                What This Tool Does
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '12px' }}>
+                {nodes.map((node, i) => {
+                  const actionLabel = node.description || node.label || node.name || actionToLabel(node.action_type)
+                  return (
+                    <div key={node.id ?? node.node_id ?? i} style={{ display: 'flex', alignItems: 'flex-start', gap: '9px' }}>
+                      <span style={{ color: '#10b981', fontWeight: '700', fontSize: '0.82rem', flexShrink: 0, lineHeight: 1.45 }}>✓</span>
+                      <span style={{ fontSize: '0.8rem', color: C.text, lineHeight: 1.45 }}>{actionLabel}</span>
+                    </div>
+                  )
+                })}
+              </div>
+              <div style={{ padding: '8px 12px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.14)', borderRadius: '8px' }}>
+                <span style={{ fontSize: '0.73rem', color: C.textSec, lineHeight: 1.5 }}>
+                  This AI tool will automatically analyze the selected dataset and generate actionable business intelligence.
+                </span>
+              </div>
             </div>
           )}
 
@@ -3682,6 +3699,7 @@ export default function AIWorkspace({
   externalResult, externalLoading, externalError,
   setActiveNav, onOpenReport, onExportReport,
   onUploadDataset,
+  onExecutionComplete,
   contextStats,
 }) {
   const fileInputRef    = useRef(null)
@@ -3888,6 +3906,7 @@ export default function AIWorkspace({
       setWsExecDurationMs(execStartedAtRef.current ? Date.now() - execStartedAtRef.current : null)
       const normalized = normalizeExecutionResult(execResult)
       setWsResult(normalized ? { ...normalized, _ai_meta: aiMeta } : null)
+      if (onExecutionComplete) onExecutionComplete()
     } catch (err) {
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
       setWsError(err.message?.replace(/^\d+:\s*/, '') || 'Execution failed.')
@@ -4052,6 +4071,7 @@ export default function AIWorkspace({
       const normalized = normalizeRun(runResult)
       setWsExecDurationMs(execStartedAtRef.current ? Date.now() - execStartedAtRef.current : null)
       setWsResult(normalizeExecutionResult(normalized))
+      if (onExecutionComplete) onExecutionComplete()
       setWsRunSource(wf.title)  // marks result as coming from a saved workflow
     } catch (err) {
       if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
