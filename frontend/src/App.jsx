@@ -2242,6 +2242,8 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const S = makeS(C)
 
   const [activeNav,       setActiveNav]       = useState(() => localStorage.getItem('ts_active_nav') ?? 'ai-workspace')
+  const [dsSelectedSourceId, setDsSelectedSourceId] = useState(() => { const v = localStorage.getItem('ts_ds_source'); return v ? Number(v) : null })
+  const [dsActiveTab,        setDsActiveTab]        = useState(() => localStorage.getItem('ts_ds_tab') ?? 'overview')
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [cpCurrent,   setCpCurrent]   = useState('')
   const [cpNew,       setCpNew]       = useState('')
@@ -2394,6 +2396,18 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   }
 
   useEffect(() => { localStorage.setItem('ts_active_nav', activeNav) }, [activeNav])
+  useEffect(() => {
+    if (dsSelectedSourceId == null) localStorage.removeItem('ts_ds_source')
+    else localStorage.setItem('ts_ds_source', String(dsSelectedSourceId))
+  }, [dsSelectedSourceId])
+  useEffect(() => { localStorage.setItem('ts_ds_tab', dsActiveTab) }, [dsActiveTab])
+
+  function openSource(id, tab = 'overview') {
+    setDsSelectedSourceId(id)
+    setDsActiveTab(tab)
+    setActiveNav('data-sources')
+  }
+
   useEffect(() => { refreshHistory() }, [token])
   useEffect(() => { if (activeNav === 'history') refreshHistory() }, [activeNav]) // eslint-disable-line react-hooks/exhaustive-deps
 
