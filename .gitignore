@@ -9,3 +9,7 @@ data/uploads/
 
 # Local dev artifacts
 test_email_renderer.txt
+
+# Local SQLite runtime files
+*.db-shm
+*.db-wal
