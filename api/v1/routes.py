@@ -90,6 +90,71 @@ from data.email_log_service import (
     get_email_log_summary,
 )
 
+# Side-effect imports: each module registers its connector into ConnectorRegistry on import.
+import core.connectors.relational.mssql       # noqa: F401
+import core.connectors.relational.postgresql  # noqa: F401
+import core.connectors.relational.mysql       # noqa: F401
+from data.datasource_service import (
+    create_data_source,
+    delete_data_source,
+    get_metadata_job,
+    list_data_sources,
+    run_metadata_job,
+    test_data_source,
+)
+from data.schema_service import (
+    get_latest_snapshot,
+    run_discovery,
+)
+from data.dictionary_service import (
+    approve_column_dictionary,
+    approve_table_dictionary,
+    generate_and_save_dictionary,
+    get_table_dictionary,
+    list_dictionary_tables,
+)
+from data.profiling_service import (
+    continue_batch_profiling,
+    get_latest_profile,
+    list_profile_history,
+    run_full_profiling,
+    run_structural_profiling,
+    start_batch_profiling,
+)
+from data.domain_service import (
+    generate_domain_assignments,
+    get_domain_summary,
+    list_domain_assignments,
+)
+from data.entity_service import (
+    generate_entity_assignments,
+    list_entity_assignments,
+    get_entity_summary,
+)
+from data.domain_learning_service import (
+    approve_domain_rule,
+    generate_domain_rule_suggestions,
+    list_domain_rule_suggestions,
+    list_domain_rules,
+    reject_domain_rule,
+)
+from data.entity_learning_service import (
+    approve_entity_rule,
+    generate_entity_rule_suggestions,
+    list_entity_rule_suggestions,
+    list_entity_rules,
+    reject_entity_rule,
+)
+from data.domain_refinement_service import (
+    analyze_rule_refinement,
+    approve_refinement_suggestion,
+    list_refinement_suggestions,
+    reject_refinement_suggestion,
+)
+
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _compute_histogram(series, n_bins: int = 10) -> list:
     """Compute up to n_bins equal-width histogram bins from a non-empty numeric series.
@@ -3845,3 +3910,630 @@ def delete_notification_route(
 @router.get("/health")
 def health() -> dict:
     return {"status": "healthy"}
+
+
+# ---------------------------------------------------------------------------
+# Data Sources  (/v1/sources)
+# ---------------------------------------------------------------------------
+
+class DataSourceCreateRequest(BaseModel):
+    display_name: str
+    source_type: str
+    config: dict = {}
+    metadata: dict = {}
+
+
+@router.post("/sources")
+def create_source(
+    body: DataSourceCreateRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        record = create_data_source(
+            user_id=user.user_id,
+            payload={
+                "display_name": body.display_name,
+                "source_type": body.source_type,
+                "config": body.config,
+                "metadata": body.metadata,
+            },
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content=build_error_response(str(exc)))
+    return {"status": "success", "data": record}
+
+
+@router.get("/sources")
+def list_sources(user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    return {"status": "success", "data": list_data_sources(user.user_id)}
+
+
+@router.delete("/sources/{source_id}")
+def delete_source(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = delete_data_source(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=409, content=build_error_response(str(exc)))
+    except Exception as exc:
+        logger.exception("delete_source failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Data source deletion failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/test")
+def test_source(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = test_data_source(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return result
+
+
+@router.post("/sources/{source_id}/discover")
+def discover_source_schema(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = run_discovery(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Schema discovery failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/schema")
+def get_source_schema(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = get_latest_snapshot(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("No schema snapshot found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/dictionary/generate")
+def generate_dictionary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = generate_and_save_dictionary(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Dictionary generation failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/dictionary")
+def list_dictionary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = list_dictionary_tables(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/dictionary/tables/{table_fqn:path}")
+def get_table_dictionary_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = get_table_dictionary(source_id, user.user_id, table_fqn)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Table dictionary entry not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/dictionary/tables/{table_fqn}/approve")
+def approve_table_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = approve_table_dictionary(source_id, user.user_id, table_fqn)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Dictionary table entry not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/dictionary/tables/{table_fqn}/columns/{column_name}/approve")
+def approve_column_route(
+    source_id: int,
+    table_fqn: str,
+    column_name: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = approve_column_dictionary(source_id, user.user_id, table_fqn, column_name)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Dictionary column entry not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Metadata Profiling  (/v1/sources/{id}/profile/...)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/profile/structural")
+def run_structural_profile_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = run_structural_profiling(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Structural profiling failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/profile")
+def get_profile_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = get_latest_profile(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("No profiling data found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/profile/history")
+def get_profile_history_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = list_profile_history(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/profile/full")
+def run_full_profile_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = run_full_profiling(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Full profiling failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/profile/batch/start")
+def start_batch_profile_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = start_batch_profiling(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Batch profiling start failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": {
+        "profiling_snapshot_id":  result.profiling_snapshot_id,
+        "next_table_index":        result.next_table_index,
+        "total_tables":            result.total_tables,
+        "status":                  result.status.value,
+    }}
+
+
+@router.post("/sources/{source_id}/profile/batch/{profiling_snapshot_id}/continue")
+def continue_batch_profile_route(
+    source_id: int,
+    profiling_snapshot_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = continue_batch_profiling(source_id, user.user_id, profiling_snapshot_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Batch profiling step failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Profiling snapshot not found."))
+    return {"status": "success", "data": {
+        "profiling_snapshot_id":          result.profiling_snapshot_id,
+        "next_table_index":                result.next_table_index,
+        "total_tables":                    result.total_tables,
+        "completed_tables":                result.completed_tables,
+        "statistical_tables_completed":    result.statistical_tables_completed,
+        "structural_tables_completed":     result.structural_tables_completed,
+        "is_complete":                     result.status.value == "COMPLETE",
+        "status":                          result.status.value,
+    }}
+
+
+# ---------------------------------------------------------------------------
+# Domain Detection  (/v1/sources/{id}/domains/...)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/domains/generate")
+def generate_domains_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = generate_domain_assignments(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("generate_domains_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Domain generation failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/domains")
+def list_domains_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_domain_assignments(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_domains_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve domain assignments."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/domains/summary")
+def get_domain_summary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_domain_summary(source_id, user.user_id)
+    except Exception:
+        logger.exception("get_domain_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve domain summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Entity Detection  (/v1/sources/{id}/entities/...)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/entities/generate")
+def generate_entities_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = generate_entity_assignments(source_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("generate_entities_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Entity generation failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/entities")
+def list_entities_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_entity_assignments(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_entities_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve entity assignments."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/entities/summary")
+def get_entity_summary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_entity_summary(source_id, user.user_id)
+    except Exception:
+        logger.exception("get_entity_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve entity summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Domain Learning Rules  (/v1/sources/{id}/domain-rules  &  /v1/domain-rules/{id}/...)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/domain-rules/suggest")
+def suggest_domain_rules_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = generate_domain_rule_suggestions(source_id, user.user_id)
+    except Exception:
+        logger.exception("suggest_domain_rules_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Domain rule suggestion failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/domain-rules/suggestions")
+def list_domain_rule_suggestions_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_domain_rule_suggestions(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_domain_rule_suggestions_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve domain rule suggestions."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/domain-rules")
+def list_domain_rules_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_domain_rules(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_domain_rules_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve domain rules."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/domain-rules/{rule_id}/approve")
+def approve_domain_rule_route(
+    rule_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = approve_domain_rule(rule_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("approve_domain_rule_route failed for rule_id=%s", rule_id)
+        return JSONResponse(status_code=500, content=build_error_response("Domain rule approval failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Domain rule not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/domain-rules/{rule_id}/reject")
+def reject_domain_rule_route(
+    rule_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = reject_domain_rule(rule_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("reject_domain_rule_route failed for rule_id=%s", rule_id)
+        return JSONResponse(status_code=500, content=build_error_response("Domain rule rejection failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Domain rule not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Entity Learning Rules  (/v1/sources/{id}/entity-rules  &  /v1/entity-rules/{id}/...)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/entity-rules/suggest")
+def suggest_entity_rules_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = generate_entity_rule_suggestions(source_id, user.user_id)
+    except Exception:
+        logger.exception("suggest_entity_rules_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Entity rule suggestion failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/entity-rules/suggestions")
+def list_entity_rule_suggestions_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_entity_rule_suggestions(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_entity_rule_suggestions_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve entity rule suggestions."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/entity-rules")
+def list_entity_rules_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_entity_rules(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_entity_rules_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve entity rules."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/entity-rules/{rule_id}/approve")
+def approve_entity_rule_route(
+    rule_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = approve_entity_rule(rule_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("approve_entity_rule_route failed for rule_id=%s", rule_id)
+        return JSONResponse(status_code=500, content=build_error_response("Entity rule approval failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Entity rule not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/entity-rules/{rule_id}/reject")
+def reject_entity_rule_route(
+    rule_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = reject_entity_rule(rule_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("reject_entity_rule_route failed for rule_id=%s", rule_id)
+        return JSONResponse(status_code=500, content=build_error_response("Entity rule rejection failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Entity rule not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Domain Rule Refinements  (/v1/sources/{id}/domain-refinements  &
+#                           /v1/domain-refinements/{id}/...)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/domain-refinements/analyze")
+def analyze_domain_refinements_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = analyze_rule_refinement(source_id, user.user_id)
+    except Exception:
+        logger.exception("analyze_domain_refinements_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Domain refinement analysis failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/domain-refinements")
+def list_domain_refinements_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = list_refinement_suggestions(source_id, user.user_id)
+    except Exception:
+        logger.exception("list_domain_refinements_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve refinement suggestions."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/domain-refinements/{suggestion_id}/approve")
+def approve_domain_refinement_route(
+    suggestion_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = approve_refinement_suggestion(suggestion_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("approve_domain_refinement_route failed for suggestion_id=%s", suggestion_id)
+        return JSONResponse(status_code=500, content=build_error_response("Refinement suggestion approval failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Refinement suggestion not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/domain-refinements/{suggestion_id}/reject")
+def reject_domain_refinement_route(
+    suggestion_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = reject_refinement_suggestion(suggestion_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception("reject_domain_refinement_route failed for suggestion_id=%s", suggestion_id)
+        return JSONResponse(status_code=500, content=build_error_response("Refinement suggestion rejection failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Refinement suggestion not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Metadata Jobs  (/v1/metadata-jobs)
+# ---------------------------------------------------------------------------
+
+@router.post("/metadata-jobs/{job_id}/run")
+def run_metadata_job_route(
+    job_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    if get_metadata_job(job_id, user.user_id) is None:
+        return JSONResponse(status_code=404, content=build_error_response("Metadata job not found."))
+    try:
+        run_metadata_job(job_id)
+    except Exception:
+        return JSONResponse(status_code=500, content=build_error_response("Metadata job execution failed."))
+    updated = get_metadata_job(job_id, user.user_id)
+    return {"status": "success", "data": updated}
+
+
+@router.get("/metadata-jobs/{job_id}")
+def get_metadata_job_route(
+    job_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    job = get_metadata_job(job_id, user.user_id)
+    if job is None:
+        return JSONResponse(status_code=404, content=build_error_response("Metadata job not found."))
+    return {"status": "success", "data": job}
