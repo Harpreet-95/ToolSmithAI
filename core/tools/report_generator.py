@@ -1089,10 +1089,19 @@ def _build_recommendation_section(
         if cols_with_missing:
             n        = len(cols_with_missing)
             priority = "high" if (completeness_pct is not None and completeness_pct < 80) else "medium"
+            sorted_missing = sorted(
+                cols_with_missing,
+                key=lambda c: missing_values.get(c, 0),
+                reverse=True,
+            )
+            top_names  = [bm.get(c, lm.get(c, c)) for c in sorted_missing[:3]]
+            col_list   = ", ".join(top_names)
+            col_suffix = "…" if n > 3 else ""
             recs.append({
                 "title":       "Review and Clean Missing Data",
                 "reason":      (
-                    f"{n} column{'s' if n > 1 else ''} contain missing values. "
+                    f"Missing values in: {col_list}{col_suffix} "
+                    f"({n} column{'s' if n > 1 else ''} total). "
                     "Fill or remove missing values before relying on analysis conclusions."
                 ),
                 "priority":    priority,
@@ -1119,13 +1128,27 @@ def _build_recommendation_section(
     try:
         date_cols = date_profile.get("date_columns") or []
         if date_cols:
-            col_name = date_cols[0]["column"]
+            dc         = date_cols[0]
+            col_name   = dc["column"]
+            col_label  = bm.get(col_name, lm.get(col_name, col_name))
+            range_days = dc.get("range_days")
+            try:
+                range_days = int(range_days) if range_days is not None else None
+            except (TypeError, ValueError):
+                range_days = None
+            if range_days and range_days > 0:
+                date_reason = (
+                    f"{col_label} spans {range_days:,} days of data. "
+                    "Set up a scheduled report to track changes over time automatically."
+                )
+            else:
+                date_reason = (
+                    f"A date column ({col_label}) is present. "
+                    "Set up a scheduled report to track changes over time automatically."
+                )
             recs.append({
                 "title":       "Schedule Recurring Trend Monitoring",
-                "reason":      (
-                    f"A date column ({bm.get(col_name, lm.get(col_name, col_name))}) is present. "
-                    "Set up a scheduled report to track changes over time automatically."
-                ),
+                "reason":      date_reason,
                 "priority":    "medium",
                 "action_type": "schedule",
                 "confidence":  "high",
@@ -1158,12 +1181,30 @@ def _build_recommendation_section(
 
     # 5. Multiple numeric columns — correlation analysis
     if numeric_count >= 2 and len(recs) < 5:
-        recs.append({
-            "title":       "Investigate Numeric Relationships",
-            "reason":      (
+        try:
+            strong = [p for p in (correlation_profile or []) if abs(p.get("correlation", 0)) >= 0.50]
+            if strong:
+                top   = strong[0]
+                a_d   = bm.get(top["column_a"], lm.get(top["column_a"], top["column_a"]))
+                b_d   = bm.get(top["column_b"], lm.get(top["column_b"], top["column_b"]))
+                corr  = round(abs(float(top["correlation"])), 2)
+                num_reason = (
+                    f"{a_d} and {b_d} show a strong relationship (r={corr}). "
+                    "Investigate this pair and other numeric correlations to understand key drivers."
+                )
+            else:
+                num_reason = (
+                    f"{numeric_count} numeric columns are available. "
+                    "Compare indicators for correlations or anomalies that may drive outcomes."
+                )
+        except Exception:
+            num_reason = (
                 f"{numeric_count} numeric columns are available. "
                 "Compare indicators for correlations or anomalies that may drive outcomes."
-            ),
+            )
+        recs.append({
+            "title":       "Investigate Numeric Relationships",
+            "reason":      num_reason,
             "priority":    "medium",
             "action_type": "review",
             "confidence":  "medium",
@@ -3088,12 +3129,21 @@ def generate_dataset_report(
     })
 
     # ── Key Metrics (KPI — structural) ───────────────────────────────────────
-    sections.append(_build_kpi_section(
-        row_count, column_count, numeric_profile, missing_values, categorical_profile,
-    ))
+    # Structural metadata cards (row count, completeness, etc.) are only useful
+    # in data-quality and general/fallback reports.  Executive, trend, anomaly,
+    # and forecast intents suppress them — the cards add no business signal there.
+    _structural_kpi_intents = {"data_quality", "full_intelligence"}
+    if _strategy is None or _strategy.intent_type in _structural_kpi_intents:
+        sections.append(_build_kpi_section(
+            row_count, column_count, numeric_profile, missing_values, categorical_profile,
+        ))
 
     # ── Business Intelligence KPIs (semantic — skipped on old datasets) ───────
-    if semantic_profile:
+    # Business KPI cards are only useful when the report intent is performance-
+    # or business-focused.  Anomaly, trend, and data-quality reports suppress them
+    # so the KPI grid does not appear where it carries no interpretive value.
+    _biz_kpi_intents = {"executive_brief", "kpi_scorecard", "full_intelligence"}
+    if semantic_profile and (_strategy is None or _strategy.intent_type in _biz_kpi_intents):
         biz_kpi_sec = build_business_kpi_section(
             semantic_profile      = semantic_profile,
             numeric_profile       = numeric_profile,
