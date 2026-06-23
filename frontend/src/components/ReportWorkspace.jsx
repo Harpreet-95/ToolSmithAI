@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { askReport } from '../api/client'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
@@ -140,17 +140,20 @@ function ExecutiveKpiGrid({ sections, C }) {
 }
 
 // ── ExecutiveIntelligencePanel ────────────────────────────────────────────────
-// Renders Key Decisions / Risks / Opportunities from executive_summary
-// structured fields: key_takeaways[], risks[], opportunities[].
-function ExecutiveIntelligencePanel({ sections, C }) {
+// Renders Key Decisions / Risks / Opportunities / Recommendations in a grid.
+// sections     → executive_summary structured fields: key_takeaways[], risks[], opportunities[]
+// recSections  → recommendation sections: each has recommendations[]{title}
+function ExecutiveIntelligencePanel({ sections, recSections = [], C }) {
   const decisions     = sections.flatMap(s => s.key_takeaways  || []).slice(0, 5)
   const risks         = sections.flatMap(s => s.risks          || []).slice(0, 4)
   const opportunities = sections.flatMap(s => s.opportunities  || []).slice(0, 4)
+  const recTitles     = recSections.flatMap(s => (s.recommendations || []).map(r => r.title)).filter(Boolean).slice(0, 4)
 
   const panels = [
-    { key: 'decisions',     label: 'Key Decisions',  items: decisions,     color: C.accent  },
-    { key: 'risks',         label: 'Risks',           items: risks,         color: C.danger  },
-    { key: 'opportunities', label: 'Opportunities',   items: opportunities, color: C.success },
+    { key: 'decisions',       label: 'Key Decisions',   items: decisions,     color: C.accent  },
+    { key: 'risks',           label: 'Risks',            items: risks,         color: C.danger  },
+    { key: 'opportunities',   label: 'Opportunities',    items: opportunities, color: C.success },
+    { key: 'recommendations', label: 'Recommendations',  items: recTitles,     color: C.warn    },
   ].filter(p => p.items.length > 0)
 
   if (!panels.length) return null
@@ -190,9 +193,8 @@ function ExecutiveRecommendationList({ sections, C }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
       {recs.map((rec, i) => {
-        const priorityColor    = { high: C.danger, medium: C.warn, low: C.success }[rec.priority] || C.textMuted
-        const confidenceColor  = { high: C.success, medium: C.warn }[rec.confidence] || C.textMuted
-        const owner            = ACTION_OWNER[rec.action_type] || 'Team'
+        const priorityColor   = { high: C.danger, medium: C.warn, low: C.success }[rec.priority] || C.textMuted
+        const confidenceColor = { high: C.success, medium: C.warn }[rec.confidence] || C.textMuted
 
         return (
           <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '16px 20px' }}>
@@ -214,21 +216,12 @@ function ExecutiveRecommendationList({ sections, C }) {
               </div>
             </div>
 
-            {/* Business impact — derived from rec.reason */}
+            {/* Reason */}
             {rec.reason && (
-              <div style={{ fontSize: '0.78rem', color: C.textSec, lineHeight: 1.6, marginBottom: '10px' }}>
-                <span style={{ fontSize: '0.62rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.07em', marginRight: '6px' }}>
-                  Business Impact
-                </span>
+              <div style={{ fontSize: '0.78rem', color: C.textSec, lineHeight: 1.6 }}>
                 {rec.reason}
               </div>
             )}
-
-            {/* Owner */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', paddingTop: '8px', borderTop: `1px solid ${C.border}` }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: C.textMuted, flexShrink: 0 }}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-              <span style={{ fontSize: '0.67rem', color: C.textMuted, fontWeight: '500' }}>{owner}</span>
-            </div>
 
           </div>
         )
@@ -302,6 +295,43 @@ function TabEmpty({ message, C }) {
   return (
     <div style={{ padding: '64px 0', textAlign: 'center' }}>
       <div style={{ fontSize: '0.85rem', color: C.textMuted }}>{message}</div>
+    </div>
+  )
+}
+
+// ── InsightCard ───────────────────────────────────────────────────────────────
+// Fixed-height card wrapper for AI Analysis items. Detects real overflow after
+// mount and shows a "View all / Show less" toggle only when content is clipped.
+const INSIGHT_MAX_H = 300
+
+function InsightCard({ sec, C, SectionRenderer }) {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    const el = ref.current
+    if (el) setOverflows(el.scrollHeight > el.offsetHeight)
+  }, [])
+
+  return (
+    <div>
+      <div ref={ref} style={{ maxHeight: expanded ? 'none' : INSIGHT_MAX_H, overflow: 'hidden', borderRadius: '10px', position: 'relative' }}>
+        <SectionRenderer section={sec} C={C} />
+        {!expanded && overflows && (
+          <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '56px', background: `linear-gradient(transparent, ${C.surface})`, borderRadius: '0 0 10px 10px', pointerEvents: 'none' }} />
+        )}
+      </div>
+      {overflows && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          style={{ marginTop: '6px', background: 'none', border: 'none', color: C.accent, cursor: 'pointer', fontSize: '0.74rem', fontFamily: FONT, fontWeight: '500', padding: '2px 0', display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {expanded ? 'Show less' : 'View all'}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            {expanded ? <polyline points="18 15 12 9 6 15" /> : <polyline points="6 9 12 15 18 9" />}
+          </svg>
+        </button>
+      )}
     </div>
   )
 }
@@ -464,7 +494,7 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
               {moreOpen && (
                 <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: C.surface, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '4px', zIndex: 99, minWidth: '185px', boxShadow: '0 8px 24px rgba(0,0,0,0.25)' }}>
 
-                  <button disabled style={{ ...menuItemBase, color: C.textMuted, opacity: 0.45, cursor: 'not-allowed' }}>
+                  <button disabled style={{ ...menuItemBase, color: C.textMuted, cursor: 'not-allowed' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
                     <span style={{ flex: 1 }}>Share Report</span>
                     <span style={{ fontSize: '0.57rem', fontWeight: '700', letterSpacing: '0.05em' }}>SOON</span>
@@ -479,7 +509,7 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
                     Email Report
                   </button>
 
-                  <button disabled style={{ ...menuItemBase, color: C.textMuted, opacity: 0.45, cursor: 'not-allowed' }}>
+                  <button disabled style={{ ...menuItemBase, color: C.textMuted, cursor: 'not-allowed' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                     <span style={{ flex: 1 }}>Schedule Delivery</span>
                     <span style={{ fontSize: '0.57rem', fontWeight: '700', letterSpacing: '0.05em' }}>SOON</span>
@@ -487,13 +517,13 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
 
                   <div style={{ height: '1px', background: C.border, margin: '4px 6px' }} />
 
-                  <button disabled style={{ ...menuItemBase, color: C.textMuted, opacity: 0.45, cursor: 'not-allowed' }}>
+                  <button disabled style={{ ...menuItemBase, color: C.textMuted, cursor: 'not-allowed' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                     <span style={{ flex: 1 }}>Duplicate</span>
                     <span style={{ fontSize: '0.57rem', fontWeight: '700', letterSpacing: '0.05em' }}>SOON</span>
                   </button>
 
-                  <button disabled style={{ ...menuItemBase, color: C.textMuted, opacity: 0.45, cursor: 'not-allowed' }}>
+                  <button disabled style={{ ...menuItemBase, color: C.textMuted, cursor: 'not-allowed' }}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
                     <span style={{ flex: 1 }}>Delete</span>
                     <span style={{ fontSize: '0.57rem', fontWeight: '700', letterSpacing: '0.05em' }}>SOON</span>
@@ -599,11 +629,11 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
               </div>
             )}
 
-            {/* 3b. Key Decisions / Risks / Opportunities — from exec summary structured fields */}
-            {g.execSummary.length > 0 && (
+            {/* 3b. Key Decisions / Risks / Opportunities / Recommendations — intelligence grid */}
+            {(g.execSummary.length > 0 || g.recommendation.length > 0) && (
               <div style={{ marginBottom: '32px' }}>
                 {sl('Intelligence')}
-                <ExecutiveIntelligencePanel sections={g.execSummary} C={C} />
+                <ExecutiveIntelligencePanel sections={g.execSummary} recSections={g.recommendation} C={C} />
               </div>
             )}
 
@@ -613,21 +643,12 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
                 {sl('AI Analysis')}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', alignItems: 'start' }}>
                   {g.insight.map((sec, i) => (
-                    <div key={`insight-${i}`} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '10px', padding: '20px 24px' }}>
-                      <SectionRenderer section={sec} C={C} />
-                    </div>
+                    <InsightCard key={`insight-${i}`} sec={sec} C={C} SectionRenderer={SectionRenderer} />
                   ))}
                 </div>
               </div>
             )}
 
-            {/* 4. Recommendations — priority + business impact + confidence + owner */}
-            {g.recommendation.length > 0 && (
-              <div style={{ marginBottom: '32px' }}>
-                {sl('Recommendations')}
-                <ExecutiveRecommendationList sections={g.recommendation} C={C} />
-              </div>
-            )}
 
             {/* 6. Executive Summary prose — skipped when proseFirst (already rendered above) */}
             {!proseFirst && g.execSummary.length > 0 && (
@@ -723,7 +744,7 @@ export default function ReportWorkspace({ sections, reportMeta, C, onExport, onE
                 style={{ flex: 1, background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', padding: '9px 13px', fontSize: '0.8rem', color: C.text, fontFamily: FONT, outline: 'none' }}
               />
               <button onClick={handleAsk} disabled={askLoading || !askQ.trim()}
-                style={{ flexShrink: 0, background: askLoading || !askQ.trim() ? C.bg : C.accent, border: `1px solid ${askLoading || !askQ.trim() ? C.border : C.accent}`, borderRadius: '8px', padding: '9px 18px', fontSize: '0.78rem', color: askLoading || !askQ.trim() ? C.textSec : '#fff', cursor: askLoading || !askQ.trim() ? 'not-allowed' : 'pointer', fontFamily: FONT, fontWeight: '600', opacity: !askQ.trim() ? 0.5 : 1, transition: 'background 0.12s, color 0.12s, border-color 0.12s' }}>
+                style={{ flexShrink: 0, background: askLoading || !askQ.trim() ? C.bg : C.accent, border: `1px solid ${askLoading || !askQ.trim() ? C.border : C.accent}`, borderRadius: '8px', padding: '9px 18px', fontSize: '0.78rem', color: askLoading || !askQ.trim() ? C.textSec : '#fff', cursor: askLoading || !askQ.trim() ? 'not-allowed' : 'pointer', fontFamily: FONT, fontWeight: '600', opacity: !askQ.trim() ? 0.7 : 1, transition: 'background 0.12s, color 0.12s, border-color 0.12s' }}>
                 {askLoading ? 'Thinking…' : 'Ask'}
               </button>
             </div>
