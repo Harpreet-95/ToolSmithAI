@@ -33,7 +33,7 @@ function Badge({ label, bg, color, border }) {
 
 const COLS_HDR = ['185px', '170px', '105px', '85px', '1fr', '88px']
 
-export default function DictionaryReview({ C = {}, token }) {
+export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp = null, embedded = false, hideSourceSelector = false }) {
   const bg      = C.bg        ?? '#07091a'
   const surface = C.surface   ?? '#0d1128'
   const border  = C.border    ?? '#1e2b52'
@@ -44,7 +44,7 @@ export default function DictionaryReview({ C = {}, token }) {
   const success = C.success   ?? '#10b981'
 
   const [sources,      setSources]      = useState([])
-  const [sourceId,     setSourceId]     = useState(null)
+  const [sourceId,     setSourceId]     = useState(sourceIdProp ?? null)
   const [tables,       setTables]       = useState([])
   const [loadingTbls,  setLoadingTbls]  = useState(false)
   const [selectedFqn,  setSelectedFqn]  = useState(null)
@@ -59,8 +59,9 @@ export default function DictionaryReview({ C = {}, token }) {
   const [approvingCols,  setApprovingCols]  = useState(new Set())
   const [coverage,       setCoverage]       = useState(null)
 
-  // Load sources once
+  // Load sources once (skip when a sourceId is pre-bound and selector is hidden)
   useEffect(() => {
+    if (hideSourceSelector && sourceIdProp != null) return
     listDataSources(token)
       .then(d => {
         const s = d?.data ?? []
@@ -154,20 +155,22 @@ export default function DictionaryReview({ C = {}, token }) {
   const lbl   = { fontSize: '0.65rem', color: muted, fontWeight: '600', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '5px' }
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 112px)', fontFamily: FONT, color: text, gap: '16px', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: embedded ? 'calc(100vh - 250px)' : 'calc(100vh - 112px)', fontFamily: FONT, color: text, gap: '16px', overflow: 'hidden' }}>
 
       {/* ── Left panel ───────────────────────────────────────────────────── */}
       <div style={{ width: '290px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '10px', overflow: 'hidden' }}>
 
-        {/* Source selector */}
-        <div>
-          <div style={lbl}>Data Source</div>
-          <select style={{ ...inp(), cursor: 'pointer' }} value={sourceId ?? ''} onChange={e => setSourceId(e.target.value ? Number(e.target.value) : null)}>
-            {sources.length === 0 && <option value="">No sources</option>}
-            {sources.length > 1  && <option value="">Select source…</option>}
-            {sources.map(s => <option key={s.id} value={s.id}>{s.display_name}</option>)}
-          </select>
-        </div>
+        {/* Source selector — hidden when pre-bound from workspace */}
+        {!hideSourceSelector && (
+          <div>
+            <div style={lbl}>Data Source</div>
+            <select style={{ ...inp(), cursor: 'pointer' }} value={sourceId ?? ''} onChange={e => setSourceId(e.target.value ? Number(e.target.value) : null)}>
+              {sources.length === 0 && <option value="">No sources</option>}
+              {sources.length > 1  && <option value="">Select source…</option>}
+              {sources.map(s => <option key={s.id} value={s.id}>{s.display_name}</option>)}
+            </select>
+          </div>
+        )}
 
         {/* Search */}
         <input style={inp()} placeholder="Search tables…" value={search} onChange={e => setSearch(e.target.value)} />

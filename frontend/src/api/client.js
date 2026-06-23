@@ -871,3 +871,24 @@ export async function rejectDomainRefinement(id, token) {
   })
   return parseResponse(res)
 }
+
+export async function listDomainAssignments(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/domains`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function listEntityAssignments(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/entities`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function getProfileHistory(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/profile/history`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}

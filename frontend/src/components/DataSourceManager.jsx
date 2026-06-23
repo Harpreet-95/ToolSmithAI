@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, createDataSource, deleteDataSource, discoverDataSourceSchema, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getEntityRules, getEntitySummary, getMetadataJob, getProfile, listDataSources, listDictionaryTables, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, testDataSource } from '../api/client'
+import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, createDataSource, deleteDataSource, discoverDataSourceSchema, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getEntityRules, getEntitySummary, getMetadataJob, getProfile, getProfileHistory, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, testDataSource } from '../api/client'
+import DictionaryReview from './DictionaryReview'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
@@ -95,6 +96,9 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [refinementActionState, setRefinementActionState] = useState({})  // { [refId]: bool }
   const [entityRulesState,      setEntityRulesState]      = useState({})  // { [srcId]: { open, loading, generating, rules, error } }
   const [entityRuleActionState, setEntityRuleActionState] = useState({})  // { [ruleId]: bool }
+  const [domAssignState,  setDomAssignState]  = useState({})  // { [srcId]: { loading, data, error } }
+  const [entAssignState,  setEntAssignState]  = useState({})  // { [srcId]: { loading, data, error } }
+  const [profileHistState,setProfileHistState]= useState({})  // { [srcId]: { loading, data, error } }
 
   function notify(msg, ok = true) {
     setToast({ text: msg, ok })
@@ -148,6 +152,25 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   }
 
   useEffect(() => { loadSources() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lazy-load workspace tab data when tab or selected source changes
+  useEffect(() => {
+    if (dsSelectedSourceId == null) return
+    const id = dsSelectedSourceId
+    const src = sources.find(s => s.id === id)
+    if (dsActiveTab === 'schema' && !schemaState[id]?.data && !schemaState[id]?.loading && src?.last_snapshot_id != null) {
+      loadSchema(id)
+    }
+    if (dsActiveTab === 'domains' && !domAssignState[id]?.data && !domAssignState[id]?.loading) {
+      loadDomainAssignments(id)
+    }
+    if (dsActiveTab === 'entities' && !entAssignState[id]?.data && !entAssignState[id]?.loading) {
+      loadEntityAssignments(id)
+    }
+    if (dsActiveTab === 'runs' && !profileHistState[id]?.data && !profileHistState[id]?.loading) {
+      loadProfileHistory(id)
+    }
+  }, [dsActiveTab, dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleTypeChange(value) {
     const st = SOURCE_TYPES.find(t => t.value === value)
@@ -291,6 +314,47 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       setEntityState(s => ({ ...s, [id]: { ...(s[id] ?? {}), loading: false, summary: resp?.data ?? null } }))
     } catch (e) {
       setEntityState(s => ({ ...s, [id]: { ...(s[id] ?? {}), loading: false, error: e?.message ?? 'Failed to load entity status.' } }))
+    }
+  }
+
+  async function loadDomainAssignments(id) {
+    setDomAssignState(s => ({ ...s, [id]: { loading: true, error: null } }))
+    try {
+      const resp = await listDomainAssignments(id, token)
+      setDomAssignState(s => ({ ...s, [id]: { loading: false, data: resp?.data ?? [] } }))
+    } catch (e) {
+      setDomAssignState(s => ({ ...s, [id]: { loading: false, error: e?.message ?? 'Failed to load domain assignments.' } }))
+    }
+  }
+
+  async function loadEntityAssignments(id) {
+    setEntAssignState(s => ({ ...s, [id]: { loading: true, error: null } }))
+    try {
+      const resp = await listEntityAssignments(id, token)
+      setEntAssignState(s => ({ ...s, [id]: { loading: false, data: resp?.data ?? [] } }))
+    } catch (e) {
+      setEntAssignState(s => ({ ...s, [id]: { loading: false, error: e?.message ?? 'Failed to load entity assignments.' } }))
+    }
+  }
+
+  async function loadProfileHistory(id) {
+    setProfileHistState(s => ({ ...s, [id]: { loading: true, error: null } }))
+    try {
+      const resp = await getProfileHistory(id, token)
+      setProfileHistState(s => ({ ...s, [id]: { loading: false, data: resp?.data ?? [] } }))
+    } catch (e) {
+      setProfileHistState(s => ({ ...s, [id]: { loading: false, error: e?.message ?? 'Failed to load profile history.' } }))
+    }
+  }
+
+  async function loadSchema(id) {
+    setSchemaState(s => ({ ...s, [id]: { loading: true } }))
+    try {
+      const resp = await getDataSourceSchema(id, token)
+      setSchemaState(s => ({ ...s, [id]: { loading: false, data: resp.data ?? resp } }))
+      setSchemaExpand(s => ({ ...s, [id]: { schemas: [], tables: [] } }))
+    } catch (e) {
+      setSchemaState(s => ({ ...s, [id]: { loading: false, error: e?.message ?? 'Failed to load schema.' } }))
     }
   }
 
@@ -729,9 +793,84 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     )
   }
 
-  // ── Source Workspace shell ───────────────────────────────────────────────
+  // ── Source Workspace ────────────────────────────────────────────────────
   if (dsSelectedSourceId != null && setDsSelectedSourceId) {
-    const selectedSrc = sources.find(s => s.id === dsSelectedSourceId)
+    const src = sources.find(s => s.id === dsSelectedSourceId)
+
+    // Pull all state slices for this source
+    const discSt   = discoverState[dsSelectedSourceId]   ?? {}
+    const ts       = testState[dsSelectedSourceId]       ?? {}
+    const js       = jobState[dsSelectedSourceId]        ?? {}
+    const job      = js.data
+    const sc       = schemaState[dsSelectedSourceId]     ?? {}
+    const prof     = profileState[dsSelectedSourceId]    ?? {}
+    const dict     = dictState[dsSelectedSourceId]       ?? {}
+    const dom      = domainState[dsSelectedSourceId]     ?? {}
+    const ent      = entityState[dsSelectedSourceId]     ?? {}
+    const rs       = rulesState[dsSelectedSourceId]      ?? {}
+    const ers      = entityRulesState[dsSelectedSourceId]?? {}
+    const gs       = govState[dsSelectedSourceId]        ?? {}
+    const domAsgn  = domAssignState[dsSelectedSourceId]  ?? {}
+    const entAsgn  = entAssignState[dsSelectedSourceId]  ?? {}
+    const profHist = profileHistState[dsSelectedSourceId]?? {}
+
+    // Pipeline computed values (mirrors existing logic exactly)
+    const hasSchema    = src?.last_snapshot_id != null || !!discSt.result
+    const profSnap     = prof.data?.snapshot
+    const profComplete = profSnap?.status === 'COMPLETE'
+    const dictTables   = Array.isArray(dict.tables) ? dict.tables : null
+    const dictCount    = dictTables?.length ?? 0
+    const dictApproved = dictTables?.filter(t => t.is_approved === 1 || t.is_approved === true).length ?? 0
+    const dictPct      = dictCount > 0 ? Math.round((dictApproved / dictCount) * 100) : 0
+    const domSummary   = dom.summary
+    const entSummary   = ent.summary
+    const domAssigned  = domSummary?.tables_assigned ?? 0
+    const entAssigned  = entSummary?.entities_assigned ?? 0
+
+    const lastTest = ts.status ?? src?.last_test_status
+    let s1 = 'ready'
+    if (lastTest === 'success') s1 = 'done'
+    else if (lastTest === 'failed') s1 = 'failed'
+
+    const jobRunning = job?.status === 'RUNNING' || job?.status === 'QUEUED'
+    let s2
+    if (src?.source_status !== 'ACTIVE') s2 = 'locked'
+    else if (discSt.loading || js.running || jobRunning) s2 = 'running'
+    else if (job?.status === 'FAILED' || discSt.error) s2 = 'failed'
+    else if (hasSchema) s2 = 'done'
+    else s2 = 'ready'
+
+    let s3
+    if (!hasSchema) s3 = 'locked'
+    else if (dict.generating) s3 = 'running'
+    else if (dictCount > 0) s3 = 'done'
+    else if (dict.error) s3 = 'failed'
+    else s3 = 'ready'
+
+    let s4
+    if (dictCount === 0) s4 = 'locked'
+    else if (dom.generating) s4 = 'running'
+    else if (domAssigned > 0) s4 = 'done'
+    else if (dom.error) s4 = 'failed'
+    else s4 = 'ready'
+
+    let s5
+    if (domAssigned === 0) s5 = 'locked'
+    else if (ent.generating) s5 = 'running'
+    else if (entAssigned > 0) s5 = 'done'
+    else if (ent.error) s5 = 'failed'
+    else s5 = 'ready'
+
+    const pendingRules    = (rs.rules  ?? []).filter(r => r.approval_status === 'PENDING').length
+    const pendingEntRules = (ers.rules ?? []).filter(r => r.approval_status === 'PENDING').length
+    const pendingRefs     = (gs.refinements ?? []).filter(r => r.approval_status === 'PENDING').length
+    const totalPending    = pendingRules + pendingEntRules + pendingRefs
+    let s6 = 'locked'
+    if (entAssigned > 0 || s5 === 'done') s6 = totalPending > 0 ? 'ready' : 'done'
+
+    const smBadge = SOURCE_STATUS_META[src?.source_status] ?? { label: src?.source_status ?? '—', color: '#94a3b8' }
+    const stLabel = SOURCE_TYPES.find(t => t.value === src?.source_type)?.label ?? src?.source_type ?? '—'
+
     const WORKSPACE_TABS = [
       { id: 'overview',   label: 'Overview'   },
       { id: 'schema',     label: 'Schema'     },
@@ -744,46 +883,493 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       { id: 'runs',       label: 'Runs'       },
     ]
     const activeTab = dsActiveTab ?? 'overview'
+
+    // ── Local render helpers (called as functions, not JSX components) ────
+
+    const stepCol = s => ({ done: success, ready: accent, running: accent, locked: muted, failed: danger }[s] ?? muted)
+    const stepLabel = { done: 'Complete', ready: 'Ready', running: 'Running', locked: 'Locked', failed: 'Failed' }
+
+    const matBadge = (label, status) => {
+      const color = status === 'done' ? success : status === 'partial' ? warn : muted
+      if (status === 'none') return null
+      return (
+        <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '1px 9px', borderRadius: '10px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', background: `${color}18`, color, border: `1px solid ${color}40`, fontFamily: FONT }}>
+          {status === 'done' ? '✓ ' : ''}{label}
+        </span>
+      )
+    }
+
+    const pipCard = ({ num, title, desc, status, stat, action, viewTab, err }) => {
+      const col = stepCol(status)
+      return (
+        <div style={{ ...card({ padding: '14px 16px' }), display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '22px', height: '22px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: '700', background: `${col}18`, color: col, border: `1px solid ${col}40`, flexShrink: 0 }}>
+                {status === 'done' ? '✓' : status === 'failed' ? '!' : num}
+              </div>
+              <span style={{ fontSize: '0.83rem', fontWeight: '600', color: text, fontFamily: FONT }}>{title}</span>
+            </div>
+            <span style={{ padding: '1px 8px', borderRadius: '8px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', background: `${col}18`, color: col, border: `1px solid ${col}40`, fontFamily: FONT, display: 'inline-flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+              {status === 'running' && <Spinner size={8} />}
+              {stepLabel[status] ?? status}
+            </span>
+          </div>
+          <p style={{ margin: 0, fontSize: '0.73rem', color: muted, fontFamily: FONT, lineHeight: 1.4 }}>{desc}</p>
+          {stat && <div style={{ fontSize: '0.73rem', color: textSec, fontFamily: FONT }}>{stat}</div>}
+          {err  && <div style={{ fontSize: '0.72rem', color: danger,  fontFamily: FONT }}>{err}</div>}
+          {(action || viewTab) && (
+            <div style={{ display: 'flex', gap: '8px', marginTop: '2px', flexWrap: 'wrap' }}>
+              {action && (
+                <button onClick={action.onClick} disabled={action.disabled} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.74rem' }), color: action.disabled ? `${muted}50` : (action.primary ? accent : textSec), borderColor: action.primary && !action.disabled ? `${accent}55` : border, cursor: action.disabled ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                  {action.loading && <Spinner />}{action.label}
+                </button>
+              )}
+              {viewTab && (
+                <button onClick={() => setDsActiveTab(viewTab)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.74rem' }), color: accent }}>View details →</button>
+              )}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    const pTypBadge = pt => {
+      const colors = { PREFIX: accent, SUFFIX: '#38bdf8', TOKEN: '#10b981', SCHEMA: '#a78bfa' }
+      const c = colors[pt] ?? muted
+      return { display: 'inline-block', padding: '1px 7px', borderRadius: '6px', fontSize: '0.58rem', fontWeight: '700', letterSpacing: '0.05em', background: `${c}18`, color: c, border: `1px solid ${c}35`, fontFamily: FONT, textTransform: 'uppercase', flexShrink: 0 }
+    }
+
+    const govSectionLabel = (label, n, color) => (
+      <div style={{ fontSize: '0.62rem', color: color ?? muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '6px', fontFamily: FONT }}>
+        {label}{n != null ? ` (${n})` : ''}
+      </div>
+    )
+
+    const approvalRows = (items, onApprove, onReject, actState, entityMode = false) => items.map(item => (
+      <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap', padding: '7px 10px', borderRadius: '6px', background: `${accent}06`, border: `1px solid ${border}` }}>
+        <span style={pTypBadge(item.pattern_type)}>{item.pattern_type}</span>
+        <span style={{ fontFamily: MONO, fontSize: '0.79rem', color: text, flex: '0 0 auto' }}>{item.pattern_value}</span>
+        <span style={{ fontSize: '0.73rem', color: muted }}>→</span>
+        <span style={{ fontSize: '0.76rem', color: textSec, flex: 1 }}>{entityMode ? item.entity : (item.suggested_domain ?? item.domain)}</span>
+        {item.confidence   != null && <span style={{ fontSize: '0.67rem', color: muted, fontFamily: MONO }}>{Math.round(item.confidence * 100)}%</span>}
+        {item.support_count!= null && <span style={{ fontSize: '0.67rem', color: muted, fontFamily: MONO }}>sup:{item.support_count}</span>}
+        <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto' }}>
+          <button onClick={() => !actState[item.id] && onApprove(item.id)} disabled={!!actState[item.id]} style={{ background: actState[item.id] ? `${success}30` : `${success}20`, color: actState[item.id] ? `${success}60` : success, border: `1px solid ${success}40`, borderRadius: '6px', padding: '3px 10px', fontSize: '0.74rem', fontWeight: '600', cursor: actState[item.id] ? 'not-allowed' : 'pointer', fontFamily: FONT }}>{actState[item.id] ? '…' : 'Approve'}</button>
+          <button onClick={() => !actState[item.id] && onReject(item.id)}  disabled={!!actState[item.id]} style={{ background: 'transparent', color: actState[item.id] ? `${muted}50` : muted, border: `1px solid ${border}`, borderRadius: '6px', padding: '3px 10px', fontSize: '0.74rem', cursor: actState[item.id] ? 'not-allowed' : 'pointer', fontFamily: FONT }}>{actState[item.id] ? '…' : 'Reject'}</button>
+        </div>
+      </div>
+    ))
+
+    const approvedRows = (items, entityMode = false) => items.map(item => (
+      <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', padding: '3px 8px' }}>
+        <span style={pTypBadge(item.pattern_type)}>{item.pattern_type}</span>
+        <span style={{ fontFamily: MONO, color: textSec }}>{item.pattern_value}</span>
+        <span style={{ color: muted }}>→</span>
+        <span style={{ color: success }}>{entityMode ? item.entity : (item.suggested_domain ?? item.domain)}</span>
+      </div>
+    ))
+
+    // ── Tab content ────────────────────────────────────────────────────────
+
+    const overviewTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        {/* Connection row */}
+        <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Connection</div>
+            <div style={{ fontSize: '0.85rem', color: textSec, fontFamily: MONO, wordBreak: 'break-all' }}>{src?.config_summary ?? '—'}</div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {src?.last_tested_at && (
+              <span style={{ fontSize: '0.71rem', color: muted, fontFamily: FONT }}>
+                Tested {fmtRelative(src.last_tested_at)}
+                <span style={{ marginLeft: '5px', color: src.last_test_status === 'success' ? success : danger }}>{src.last_test_status === 'success' ? '✓' : '✗'}</span>
+              </span>
+            )}
+            <button onClick={() => !ts.loading && handleTest(dsSelectedSourceId)} disabled={ts.loading} style={{ ...btnGhost({ padding: '6px 14px', fontSize: '0.78rem' }), color: ts.loading ? `${muted}50` : accent, borderColor: `${accent}50`, cursor: ts.loading ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+              {ts.loading && <Spinner />}{ts.loading ? 'Testing…' : 'Test Connection'}
+            </button>
+          </div>
+        </div>
+        {ts.status && !ts.loading && (
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: ts.status === 'success' ? `${success}12` : `${danger}12`, border: `1px solid ${ts.status === 'success' ? success + '40' : danger + '40'}` }}>
+            <span style={{ fontWeight: '700', fontSize: '0.78rem', color: ts.status === 'success' ? success : danger, fontFamily: FONT }}>{ts.status === 'success' ? '✓ Connected' : '✗ Failed'}</span>
+            {ts.latency_ms != null && <span style={{ fontSize: '0.74rem', color: muted, fontFamily: MONO, marginLeft: '10px' }}>{ts.latency_ms}ms</span>}
+            {ts.message && <p style={{ margin: '4px 0 0', fontSize: '0.77rem', color: textSec, fontFamily: FONT }}>{ts.message}</p>}
+          </div>
+        )}
+
+        {/* Pipeline grid */}
+        <div>
+          <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Metadata Pipeline</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '10px' }}>
+            {pipCard({ num: 1, title: 'Connect & Verify', status: s1, desc: 'Verify connectivity and credentials to the database.', stat: s1 === 'done' ? (ts.latency_ms ? `${ts.latency_ms}ms response` : 'Connected') : null, err: s1 === 'failed' ? (ts.message || src?.last_test_message || null) : null, action: { label: ts.loading ? 'Testing…' : 'Test Connection', primary: s1 !== 'done', onClick: () => !ts.loading && handleTest(dsSelectedSourceId), disabled: ts.loading, loading: ts.loading } })}
+            {pipCard({ num: 2, title: 'Discover & Profile', status: s2, desc: 'Crawl schemas, tables, and columns, then run structural profiling.', stat: hasSchema && profSnap ? `${profSnap.tables_profiled ?? '?'} / ${profSnap.tables_total ?? '?'} assets profiled · ${profSnap.status}` : hasSchema ? 'Schema snapshot available' : null, err: s2 === 'failed' ? (job?.error_message || discSt.error || null) : null, action: s2 === 'running' ? { label: js.loading ? 'Refreshing…' : 'Refresh Status', onClick: () => src?.metadata_job_id && loadJobStatus(dsSelectedSourceId, src.metadata_job_id), disabled: js.loading, loading: js.loading } : { label: hasSchema ? 'Re-run' : 'Discover & Profile', primary: !hasSchema, onClick: () => src && handleDiscoverAndProfile(src), disabled: discSt.loading || js.running, loading: discSt.loading || js.running }, viewTab: hasSchema ? 'schema' : null })}
+            {pipCard({ num: 3, title: 'Generate Dictionary', status: s3, desc: 'AI-generate business names, descriptions, and column semantics.', stat: dictCount > 0 ? `${dictCount} tables · ${dictPct}% approved` : null, err: s3 === 'failed' ? dict.error : null, action: { label: dict.generating ? 'Generating…' : dictCount > 0 ? 'Regenerate' : 'Generate', primary: dictCount === 0 && hasSchema, onClick: () => !dict.generating && handleGenerateDictionary(dsSelectedSourceId), disabled: dict.generating || !hasSchema, loading: dict.generating }, viewTab: dictCount > 0 ? 'dictionary' : null })}
+            {pipCard({ num: 4, title: 'Generate Domains', status: s4, desc: 'Classify tables into business domains (Sales, Finance, Product, etc.).', stat: domAssigned > 0 ? `${domAssigned} tables assigned` : null, err: s4 === 'failed' ? dom.error : null, action: { label: dom.generating ? 'Generating…' : domAssigned > 0 ? 'Regenerate' : 'Generate', primary: domAssigned === 0 && dictCount > 0, onClick: () => !dom.generating && handleGenerateDomains(dsSelectedSourceId), disabled: dom.generating || dictCount === 0, loading: dom.generating }, viewTab: domAssigned > 0 ? 'domains' : null })}
+            {pipCard({ num: 5, title: 'Generate Entities', status: s5, desc: 'Identify the primary business entity each table represents.', stat: entAssigned > 0 ? `${entAssigned} entities assigned` : null, err: s5 === 'failed' ? ent.error : null, action: { label: ent.generating ? 'Generating…' : entAssigned > 0 ? 'Regenerate' : 'Generate', primary: entAssigned === 0 && domAssigned > 0, onClick: () => !ent.generating && handleGenerateEntities(dsSelectedSourceId), disabled: ent.generating || domAssigned === 0, loading: ent.generating }, viewTab: entAssigned > 0 ? 'entities' : null })}
+            {pipCard({ num: 6, title: 'Govern & Refine', status: s6, desc: 'Review domain rules, entity rules, and refinement suggestions.', stat: totalPending > 0 ? `${totalPending} items pending review` : s6 === 'done' ? 'No pending items' : null, viewTab: s6 !== 'locked' ? 'governance' : null })}
+          </div>
+        </div>
+
+        {/* Intelligence summary metrics */}
+        {(hasSchema || dictCount > 0 || domAssigned > 0 || entAssigned > 0) && (
+          <div>
+            <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Intelligence Summary</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '10px' }}>
+              {profSnap?.tables_total != null && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Tables</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{profSnap.tables_total.toLocaleString()}</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>discovered</div></div>)}
+              {dictCount > 0 && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Dictionary</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{dictPct}%</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{dictApproved} / {dictCount} approved</div></div>)}
+              {domSummary?.total_domains != null && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Domains</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{domSummary.total_domains}</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{domAssigned} tables assigned</div></div>)}
+              {entSummary?.total_entities != null && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Entities</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{entSummary.total_entities}</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{entAssigned} tables assigned</div></div>)}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+
+    const schemaTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {!hasSchema && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 8px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Schema not discovered yet</p><p style={{ margin: '0 0 16px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to crawl schemas, tables, and columns.</p><button onClick={() => src && handleDiscoverAndProfile(src)} disabled={!src || discSt.loading || js.running} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Discover & Profile</button></div>)}
+        {hasSchema && sc.loading  && (<div style={{ ...card({ padding: '36px 24px' }), textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={12} /> Loading schema…</div>)}
+        {hasSchema && !sc.data && !sc.loading && (<div style={{ ...card({ padding: '24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 8px', fontSize: '0.82rem', color: textSec, fontFamily: FONT }}>Schema not loaded for this session.</p><button onClick={() => loadSchema(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Load Schema</button></div>)}
+        {sc.error && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{sc.error}</span></div>)}
+        {sc.data && (
+          <div style={card({ overflow: 'hidden' })}>
+            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT }}>
+                <span style={{ fontWeight: '600' }}>{sc.data.database_name ?? 'Database'}</span>
+                <span style={{ color: muted, marginLeft: '8px' }}>{sc.data.schemas?.length ?? 0} schemas</span>
+                {sc.data.discovery_duration_ms != null && <span style={{ color: muted, marginLeft: '8px' }}>discovered in {sc.data.discovery_duration_ms}ms</span>}
+              </div>
+              <button onClick={() => loadSchema(dsSelectedSourceId)} disabled={sc.loading} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: textSec }}>Refresh</button>
+            </div>
+            {sc.data.schemas?.map(schema => {
+              const sexp   = schemaExpand[dsSelectedSourceId]?.schemas.includes(schema.schema_name)
+              const tables = schema.tables?.filter(t => t.table_type === 'TABLE') ?? []
+              const views  = schema.tables?.filter(t => t.table_type === 'VIEW')  ?? []
+              return (
+                <div key={schema.schema_name} style={{ borderBottom: `1px solid ${border}30` }}>
+                  <div onClick={() => toggleSchemaItem(dsSelectedSourceId, 'schemas', schema.schema_name)} style={{ padding: '9px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.82rem', fontFamily: FONT, userSelect: 'none', background: sexp ? `${accent}06` : 'transparent' }}>
+                    <span style={{ fontSize: '0.6rem', color: muted, width: '10px', flexShrink: 0 }}>{sexp ? '▾' : '▸'}</span>
+                    <span style={{ fontWeight: '600', color: textSec }}>{schema.schema_name}</span>
+                    <span style={{ fontSize: '0.68rem', color: muted }}>{tables.length} table{tables.length !== 1 ? 's' : ''}{views.length > 0 ? ` · ${views.length} view${views.length !== 1 ? 's' : ''}` : ''}</span>
+                  </div>
+                  {sexp && (
+                    <div style={{ paddingLeft: '8px', paddingBottom: '4px' }}>
+                      {schema.tables?.map(t => {
+                        const texp   = schemaExpand[dsSelectedSourceId]?.tables.includes(t.table_fqn)
+                        const isView = t.table_type === 'VIEW'
+                        return (
+                          <div key={t.table_fqn}>
+                            <div onClick={() => toggleSchemaItem(dsSelectedSourceId, 'tables', t.table_fqn)} style={{ padding: '5px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '7px', fontSize: '0.78rem', fontFamily: MONO, userSelect: 'none' }}>
+                              <span style={{ fontSize: '0.58rem', color: muted, width: '10px' }}>{texp ? '▾' : '▸'}</span>
+                              {isView && <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', background: `${muted}18`, color: muted, border: `1px solid ${muted}30`, fontFamily: FONT }}>VIEW</span>}
+                              <span style={{ color: text }}>{t.table_name}</span>
+                              {t.row_count_estimate != null && <span style={{ fontSize: '0.67rem', color: muted }}>~{t.row_count_estimate.toLocaleString()} rows</span>}
+                              <span style={{ fontSize: '0.67rem', color: muted, marginLeft: 'auto' }}>{t.columns?.length ?? 0} cols</span>
+                            </div>
+                            {texp && (
+                              <div style={{ paddingLeft: '28px', paddingBottom: '6px' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 70px 50px', padding: '3px 14px', fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>
+                                  <span>Column</span><span>Type</span><span>Nullable</span><span>Key</span>
+                                </div>
+                                {t.columns?.map(c => (
+                                  <div key={c.column_name} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 70px 50px', padding: '3px 14px', fontSize: '0.74rem', fontFamily: MONO, borderTop: `1px solid ${border}15` }}>
+                                    <span style={{ color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.column_name}</span>
+                                    <span style={{ color: muted }}>{c.data_type}</span>
+                                    <span style={{ color: c.is_nullable ? `${muted}80` : muted }}>{c.is_nullable ? 'yes' : 'no'}</span>
+                                    <span>{c.is_primary_key ? <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', background: `${accent}20`, color: accent, border: `1px solid ${accent}30`, fontFamily: FONT }}>PK</span> : null}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+
+    const profileTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {!hasSchema && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>No profiling data yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to generate a structural profile.</p></div>)}
+        {hasSchema && !profSnap && !prof.loading && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Profile not available</p><p style={{ margin: '0 0 16px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Schema was discovered but structural profiling has not run yet.</p><button onClick={() => src && handleDiscoverAndProfile(src)} disabled={!src || js.running || discSt.loading} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Run Profile</button></div>)}
+        {prof.loading && (<div style={{ ...card({ padding: '24px' }), textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={12} /> Loading profile…</div>)}
+        {prof.error  && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{prof.error}</span></div>)}
+        {profSnap && (
+          <>
+            <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Status</div><span style={{ padding: '2px 10px', borderRadius: '8px', fontSize: '0.72rem', fontWeight: '700', background: profComplete ? `${success}18` : `${accent}18`, color: profComplete ? success : accent, border: `1px solid ${profComplete ? success : accent}40`, fontFamily: FONT }}>{profSnap.status}</span></div>
+              {profSnap.tables_total != null && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Assets Profiled</div><div style={{ fontSize: '1.1rem', fontWeight: '700', color: text, fontFamily: FONT }}>{profSnap.tables_profiled ?? '—'} <span style={{ fontSize: '0.78rem', color: muted, fontWeight: '400' }}>/ {profSnap.tables_total}</span></div></div>)}
+              {profSnap.columns_total != null && profSnap.columns_total > 0 && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Columns</div><div style={{ fontSize: '1.1rem', fontWeight: '700', color: text, fontFamily: FONT }}>{profSnap.columns_total.toLocaleString()}</div></div>)}
+              {profSnap.profiling_snapshot_id != null && (<div style={{ marginLeft: 'auto' }}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Snapshot ID</div><div style={{ fontSize: '0.74rem', color: muted, fontFamily: MONO }}>{profSnap.profiling_snapshot_id}</div></div>)}
+            </div>
+            <div style={card({ padding: '12px 18px' })}>
+              <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '8px' }}>About This Profile</div>
+              <p style={{ margin: 0, fontSize: '0.78rem', color: textSec, fontFamily: FONT, lineHeight: 1.5 }}>Structural profiling captures schema layout, table row estimates, and column types. Column-level quality metrics (null rates, uniqueness, distributions) require a full profile run. Business metadata including PII classification is in the Dictionary tab.</p>
+            </div>
+          </>
+        )}
+      </div>
+    )
+
+    const domainsTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Domains group tables by business area so users can understand ownership and purpose.</p>
+        {dictCount === 0 && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Domains not generated yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Generate a dictionary first, then generate domains.</p></div>)}
+        {dictCount > 0 && domAssigned === 0 && !dom.generating && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>No domains assigned yet</p><p style={{ margin: '0 0 16px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Classify tables into business areas like Sales, Finance, or Product.</p><button onClick={() => handleGenerateDomains(dsSelectedSourceId)} disabled={dom.generating} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Generate Domains</button></div>)}
+        {dom.generating && (<div style={{ ...card({ padding: '24px' }), textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={12} /> Generating domain assignments…</div>)}
+        {dom.error && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{dom.error}</span></div>)}
+        {domSummary && (
+          <>
+            <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                {domSummary.total_domains    != null && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Domains</div><div style={{ fontSize: '1.3rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{domSummary.total_domains}</div></div>)}
+                {domSummary.tables_assigned  != null && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Assigned</div><div style={{ fontSize: '1.3rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{domSummary.tables_assigned}</div></div>)}
+                {domSummary.tables_unknown   != null && domSummary.tables_unknown > 0 && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Unclassified</div><div style={{ fontSize: '1.3rem', fontWeight: '700', color: warn, fontFamily: FONT, lineHeight: 1 }}>{domSummary.tables_unknown}</div></div>)}
+              </div>
+              <button onClick={() => handleGenerateDomains(dsSelectedSourceId)} disabled={dom.generating} style={{ ...btnGhost({ padding: '6px 14px', fontSize: '0.78rem' }), color: textSec }}>{dom.generating ? 'Regenerating…' : 'Regenerate'}</button>
+            </div>
+            {domSummary.domain_counts && (
+              <div style={card({ padding: '14px 18px' })}>
+                <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Domain Breakdown</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                  {Object.entries(domSummary.domain_counts).sort((a, b) => b[1] - a[1]).map(([domain, count]) => {
+                    const pct = Math.round((count / (domSummary.tables_assigned || 1)) * 100)
+                    const isUnknown = domain === 'Unknown'
+                    return (
+                      <div key={domain} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '0.78rem', color: isUnknown ? muted : textSec, fontFamily: FONT, width: '130px', flexShrink: 0 }}>{domain}</span>
+                        <div style={{ flex: 1, height: '6px', borderRadius: '3px', background: border }}><div style={{ height: '100%', borderRadius: '3px', background: isUnknown ? muted : accent, width: `${pct}%` }} /></div>
+                        <span style={{ fontSize: '0.74rem', color: muted, fontFamily: MONO, width: '28px', textAlign: 'right', flexShrink: 0 }}>{count}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        {domAssigned > 0 && !domAsgn.data && !domAsgn.loading && (<div style={{ ...card({ padding: '12px 16px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}><span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Load per-table domain assignments for full detail.</span><button onClick={() => loadDomainAssignments(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>Load Assignments</button></div>)}
+        {domAsgn.loading && (<div style={{ ...card({ padding: '16px' }), textAlign: 'center', color: muted, fontSize: '0.8rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={11} /> Loading…</div>)}
+        {domAsgn.error && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{domAsgn.error}</span></div>)}
+        {domAsgn.data && Array.isArray(domAsgn.data) && (
+          <div style={card({ overflow: 'hidden' })}>
+            <div style={{ padding: '8px 14px', borderBottom: `1px solid ${border}`, display: 'flex', gap: '8px', alignItems: 'center' }}><span style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Table Assignments</span><span style={{ fontSize: '0.7rem', color: muted }}>{domAsgn.data.length} tables</span></div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 140px 80px', padding: '6px 14px', fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}` }}><span>Table</span><span>Domain</span><span>Confidence</span></div>
+            <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+              {domAsgn.data.map((row, i) => (
+                <div key={row.table_fqn ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 140px 80px', padding: '7px 14px', fontSize: '0.78rem', borderBottom: `1px solid ${border}20`, background: i % 2 === 0 ? 'transparent' : `${bg}60` }}>
+                  <span style={{ color: text, fontFamily: MONO, fontSize: '0.74rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.table_fqn ?? row.table_name}</span>
+                  <span style={{ color: row.domain === 'Unknown' ? muted : accent, fontFamily: FONT }}>{row.domain ?? '—'}</span>
+                  <span style={{ color: muted, fontFamily: MONO }}>{row.confidence != null ? `${Math.round(row.confidence * 100)}%` : '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+
+    const entitiesTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Entities identify the primary business object each table represents.</p>
+        {domAssigned === 0 && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Entities not generated yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Generate domains first, then generate entities.</p></div>)}
+        {domAssigned > 0 && entAssigned === 0 && !ent.generating && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>No entities assigned yet</p><p style={{ margin: '0 0 16px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Identify what each table represents — Customer, Order, Product, etc.</p><button onClick={() => handleGenerateEntities(dsSelectedSourceId)} disabled={ent.generating} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Generate Entities</button></div>)}
+        {ent.generating && (<div style={{ ...card({ padding: '24px' }), textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={12} /> Generating entity assignments…</div>)}
+        {ent.error && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{ent.error}</span></div>)}
+        {entSummary && (
+          <>
+            <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                {entSummary.total_entities    != null && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Entities</div><div style={{ fontSize: '1.3rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{entSummary.total_entities}</div></div>)}
+                {entSummary.entities_assigned != null && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Assigned</div><div style={{ fontSize: '1.3rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{entSummary.entities_assigned}</div></div>)}
+                {entSummary.entities_unknown  != null && entSummary.entities_unknown > 0 && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Unclassified</div><div style={{ fontSize: '1.3rem', fontWeight: '700', color: warn, fontFamily: FONT, lineHeight: 1 }}>{entSummary.entities_unknown}</div></div>)}
+              </div>
+              <button onClick={() => handleGenerateEntities(dsSelectedSourceId)} disabled={ent.generating} style={{ ...btnGhost({ padding: '6px 14px', fontSize: '0.78rem' }), color: textSec }}>{ent.generating ? 'Regenerating…' : 'Regenerate'}</button>
+            </div>
+            {entSummary.entity_counts && (
+              <div style={card({ padding: '14px 18px' })}>
+                <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Entity Breakdown</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                  {Object.entries(entSummary.entity_counts).sort((a, b) => b[1] - a[1]).map(([entity, count]) => {
+                    const pct = Math.round((count / (entSummary.entities_assigned || 1)) * 100)
+                    const isUnknown = entity === 'Unknown'
+                    return (
+                      <div key={entity} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span style={{ fontSize: '0.78rem', color: isUnknown ? muted : textSec, fontFamily: FONT, width: '150px', flexShrink: 0 }}>{entity}</span>
+                        <div style={{ flex: 1, height: '6px', borderRadius: '3px', background: border }}><div style={{ height: '100%', borderRadius: '3px', background: isUnknown ? muted : success, width: `${pct}%` }} /></div>
+                        <span style={{ fontSize: '0.74rem', color: muted, fontFamily: MONO, width: '28px', textAlign: 'right', flexShrink: 0 }}>{count}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        {entAssigned > 0 && !entAsgn.data && !entAsgn.loading && (<div style={{ ...card({ padding: '12px 16px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}><span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Load per-table entity assignments for full detail.</span><button onClick={() => loadEntityAssignments(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>Load Assignments</button></div>)}
+        {entAsgn.loading && (<div style={{ ...card({ padding: '16px' }), textAlign: 'center', color: muted, fontSize: '0.8rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={11} /> Loading…</div>)}
+        {entAsgn.error && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{entAsgn.error}</span></div>)}
+        {entAsgn.data && Array.isArray(entAsgn.data) && (
+          <div style={card({ overflow: 'hidden' })}>
+            <div style={{ padding: '8px 14px', borderBottom: `1px solid ${border}`, display: 'flex', gap: '8px', alignItems: 'center' }}><span style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Table Assignments</span><span style={{ fontSize: '0.7rem', color: muted }}>{entAsgn.data.length} tables</span></div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 160px 80px', padding: '6px 14px', fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}` }}><span>Table</span><span>Entity</span><span>Confidence</span></div>
+            <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+              {entAsgn.data.map((row, i) => (
+                <div key={row.table_fqn ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 160px 80px', padding: '7px 14px', fontSize: '0.78rem', borderBottom: `1px solid ${border}20`, background: i % 2 === 0 ? 'transparent' : `${bg}60` }}>
+                  <span style={{ color: text, fontFamily: MONO, fontSize: '0.74rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.table_fqn ?? row.table_name}</span>
+                  <span style={{ color: row.entity === 'Unknown' ? muted : success, fontFamily: FONT }}>{row.entity ?? '—'}</span>
+                  <span style={{ color: muted, fontFamily: MONO }}>{row.confidence != null ? `${Math.round(row.confidence * 100)}%` : '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+
+    const govBusy = !!(gs.loading || gs.analyzing)
+    const rsBusy  = !!(rs.loading  || rs.generating)
+    const ersBusy = !!(ers.loading || ers.generating)
+
+    const govSection = ({ title, pendingCount, loadFn, busyFlag, analyzeBtn, analyzeResult, error, rules, approveFn, rejectFn, actState, entityMode = false, generateBtn }) => (
+      <div style={card({ padding: '14px 16px' })}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: '600', color: text, fontFamily: FONT }}>{title}</span>
+            {rules != null && pendingCount > 0 && <span style={{ padding: '1px 7px', borderRadius: '8px', fontSize: '0.62rem', fontWeight: '700', background: `${accent}20`, color: accent, border: `1px solid ${accent}40`, fontFamily: FONT }}>{pendingCount} pending</span>}
+          </div>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button onClick={loadFn} disabled={busyFlag} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: !busyFlag ? textSec : `${muted}50`, cursor: !busyFlag ? 'pointer' : 'not-allowed' }}>{rules == null ? 'Load' : 'Refresh'}</button>
+            {analyzeBtn}
+            {generateBtn}
+          </div>
+        </div>
+        {analyzeResult && (<div style={{ marginBottom: '10px', padding: '8px 12px', borderRadius: '6px', background: `${warn}0d`, border: `1px solid ${warn}30`, display: 'flex', gap: '16px', flexWrap: 'wrap' }}><span style={{ fontSize: '0.74rem', color: warn, fontFamily: FONT }}>Flagged: <strong>{analyzeResult.flagged_rules ?? 0}</strong></span><span style={{ fontSize: '0.74rem', color: accent, fontFamily: FONT }}>Improvement: <strong>+{analyzeResult.projected_accuracy_improvement ?? 0}%</strong></span></div>)}
+        {error && <p style={{ margin: 0, fontSize: '0.75rem', color: danger, fontFamily: FONT }}>{error}</p>}
+        {rules != null && (() => {
+          const pending  = rules.filter(r => r.approval_status === 'PENDING')
+          const approved = rules.filter(r => r.approval_status === 'APPROVED')
+          const rejected = rules.filter(r => r.approval_status === 'REJECTED')
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {pending.length  > 0 && (<div>{govSectionLabel('Pending',  pending.length,  accent)}<div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>{approvalRows(pending, approveFn, rejectFn, actState, entityMode)}</div></div>)}
+              {approved.length > 0 && (<div>{govSectionLabel('Approved', approved.length, success)}<div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>{approvedRows(approved, entityMode)}</div></div>)}
+              {rejected.length > 0 && (<div style={{ opacity: 0.5 }}>{govSectionLabel('Rejected', rejected.length)}<div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>{approvedRows(rejected, entityMode)}</div></div>)}
+              {rules.length === 0 && <p style={{ margin: 0, fontSize: '0.75rem', color: muted, fontFamily: FONT }}>No items found. Use the buttons above to load or generate suggestions.</p>}
+            </div>
+          )
+        })()}
+      </div>
+    )
+
+    const governanceTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {s6 === 'locked' && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Governance not available yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Complete the pipeline through Entities before governance rules can be generated.</p></div>)}
+        {s6 !== 'locked' && (
+          <>
+            {govSection({ title: 'Domain Refinements', pendingCount: pendingRefs, loadFn: () => loadRefinements(dsSelectedSourceId), busyFlag: govBusy, analyzeBtn: <button onClick={() => handleAnalyzeRefinements(dsSelectedSourceId)} disabled={govBusy} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: !govBusy ? warn : `${muted}50`, borderColor: !govBusy ? `${warn}55` : `${border}50`, cursor: !govBusy ? 'pointer' : 'not-allowed' }}>{gs.analyzing ? 'Analyzing…' : 'Analyze'}</button>, analyzeResult: gs.analyzeResult, error: gs.error, rules: gs.refinements, approveFn: id => handleApproveRefinement(dsSelectedSourceId, id), rejectFn: id => handleRejectRefinement(dsSelectedSourceId, id), actState: refinementActionState })}
+            {govSection({ title: 'Domain Rules',       pendingCount: pendingRules,    loadFn: () => loadDomainRules(dsSelectedSourceId), busyFlag: rsBusy,  generateBtn: <button onClick={() => handleGenerateSuggestions(dsSelectedSourceId)} disabled={rsBusy} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: !rsBusy ? accent : `${muted}50`, borderColor: !rsBusy ? `${accent}55` : `${border}50`, cursor: !rsBusy ? 'pointer' : 'not-allowed' }}>{rs.generating ? 'Generating…' : 'Generate Suggestions'}</button>, error: rs.error, rules: rs.rules, approveFn: id => handleApproveRule(dsSelectedSourceId, id), rejectFn: id => handleRejectRule(dsSelectedSourceId, id), actState: ruleActionState })}
+            {govSection({ title: 'Entity Rules',       pendingCount: pendingEntRules, loadFn: () => loadEntityRules(dsSelectedSourceId), busyFlag: ersBusy, generateBtn: <button onClick={() => handleGenerateEntitySuggestions(dsSelectedSourceId)} disabled={ersBusy} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: !ersBusy ? accent : `${muted}50`, borderColor: !ersBusy ? `${accent}55` : `${border}50`, cursor: !ersBusy ? 'pointer' : 'not-allowed' }}>{ers.generating ? 'Generating…' : 'Generate Suggestions'}</button>, error: ers.error, rules: ers.rules, approveFn: id => handleApproveEntityRule(dsSelectedSourceId, id), rejectFn: id => handleRejectEntityRule(dsSelectedSourceId, id), actState: entityRuleActionState, entityMode: true })}
+          </>
+        )}
+      </div>
+    )
+
+    const lineageTab = (
+      <div style={{ ...card({ padding: '52px 24px' }), textAlign: 'center' }}>
+        <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={muted} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', margin: '0 auto 14px' }}>
+          <circle cx="5" cy="12" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
+          <line x1="7" y1="12" x2="10" y2="12"/><line x1="12" y1="7" x2="12" y2="10"/><line x1="14" y1="12" x2="17" y2="12"/><line x1="12" y1="14" x2="12" y2="17"/>
+        </svg>
+        <p style={{ margin: '0 0 6px', fontSize: '0.9rem', color: textSec, fontWeight: '600', fontFamily: FONT }}>Lineage not available yet</p>
+        <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT, lineHeight: 1.6, maxWidth: '380px', marginLeft: 'auto', marginRight: 'auto' }}>
+          Lineage will show upstream and downstream relationships — which processes write to this source and which consume from it. This requires lineage capture to be configured on your data platform.
+        </p>
+      </div>
+    )
+
+    const runsTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {src?.metadata_job_id && (
+          <div style={card({ padding: '14px 16px' })}>
+            <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Current Metadata Job</div>
+            {js.loading && <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Loading…</p>}
+            {job && (
+              <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Status</div><span style={{ padding: '2px 9px', borderRadius: '8px', fontSize: '0.72rem', fontWeight: '700', background: jobRunning ? `${accent}18` : job.status === 'COMPLETE' ? `${success}18` : `${danger}18`, color: jobRunning ? accent : job.status === 'COMPLETE' ? success : danger, border: `1px solid ${jobRunning ? accent : job.status === 'COMPLETE' ? success : danger}40`, fontFamily: FONT, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>{jobRunning && <Spinner size={9} />}{job.status}</span></div>
+                {job.progress_message && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Progress</div><div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT }}>{job.progress_message}</div></div>)}
+                {job.error_message    && (<div><div style={{ fontSize: '0.62rem', color: danger, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Error</div><div style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{job.error_message}</div></div>)}
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                  {jobRunning && <button onClick={() => loadJobStatus(dsSelectedSourceId, src.metadata_job_id)} disabled={js.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: textSec }}>Refresh</button>}
+                  <button onClick={() => src && handleDiscoverAndProfile(src)} disabled={js.running || discSt.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>{js.running ? 'Running…' : 'Re-run'}</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {profHist.loading && (<div style={{ ...card({ padding: '16px' }), textAlign: 'center', color: muted, fontSize: '0.8rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={11} /> Loading run history…</div>)}
+        {profHist.error   && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{profHist.error}</span></div>)}
+        {!profHist.data && !profHist.loading && hasSchema && (<div style={{ ...card({ padding: '12px 16px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}><span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Load profiling run history for this source.</span><button onClick={() => loadProfileHistory(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>Load History</button></div>)}
+        {profHist.data && Array.isArray(profHist.data) && profHist.data.length === 0 && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: 0, fontSize: '0.82rem', color: muted, fontFamily: FONT }}>No profiling run history found for this source.</p></div>)}
+        {profHist.data && Array.isArray(profHist.data) && profHist.data.length > 0 && (
+          <div style={card({ overflow: 'hidden' })}>
+            <div style={{ padding: '8px 14px', borderBottom: `1px solid ${border}` }}><span style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Profiling History</span></div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 120px 110px', padding: '6px 14px', fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}` }}><span>Run ID</span><span>Status</span><span>Tables</span><span>Started</span></div>
+            <div style={{ maxHeight: '360px', overflowY: 'auto' }}>
+              {profHist.data.map((run, i) => {
+                const runColor = run.status === 'COMPLETE' ? success : run.status === 'RUNNING' ? accent : danger
+                return (
+                  <div key={run.id ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 120px 110px', padding: '8px 14px', fontSize: '0.78rem', borderBottom: `1px solid ${border}20`, background: i % 2 === 0 ? 'transparent' : `${bg}60` }}>
+                    <span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{run.id ?? '—'}</span>
+                    <span style={{ color: runColor, fontFamily: FONT, fontWeight: '600' }}>{run.status ?? '—'}</span>
+                    <span style={{ color: textSec }}>{run.tables_profiled != null ? `${run.tables_profiled} / ${run.tables_total ?? '?'} assets` : '—'}</span>
+                    <span style={{ color: muted, fontSize: '0.72rem' }}>{run.created_at ? fmtRelative(run.created_at) : '—'}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        {!hasSchema && !src?.metadata_job_id && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>No runs yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to start building a run history.</p></div>)}
+      </div>
+    )
+
+    const TAB_CONTENT = { overview: overviewTab, schema: schemaTab, profile: profileTab, domains: domainsTab, entities: entitiesTab, governance: governanceTab, lineage: lineageTab, runs: runsTab }
+
     return (
       <div style={{ fontFamily: FONT, color: text }}>
 
         {/* ── Breadcrumb ── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '20px', fontSize: '0.74rem', fontFamily: FONT }}>
-          <button
-            onClick={() => setDsSelectedSourceId(null)}
-            style={{ background: 'none', border: 'none', color: muted, cursor: 'pointer', fontFamily: FONT, fontSize: '0.74rem', padding: 0, display: 'flex', alignItems: 'center', gap: '5px' }}
-            onMouseEnter={e => { e.currentTarget.style.color = accent }}
-            onMouseLeave={e => { e.currentTarget.style.color = muted }}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>
-            </svg>
+          <button onClick={() => setDsSelectedSourceId(null)} style={{ background: 'none', border: 'none', color: muted, cursor: 'pointer', fontFamily: FONT, fontSize: '0.74rem', padding: 0, display: 'flex', alignItems: 'center', gap: '5px' }} onMouseEnter={e => { e.currentTarget.style.color = accent }} onMouseLeave={e => { e.currentTarget.style.color = muted }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
             Data Sources
           </button>
           <span style={{ color: border }}>/</span>
-          <span style={{ color: textSec }}>{selectedSrc?.display_name ?? `Source #${dsSelectedSourceId}`}</span>
+          <span style={{ color: textSec }}>{src?.display_name ?? `Source #${dsSelectedSourceId}`}</span>
         </div>
 
         {/* ── Workspace header ── */}
         <div style={{ marginBottom: '20px' }}>
-          <h2 style={{ margin: '0 0 6px', fontSize: '1.4rem', fontWeight: '700', color: text, letterSpacing: '-0.4px' }}>
-            {selectedSrc?.display_name ?? `Source #${dsSelectedSourceId}`}
-          </h2>
-          {selectedSrc && (
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '600', letterSpacing: '0.04em', background: `${accent}15`, color: accent, border: `1px solid ${accent}30` }}>
-                {SOURCE_TYPES.find(t => t.value === selectedSrc.source_type)?.label ?? selectedSrc.source_type}
-              </span>
-              {(() => {
-                const sm = SOURCE_STATUS_META[selectedSrc.source_status] ?? { label: selectedSrc.source_status ?? '—', color: '#94a3b8' }
-                return (
-                  <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', background: `${sm.color}20`, color: sm.color, border: `1px solid ${sm.color}50` }}>
-                    {sm.label}
-                  </span>
-                )
-              })()}
-            </div>
-          )}
+          <h2 style={{ margin: '0 0 8px', fontSize: '1.4rem', fontWeight: '700', color: text, letterSpacing: '-0.4px' }}>{src?.display_name ?? `Source #${dsSelectedSourceId}`}</h2>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '600', letterSpacing: '0.04em', background: `${accent}15`, color: accent, border: `1px solid ${accent}30` }}>{stLabel}</span>
+            <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', background: `${smBadge.color}20`, color: smBadge.color, border: `1px solid ${smBadge.color}50` }}>{smBadge.label}</span>
+            {matBadge('Schema',     s2 === 'done' ? 'done' : s2 === 'running' ? 'running' : 'none')}
+            {matBadge('Profile',    profComplete ? 'done' : profSnap ? 'partial' : 'none')}
+            {dictCount > 0  && matBadge(dictPct === 100 ? 'Dictionary' : 'Needs Review', dictPct === 100 ? 'done' : 'partial')}
+            {domAssigned > 0 && matBadge('Domains',   s4 === 'done' ? 'done' : 'partial')}
+            {entAssigned > 0 && matBadge('Entities',  s5 === 'done' ? 'done' : 'partial')}
+          </div>
         </div>
 
         {/* ── Tab bar ── */}
@@ -791,33 +1377,18 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           {WORKSPACE_TABS.map(t => {
             const isActive = activeTab === t.id
             return (
-              <button
-                key={t.id}
-                onClick={() => setDsActiveTab && setDsActiveTab(t.id)}
-                style={{
-                  background: 'none', border: 'none',
-                  borderBottom: isActive ? `2px solid ${accent}` : '2px solid transparent',
-                  color: isActive ? accent : muted,
-                  fontFamily: FONT, fontSize: '0.8rem', fontWeight: isActive ? '600' : '400',
-                  padding: '8px 16px', cursor: 'pointer', marginBottom: '-1px',
-                  letterSpacing: '0.01em', whiteSpace: 'nowrap',
-                }}
-              >
+              <button key={t.id} onClick={() => setDsActiveTab && setDsActiveTab(t.id)} style={{ background: 'none', border: 'none', borderBottom: isActive ? `2px solid ${accent}` : '2px solid transparent', color: isActive ? accent : muted, fontFamily: FONT, fontSize: '0.8rem', fontWeight: isActive ? '600' : '400', padding: '8px 16px', cursor: 'pointer', marginBottom: '-1px', letterSpacing: '0.01em', whiteSpace: 'nowrap' }}>
                 {t.label}
               </button>
             )
           })}
         </div>
 
-        {/* ── Tab placeholder ── */}
-        <div style={{ ...card({ padding: '48px 24px' }), textAlign: 'center' }}>
-          <p style={{ margin: '0 0 6px', fontSize: '0.9rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>
-            {WORKSPACE_TABS.find(t => t.id === activeTab)?.label}
-          </p>
-          <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>
-            Workspace shell ready. Detailed tab content will be moved in later phases.
-          </p>
-        </div>
+        {/* ── Tab content ── */}
+        {activeTab === 'dictionary'
+          ? <DictionaryReview C={C} token={token} sourceId={dsSelectedSourceId} embedded hideSourceSelector />
+          : (TAB_CONTENT[activeTab] ?? null)
+        }
 
         <Toast toast={toast} />
         <style>{`@keyframes dsm-spin { to { transform: rotate(360deg); } }`}</style>
