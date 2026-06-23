@@ -5,7 +5,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from core.config import ALLOWED_ORIGINS, ENABLE_REAL_EMAIL, LOG_LEVEL, SCHEDULER_INTERVAL_SECONDS
+from core.config import (
+    ALLOWED_ORIGINS,
+    ENABLE_REAL_EMAIL,
+    LOG_LEVEL,
+    SCHEDULER_ENABLED,
+    SCHEDULER_INTERVAL_SECONDS,
+    SCHEDULER_LOG_LEVEL,
+    SCHEDULER_MAX_RUNS_PER_TICK,
+)
 from api.v1.routes import router as v1_router
 from data.models import init_db
 from data.scheduled_workflow_service import run_due_workflows
@@ -28,18 +36,27 @@ async def lifespan(app):
         logger.warning("  Emails are logged to email_logs but NOT delivered.")
         logger.warning("  Set ENABLE_REAL_EMAIL=true in .env to enable delivery.")
         logger.warning("=" * 60)
-    _scheduler.add_job(
-        run_due_workflows,
-        "interval",
-        seconds=SCHEDULER_INTERVAL_SECONDS,
-        id="run_due_workflows",
-        replace_existing=True,
-    )
-    _scheduler.start()
-    logger.info("Scheduler started — polling every %ss", SCHEDULER_INTERVAL_SECONDS)
+    if SCHEDULER_ENABLED:
+        _scheduler.add_job(
+            run_due_workflows,
+            "interval",
+            seconds=SCHEDULER_INTERVAL_SECONDS,
+            id="run_due_workflows",
+            replace_existing=True,
+        )
+        _scheduler.start()
+        logger.info(
+            "Scheduler started — interval=%ss  max_per_tick=%s  log_mode=%s",
+            SCHEDULER_INTERVAL_SECONDS,
+            SCHEDULER_MAX_RUNS_PER_TICK,
+            SCHEDULER_LOG_LEVEL,
+        )
+    else:
+        logger.info("Scheduler disabled (SCHEDULER_ENABLED=false) — no workflows will run automatically")
     yield
-    _scheduler.shutdown(wait=False)
-    logger.info("Scheduler stopped")
+    if SCHEDULER_ENABLED and _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        logger.info("Scheduler stopped")
 
 
 app = FastAPI(lifespan=lifespan)

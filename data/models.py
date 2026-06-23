@@ -101,6 +101,9 @@ def init_db() -> None:
             refresh_before_run INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE INDEX IF NOT EXISTS idx_sw_enabled_next_run
+            ON scheduled_workflows (enabled, next_run_at);
+
         CREATE TABLE IF NOT EXISTS usage_events (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             tenant_id    TEXT    NOT NULL,

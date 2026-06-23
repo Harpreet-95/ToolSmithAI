@@ -118,12 +118,14 @@ def list_scheduled_workflows(user_id: str) -> list[dict]:
         conn.close()
 
 
-def get_due_scheduled_workflows(now_iso: str) -> list[dict]:
+def get_due_scheduled_workflows(now_iso: str, limit: int = 10) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM scheduled_workflows WHERE enabled = 1 AND next_run_at <= ?",
-            (now_iso,),
+            "SELECT * FROM scheduled_workflows "
+            "WHERE enabled = 1 AND next_run_at <= ? "
+            "ORDER BY next_run_at ASC LIMIT ?",
+            (now_iso, limit),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -351,19 +353,33 @@ def run_due_workflows() -> None:
 def _run_due_workflows_inner() -> None:
     import sqlite3 as _sqlite3
     from core.input.input_handler import handle_input
+    from core.config import SCHEDULER_MAX_RUNS_PER_TICK, SCHEDULER_LOG_LEVEL
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
-        due = get_due_scheduled_workflows(now_iso)
+        due = get_due_scheduled_workflows(now_iso, limit=SCHEDULER_MAX_RUNS_PER_TICK)
     except _sqlite3.OperationalError as exc:
         logger.warning("run_due_workflows: skipping tick — database is locked (%s)", exc)
         return
+
+    completed_count = warning_count = failed_count = skipped_count = 0
+
     for wf in due:
         wid     = wf["id"]
         user_id = wf["user_id"]
         next_run = _compute_next_run_at(wf["frequency"], wf.get("day_of_week"), cron=wf.get("cron"))
-        # Advance next_run_at BEFORE executing to prevent duplicate runs
-        mark_scheduled_workflow_run(wid, next_run)
+
+        # Advance next_run_at BEFORE executing — if this write fails we skip execution
+        # entirely so the workflow is not run with a stale next_run_at.
+        try:
+            mark_scheduled_workflow_run(wid, next_run)
+        except Exception as mark_exc:
+            logger.error(
+                "Scheduler: could not advance next_run_at for workflow %s — skipping this tick: %s",
+                wid, mark_exc,
+            )
+            skipped_count += 1
+            continue
 
         run_id = None
         try:
@@ -430,7 +446,14 @@ def _run_due_workflows_inner() -> None:
                 status, warn_msg = _classify_result(result)
 
             update_scheduled_workflow_outcome(wid, status=status, error=warn_msg)
-            logger.info("Scheduled workflow %s %s. Next run: %s", wid, status, next_run)
+
+            if status == "completed":
+                completed_count += 1
+            else:
+                warning_count += 1
+
+            if SCHEDULER_LOG_LEVEL == "verbose":
+                logger.info("Scheduled workflow %s %s. Next run: %s", wid, status, next_run)
 
             related_report_id = None
             try:
@@ -474,6 +497,7 @@ def _run_due_workflows_inner() -> None:
 
         except Exception as exc:
             err_msg = str(exc)[:500]
+            failed_count += 1
             update_scheduled_workflow_outcome(wid, status="failed", error=err_msg)
             logger.error("Scheduled workflow %s failed: %s", wid, exc)
 
@@ -500,3 +524,9 @@ def _run_due_workflows_inner() -> None:
                 )
             except Exception:
                 pass
+
+    if due and SCHEDULER_LOG_LEVEL != "verbose":
+        logger.info(
+            "Scheduler tick: %d due — %d completed, %d warnings, %d failed, %d skipped",
+            len(due), completed_count, warning_count, failed_count, skipped_count,
+        )

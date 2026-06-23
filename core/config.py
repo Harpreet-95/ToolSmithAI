@@ -117,8 +117,15 @@ ENABLE_REAL_EMAIL: bool = os.getenv("ENABLE_REAL_EMAIL", "false").lower() == "tr
 
 # ---------------------------------------------------------------------------
 # Background scheduler
+# SCHEDULER_ENABLED           — set false to disable the scheduler entirely (rare; prefer pausing individual workflows)
+# SCHEDULER_INTERVAL_SECONDS  — how often the scheduler polls for due workflows (seconds)
+# SCHEDULER_MAX_RUNS_PER_TICK — hard cap on workflows executed per poll cycle; prevents restart floods
+# SCHEDULER_LOG_LEVEL         — "summary" (one line per tick) or "verbose" (one line per workflow)
 # ---------------------------------------------------------------------------
+SCHEDULER_ENABLED: bool = os.getenv("SCHEDULER_ENABLED", "true").lower() == "true"
 SCHEDULER_INTERVAL_SECONDS: int = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "60"))
+SCHEDULER_MAX_RUNS_PER_TICK: int = int(os.getenv("SCHEDULER_MAX_RUNS_PER_TICK", "10"))
+SCHEDULER_LOG_LEVEL: str = os.getenv("SCHEDULER_LOG_LEVEL", "summary")
 
 # ---------------------------------------------------------------------------
 # AI Workflow Planner (optional — requires: pip install "openai>=1.0,<2.0")
