@@ -390,6 +390,178 @@ def list_profile_history(source_id: int, user_id: str) -> list[dict] | None:
     return [_to_public_profile_summary(r) for r in rows]
 
 
+def get_column_profiles(
+    source_id: int,
+    user_id: str,
+    *,
+    table_fqn: str | None = None,
+    semantic_type: str | None = None,
+    pii_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict | None:
+    """Return paginated column profiles from the latest profiling snapshot.
+
+    Returns None when the source does not exist or does not belong to user_id.
+    Returns an empty columns list when profiling has not yet run.
+    All filters are applied server-side via parameterised SQL — no injection risk.
+    """
+    limit  = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        snap = conn.execute(
+            "SELECT id FROM profiling_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if snap is None:
+            return {
+                "snapshot_id": None,
+                "source_id":   source_id,
+                "total":       0,
+                "limit":       limit,
+                "offset":      offset,
+                "columns":     [],
+            }
+
+        snap_id = snap["id"]
+
+        filters: list[str] = ["profiling_snapshot_id = ?"]
+        params:  list      = [snap_id]
+
+        if table_fqn:
+            filters.append("table_fqn = ?")
+            params.append(table_fqn)
+        if semantic_type:
+            filters.append("semantic_type = ?")
+            params.append(semantic_type)
+        if pii_only:
+            filters.append("pii_name_heuristic = 1")
+
+        where = " AND ".join(filters)
+
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM profiling_column_profiles WHERE {where}",
+            params,
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                table_fqn, column_name, data_type, raw_type,
+                is_nullable, is_primary_key, is_identity,
+                null_percentage, distinct_percentage, uniqueness_score, cardinality_tier,
+                min_value, max_value, avg_length,
+                semantic_type, semantic_confidence,
+                pii_name_heuristic, pii_confirmed, pii_signals_json,
+                dominant_pattern, pattern_coverage, top_values_coverage,
+                profiling_depth, profiling_status
+            FROM profiling_column_profiles
+            WHERE {where}
+            ORDER BY table_fqn, ordinal_position
+            LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "snapshot_id": snap_id,
+        "source_id":   source_id,
+        "total":       total,
+        "limit":       limit,
+        "offset":      offset,
+        "columns":     [dict(r) for r in rows],
+    }
+
+
+def get_table_profile_detail(
+    source_id: int,
+    user_id: str,
+    table_fqn: str,
+) -> dict | None:
+    """Return the latest table profile and all its column profiles.
+
+    Returns None when the source does not belong to user_id.
+    Returns {"table": None, "columns": []} when no profiling snapshot exists.
+    Returns {"table": None, "columns": []} when the specific table was not profiled.
+    Columns are ordered by ordinal_position.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        snap = conn.execute(
+            "SELECT id FROM profiling_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if snap is None:
+            return {"table": None, "columns": []}
+
+        snap_id = snap["id"]
+
+        table_row = conn.execute(
+            """
+            SELECT
+                table_fqn, table_name, schema_name, table_type,
+                exact_row_count, estimated_row_count, row_count_tier,
+                has_date_column, date_column_name,
+                earliest_record, latest_record, data_span_days, data_currency,
+                column_count, pk_column_count, fk_count, referenced_by_count,
+                is_junction_table, is_root_table, is_leaf_table, has_identity_column,
+                avg_null_percentage, completeness_score,
+                table_class, classification_confidence,
+                classification_evidence_json, competing_classes_json,
+                pii_column_count, confirmed_pii_count,
+                profiling_depth, profiling_status, profiled_at
+            FROM profiling_table_profiles
+            WHERE profiling_snapshot_id = ? AND table_fqn = ?
+            """,
+            (snap_id, table_fqn),
+        ).fetchone()
+
+        col_rows = conn.execute(
+            """
+            SELECT
+                table_fqn, column_name, data_type, raw_type,
+                is_nullable, is_primary_key, is_identity,
+                null_percentage, distinct_percentage, uniqueness_score, cardinality_tier,
+                min_value, max_value, avg_length,
+                semantic_type, semantic_confidence,
+                pii_name_heuristic, pii_confirmed, pii_signals_json,
+                dominant_pattern, pattern_coverage, top_values_coverage,
+                profiling_depth, profiling_status
+            FROM profiling_column_profiles
+            WHERE profiling_snapshot_id = ? AND table_fqn = ?
+            ORDER BY ordinal_position
+            """,
+            (snap_id, table_fqn),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "table":   dict(table_row) if table_row else None,
+        "columns": [dict(r) for r in col_rows],
+    }
+
+
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 def _save_profiling_result(result: ProfilingRunResult) -> int:

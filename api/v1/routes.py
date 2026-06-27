@@ -115,7 +115,9 @@ from data.dictionary_service import (
 )
 from data.profiling_service import (
     continue_batch_profiling,
+    get_column_profiles,
     get_latest_profile,
+    get_table_profile_detail,
     list_profile_history,
     run_full_profiling,
     run_structural_profiling,
@@ -4106,6 +4108,43 @@ def get_profile_history_route(
     result = list_profile_history(source_id, user.user_id)
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/profile/columns")
+def get_column_profiles_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+    table_fqn: str | None = Query(default=None, description="Filter to a single table (schema.table)"),
+    semantic_type: str | None = Query(default=None, description="Filter by semantic type (EMAIL, PHONE, ID, …)"),
+    pii_only: bool = Query(default=False, description="When true, return only PII-flagged columns"),
+    limit: int = Query(default=100, ge=1, le=500, description="Page size (1–500)"),
+    offset: int = Query(default=0, ge=0, description="Zero-based page start"),
+) -> dict:
+    result = get_column_profiles(
+        source_id, user.user_id,
+        table_fqn=table_fqn,
+        semantic_type=semantic_type,
+        pii_only=pii_only,
+        limit=limit,
+        offset=offset,
+    )
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/profile/tables/{table_fqn}")
+def get_table_profile_detail_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = get_table_profile_detail(source_id, user.user_id, table_fqn)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    if result.get("table") is None:
+        return JSONResponse(status_code=404, content=build_error_response("Table profile not found."))
     return {"status": "success", "data": result}
 
 
