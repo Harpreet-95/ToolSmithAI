@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect, useRef, lazy, Suspense, Fragment } from 'react'
 import { interpretTask, registerUser, loginUser, verifyEmail, registerAdmin, changePassword, getUsage, getMyData, uploadDataset, getDatasets, getDatasetById, deleteDataset, renameDataset, reprofileDataset, createScheduledWorkflow, getScheduledWorkflows, deleteScheduledWorkflow, pauseScheduledWorkflow, resumeScheduledWorkflow, getWorkflows, saveWorkflow, deleteWorkflow, getRecommendations, getInsights, retryExecution, rerunExecution, getScheduleHealth, getWorkflowTemplates, explainContext, createMultiStepWorkflow, runWorkflowById, getReports, getReportById, deleteReport, exportReport, emailReport, getNotifications, markNotificationRead, deleteNotification, getScheduleRuns, getScheduleRunHistory, runScheduleNow, composeIntent, getWorkspaces, attachWorkspaceExecution, saveWorkspaceById, createWorkflowDraftFromWorkspace,
-  createDataSource, listDataSources, testDataSource } from './api/client'
+  createDataSource, listDataSources, testDataSource, searchMetadata } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
 
@@ -16,6 +16,7 @@ const AIWorkspace        = lazy(() => import('./components/AIWorkspace'))
 const EngineWorkspace    = lazy(() => import('./components/EngineWorkspace'))
 const DataSourceManager  = lazy(() => import('./components/DataSourceManager'))
 const DictionaryReview   = lazy(() => import('./components/DictionaryReview'))
+const EnterpriseSearch   = lazy(() => import('./components/EnterpriseSearch'))
 
 // ─── Lazy-load fallback ────────────────────────────────────────────────────────
 function LazyFallback() {
@@ -299,6 +300,7 @@ const NAV_ITEMS = [
   { id: 'datasets',  label: 'Datasets',     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg> },
   { id: 'data-sources', label: 'Data Sources', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg> },
   { id: 'dictionary',   label: 'Dictionary',  icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="13" y2="12"/></svg> },
+  { id: 'enterprise-search', label: 'Search', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> },
   { id: 'scheduled',      label: 'Scheduled',       icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> },
   { id: 'sched-activity', label: 'Sched. Activity', icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
   { id: 'history',        label: 'History',         icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
@@ -3330,6 +3332,15 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
               <ErrorBoundary C={C}>
                 <Suspense fallback={<LazyFallback />}>
                   <DictionaryReview C={C} token={token} />
+                </Suspense>
+              </ErrorBoundary>
+            )}
+
+            {/* ── Enterprise Search ─────────────────────────────────── */}
+            {activeNav === 'enterprise-search' && (
+              <ErrorBoundary C={C}>
+                <Suspense fallback={<LazyFallback />}>
+                  <EnterpriseSearch C={C} token={token} setActiveNav={setActiveNav} />
                 </Suspense>
               </ErrorBoundary>
             )}

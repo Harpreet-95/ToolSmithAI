@@ -4576,3 +4576,37 @@ def get_metadata_job_route(
     if job is None:
         return JSONResponse(status_code=404, content=build_error_response("Metadata job not found."))
     return {"status": "success", "data": job}
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Metadata Search  (/v1/search)
+# ---------------------------------------------------------------------------
+
+_VALID_ASSET_TYPES = {"table", "column", "dictionary", "domain", "entity"}
+
+
+@router.get("/search")
+def search_metadata_route(
+    q: str = Query(..., min_length=1, max_length=500, description="Search query"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    source_id: int | None = Query(None),
+    asset_type: str | None = Query(None),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    if asset_type is not None and asset_type not in _VALID_ASSET_TYPES:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Invalid asset_type '{asset_type}'. Must be one of: {', '.join(sorted(_VALID_ASSET_TYPES))}"
+            ),
+        )
+    from data.search_service import search_metadata
+    result = search_metadata(
+        q=q,
+        limit=limit,
+        offset=offset,
+        source_id=source_id,
+        asset_type=asset_type,
+    )
+    return {"status": "success", "data": result}

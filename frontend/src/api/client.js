@@ -892,3 +892,40 @@ export async function getProfileHistory(sourceId, token) {
   })
   return parseResponse(res)
 }
+
+export async function getColumnProfiles(sourceId, token, params = {}) {
+  const qs = new URLSearchParams()
+  if (params.table_fqn)        qs.set('table_fqn',     params.table_fqn)
+  if (params.semantic_type)    qs.set('semantic_type',  params.semantic_type)
+  if (params.pii_only)         qs.set('pii_only',       'true')
+  if (params.limit  != null)   qs.set('limit',          params.limit)
+  if (params.offset != null)   qs.set('offset',         params.offset)
+  const query = qs.toString()
+  const res = await fetch(
+    `/v1/sources/${sourceId}/profile/columns${query ? '?' + query : ''}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getTableProfileDetail(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/profile/tables/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+// ---------------------------------------------------------------------------
+// Enterprise Metadata Search
+// ---------------------------------------------------------------------------
+
+export async function searchMetadata(q, token, params = {}) {
+  const qs = new URLSearchParams({ q })
+  if (params.limit     != null)  qs.set('limit',      params.limit)
+  if (params.offset    != null)  qs.set('offset',     params.offset)
+  if (params.source_id != null)  qs.set('source_id',  params.source_id)
+  if (params.asset_type)         qs.set('asset_type', params.asset_type)
+  const res = await fetch(`/v1/search?${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
