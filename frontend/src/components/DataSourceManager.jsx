@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, createDataSource, deleteDataSource, discoverDataSourceSchema, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getEntityRules, getEntitySummary, getMetadataJob, getProfile, getProfileHistory, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, testDataSource } from '../api/client'
 import DictionaryReview from './DictionaryReview'
+import ColumnProfileExplorer from './ColumnProfileExplorer'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
@@ -1419,26 +1420,17 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     )
 
     const profileTab = (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {!hasSchema && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>No profiling data yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to generate a structural profile.</p></div>)}
-        {hasSchema && !profSnap && !prof.loading && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Profile not available</p><p style={{ margin: '0 0 16px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Schema was discovered but structural profiling has not run yet.</p><button onClick={() => src && handleDiscoverAndProfile(src)} disabled={!src || js.running || discSt.loading} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Run Profile</button></div>)}
-        {prof.loading && (<div style={{ ...card({ padding: '24px' }), textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={12} /> Loading profile…</div>)}
-        {prof.error  && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{prof.error}</span></div>)}
-        {profSnap && (
-          <>
-            <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
-              <div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Status</div><span style={{ padding: '2px 10px', borderRadius: '8px', fontSize: '0.72rem', fontWeight: '700', background: profComplete ? `${success}18` : `${accent}18`, color: profComplete ? success : accent, border: `1px solid ${profComplete ? success : accent}40`, fontFamily: FONT }}>{profSnap.status}</span></div>
-              {profSnap.tables_total != null && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Assets Profiled</div><div style={{ fontSize: '1.1rem', fontWeight: '700', color: text, fontFamily: FONT }}>{profSnap.tables_profiled ?? '—'} <span style={{ fontSize: '0.78rem', color: muted, fontWeight: '400' }}>/ {profSnap.tables_total}</span></div></div>)}
-              {profSnap.columns_total != null && profSnap.columns_total > 0 && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Columns</div><div style={{ fontSize: '1.1rem', fontWeight: '700', color: text, fontFamily: FONT }}>{profSnap.columns_total.toLocaleString()}</div></div>)}
-              {profSnap.profiling_snapshot_id != null && (<div style={{ marginLeft: 'auto' }}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Snapshot ID</div><div style={{ fontSize: '0.74rem', color: muted, fontFamily: MONO }}>{profSnap.profiling_snapshot_id}</div></div>)}
-            </div>
-            <div style={card({ padding: '12px 18px' })}>
-              <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '8px' }}>About This Profile</div>
-              <p style={{ margin: 0, fontSize: '0.78rem', color: textSec, fontFamily: FONT, lineHeight: 1.5 }}>Structural profiling captures schema layout, table row estimates, and column types. Column-level quality metrics (null rates, uniqueness, distributions) require a full profile run. Business metadata including PII classification is in the Dictionary tab.</p>
-            </div>
-          </>
-        )}
-      </div>
+      <ColumnProfileExplorer
+        C={C}
+        token={token}
+        sourceId={dsSelectedSourceId}
+        profileData={prof.data}
+        profLoading={prof.loading}
+        profError={prof.error}
+        hasSchema={hasSchema}
+        onRunProfile={() => src && handleDiscoverAndProfile(src)}
+        profileRunning={js.running || discSt.loading}
+      />
     )
 
     const domainsTab = (

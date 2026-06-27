@@ -734,6 +734,15 @@ def start_batch_profiling(
     sorted_fqns     = _compute_sorted_table_order(snapshot, config)
     statistical_fqns = sorted_fqns[:config.max_tables]
 
+    # Compute total column count across every table that will be profiled.
+    # sorted_fqns already has exclusions applied, so no additional filtering is needed.
+    _fqn_to_table = {t.table_fqn: t for s in snapshot.schemas for t in s.tables}
+    total_columns = sum(
+        len(_fqn_to_table[fqn].columns)
+        for fqn in sorted_fqns
+        if fqn in _fqn_to_table
+    )
+
     plan = json.dumps({
         "sorted_fqns":      sorted_fqns,
         "statistical_fqns": statistical_fqns,
@@ -754,14 +763,14 @@ def start_batch_profiling(
             """INSERT INTO profiling_snapshots (
                 source_id, schema_snapshot_id, snapshot_version,
                 mode, sample_rate, profiling_rules_version, status,
-                tables_total, batch_size, next_table_index,
+                tables_total, columns_total, batch_size, next_table_index,
                 resumable_state_json, started_at, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 source_id, schema_snapshot_id, snap_version,
                 ProfilingMode.FULL.value, config.sample_rate,
                 '4.0.0', ProfilingStatus.RUNNING.value,
-                len(sorted_fqns), batch_size, 0,
+                len(sorted_fqns), total_columns, batch_size, 0,
                 plan, now, now,
             ),
         )
