@@ -42,6 +42,21 @@ function fmtRelative(iso) {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
+function fmtDateTime(iso) {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return null
+  const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return date + ' · ' + time
+}
+
+function fmtDate(iso) {
+  if (!iso) return null
+  try { return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) }
+  catch { return null }
+}
+
 function Toast({ toast }) {
   if (!toast) return null
   return (
@@ -60,7 +75,7 @@ function Toast({ toast }) {
   )
 }
 
-export default function DataSourceManager({ C = {}, token, setActiveNav, openSource, dsSelectedSourceId, dsActiveTab, setDsSelectedSourceId, setDsActiveTab }) {
+export default function DataSourceManager({ C = {}, token, setActiveNav, openSource, dsSelectedSourceId, dsActiveTab, setDsSelectedSourceId, setDsActiveTab, setDsSourceName }) {
   const bg         = C.bg        ?? '#07091a'
   const surface    = C.surface   ?? '#0d1128'
   const border     = C.border    ?? '#1e2b52'
@@ -163,6 +178,13 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       }
     })
   }, [sources]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Push selected source name up to App header breadcrumb
+  useEffect(() => {
+    if (!setDsSourceName) return
+    const src = sources.find(s => s.id === dsSelectedSourceId)
+    setDsSourceName(src?.display_name ?? null)
+  }, [dsSelectedSourceId, sources]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lazy-load workspace tab data when tab or selected source changes
   useEffect(() => {
@@ -983,61 +1005,349 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
 
     // ── Tab content ────────────────────────────────────────────────────────
 
-    const overviewTab = (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-        {/* Connection row */}
-        <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-          <div>
-            <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Connection</div>
-            <div style={{ fontSize: '0.85rem', color: textSec, fontFamily: MONO, wordBreak: 'break-all' }}>{src?.config_summary ?? '—'}</div>
-          </div>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-            {src?.last_tested_at && (
-              <span style={{ fontSize: '0.71rem', color: muted, fontFamily: FONT }}>
-                Tested {fmtRelative(src.last_tested_at)}
-                <span style={{ marginLeft: '5px', color: src.last_test_status === 'success' ? success : danger }}>{src.last_test_status === 'success' ? '✓' : '✗'}</span>
-              </span>
+    const overviewTab = (() => {
+      // ── Derived values ────────────────────────────────────────────────────────
+      const kpiSchemas = sc.data?.schemas?.length ?? null
+      const kpiTables  = sc.data?.schemas != null
+        ? sc.data.schemas.reduce((a, s) => a + (s.tables?.filter(t => t.table_type === 'TABLE').length ?? 0), 0)
+        : (profSnap?.tables_total ?? null)
+      const kpiViews   = sc.data?.schemas != null
+        ? sc.data.schemas.reduce((a, s) => a + (s.tables?.filter(t => t.table_type === 'VIEW').length ?? 0), 0)
+        : null
+      const kpiCols    = profSnap?.columns_total ?? null
+
+      const domUnassigned = domSummary != null ? (domSummary.tables_unknown ?? 0) : null
+      const domTotal      = domAssigned + (domUnassigned ?? 0)
+      const domPct        = domTotal > 0 ? Math.round(domAssigned / domTotal * 100) : null
+
+      const entUnassigned = entSummary != null ? (entSummary.entities_unknown ?? 0) : null
+      const entTotal      = entAssigned + (entUnassigned ?? 0)
+      const entPct        = entTotal > 0 ? Math.round(entAssigned / entTotal * 100) : null
+
+      // ── Stage statuses ────────────────────────────────────────────────────────
+      let sProfile = 'locked'
+      if (hasSchema) {
+        if (prof.loading)   sProfile = 'running'
+        else if (profComplete)  sProfile = 'done'
+        else if (prof.error)    sProfile = 'failed'
+        else sProfile = 'ready'
+      }
+
+      let sDictStage = 'locked'
+      if (hasSchema) {
+        if (dict.generating) sDictStage = 'running'
+        else if (dictCount > 0 && dictApproved < dictCount) sDictStage = 'review'
+        else if (dictCount > 0) sDictStage = 'done'
+        else if (dict.error)    sDictStage = 'failed'
+        else sDictStage = 'ready'
+      }
+
+      const stgCol = st => ({ done: success, review: warn, ready: accent, running: accent, locked: `${muted}50`, failed: danger }[st] ?? muted)
+      const stgLbl = st => ({ done: 'Completed', review: 'Awaiting Approval', ready: 'Ready', running: 'In Progress', locked: 'Locked', failed: 'Failed' }[st] ?? st)
+
+      // ── Pipeline stages with real metrics ─────────────────────────────────────
+      const SI = (...paths) => (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
+      )
+      const pipelineStages = [
+        { num: 1, label: 'Connect & Verify', status: s1, ts: src?.last_tested_at ?? null,
+          metrics: s1 === 'done' && ts.latency_ms != null ? [`${ts.latency_ms}ms`] : [],
+          icon: SI(<path key="a" d="M12 22V12"/>,<path key="b" d="M5 12H2a10 10 0 0 0 20 0h-3"/>,<rect key="c" x="8" y="2" width="2" height="6" rx="1"/>,<rect key="d" x="14" y="2" width="2" height="6" rx="1"/>) },
+        { num: 2, label: 'Discover Schema', status: s2, ts: src?.last_snapshot_at ?? null,
+          metrics: kpiSchemas != null ? [`${kpiSchemas} schema${kpiSchemas !== 1 ? 's' : ''}`, kpiTables != null ? `${kpiTables.toLocaleString()} tables` : null].filter(Boolean) : [],
+          icon: SI(<ellipse key="a" cx="12" cy="5" rx="9" ry="3"/>,<path key="b" d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>,<path key="c" d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>) },
+        { num: 3, label: 'Profile Data', status: sProfile, ts: null,
+          metrics: profSnap != null ? [profSnap.tables_profiled != null ? `${profSnap.tables_profiled}/${profSnap.tables_total} assets` : null, kpiCols != null && kpiCols > 0 ? `${kpiCols.toLocaleString()} cols` : null].filter(Boolean) : [],
+          icon: SI(<polyline key="a" points="22 12 18 12 15 21 9 3 6 12 2 12"/>) },
+        { num: 4, label: 'Business Dictionary', status: sDictStage, ts: null,
+          metrics: dictCount > 0 ? [`${dictCount.toLocaleString()} terms`, `${dictApproved} approved`] : [],
+          icon: SI(<path key="a" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>,<path key="b" d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>) },
+        { num: 5, label: 'Assign Domains', status: s4, ts: null,
+          metrics: domAssigned > 0 ? [`${domAssigned} assigned`, domPct != null ? `${domPct}% coverage` : null].filter(Boolean) : [],
+          icon: SI(<circle key="a" cx="18" cy="5" r="3"/>,<circle key="b" cx="6" cy="12" r="3"/>,<circle key="c" cx="18" cy="19" r="3"/>,<line key="d" x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>,<line key="e" x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>) },
+        { num: 6, label: 'Map Entities', status: s5, ts: null,
+          metrics: entAssigned > 0 ? [`${entAssigned} assigned`, entPct != null ? `${entPct}% coverage` : null].filter(Boolean) : [],
+          icon: SI(<path key="a" d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>,<circle key="b" cx="9" cy="7" r="4"/>) },
+        { num: 7, label: 'Govern & Refine', status: s6, ts: null,
+          metrics: totalPending > 0 ? [`${totalPending} pending`] : (s6 === 'done' ? ['All reviewed'] : []),
+          icon: SI(<path key="a" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,<polyline key="b" points="9 12 11 14 15 10"/>) },
+      ]
+
+      // ── Next Best Action ──────────────────────────────────────────────────────
+      const nba = (() => {
+        if (s1 !== 'done') return { urgency: 'ACTION REQUIRED', urgencyColor: danger,
+          title: 'Test Connection',
+          desc: 'Verify connectivity and credentials before the metadata pipeline can proceed.',
+          cta: 'Test Connection', tab: null, act: () => !ts.loading && handleTest(dsSelectedSourceId) }
+        if (!hasSchema) return { urgency: 'NEXT STEP', urgencyColor: accent,
+          title: 'Discover Schema',
+          desc: 'Scan all schemas, tables, and columns to build the metadata foundation.',
+          cta: 'Discover Schema', tab: 'schema', act: () => src && handleDiscoverAndProfile(src) }
+        if (dictCount === 0) return { urgency: 'NEXT STEP', urgencyColor: accent,
+          title: 'Generate Business Dictionary',
+          desc: 'AI-generate business names and descriptions for all discovered tables.',
+          cta: 'Generate Dictionary', tab: 'dictionary', act: () => handleGenerateDictionary(dsSelectedSourceId) }
+        if (dictCount > 0 && dictApproved === 0) return { urgency: 'ACTION REQUIRED', urgencyColor: danger,
+          title: 'Approve Business Dictionary',
+          desc: `${dictCount.toLocaleString()} business terms are awaiting approval. Governance cannot begin until dictionary review is complete.`,
+          cta: 'Review Dictionary', tab: 'dictionary', act: null }
+        if (dictCount > 0 && dictApproved < dictCount) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+          title: 'Complete Dictionary Review',
+          desc: `${(dictCount - dictApproved).toLocaleString()} of ${dictCount.toLocaleString()} business terms are still pending approval.`,
+          cta: 'Review Dictionary', tab: 'dictionary', act: null }
+        if (domAssigned === 0) return { urgency: 'NEXT STEP', urgencyColor: accent,
+          title: 'Assign Business Domains',
+          desc: 'Classify tables into business domains to enable ownership and governance.',
+          cta: 'Generate Domains', tab: 'domains', act: () => handleGenerateDomains(dsSelectedSourceId) }
+        if (entAssigned === 0) return { urgency: 'NEXT STEP', urgencyColor: accent,
+          title: 'Map Business Entities',
+          desc: 'Identify the primary business object each table represents — Customer, Order, Product.',
+          cta: 'Generate Entities', tab: 'entities', act: () => handleGenerateEntities(dsSelectedSourceId) }
+        if (totalPending > 0) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+          title: 'Review Governance Items',
+          desc: `${totalPending} governance item${totalPending !== 1 ? 's' : ''} require review before this source can be certified.`,
+          cta: 'Review Governance', tab: 'governance', act: null }
+        return { urgency: 'COMPLETE', urgencyColor: success,
+          title: 'Pipeline Complete',
+          desc: 'All metadata intelligence steps are complete. This source is ready for governed use.',
+          cta: null, tab: null, act: null }
+      })()
+
+      // ── Recent Activity ───────────────────────────────────────────────────────
+      const actItems = []
+      if (src?.last_tested_at) actItems.push({ label: src.last_test_status === 'success' ? 'Connection verified' : 'Connection test failed', ts: src.last_tested_at, col: src.last_test_status === 'success' ? success : danger })
+      if (src?.last_snapshot_at && hasSchema) actItems.push({ label: kpiTables != null ? `Schema discovered · ${kpiTables.toLocaleString()} tables` : 'Schema discovered', ts: src.last_snapshot_at, col: success })
+      if (profComplete) actItems.push({ label: profSnap?.tables_profiled != null ? `Profile completed · ${profSnap.tables_profiled} assets` : 'Profile completed', ts: null, col: success })
+      if (dictCount > 0) actItems.push({ label: `Dictionary generated · ${dictCount.toLocaleString()} terms`, ts: null, col: accent })
+      if (domAssigned > 0) actItems.push({ label: `Domains assigned · ${domAssigned} tables`, ts: null, col: accent })
+      if (entAssigned > 0) actItems.push({ label: `Entities mapped · ${entAssigned} tables`, ts: null, col: accent })
+      actItems.sort((a, b) => {
+        if (a.ts && b.ts) return new Date(b.ts) - new Date(a.ts)
+        return a.ts ? -1 : b.ts ? 1 : 0
+      })
+
+      // ── KPI card definitions ──────────────────────────────────────────────────
+      const KI = (...paths) => (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
+      )
+      const kpiDefs = [
+        { label: 'Schemas',
+          value: kpiSchemas,
+          lines: sc.data?.schemas?.length > 0 ? [{ text: sc.data.schemas.map(s => s.schema_name).join(', '), color: muted }] : [],
+          iconCol: '#38bdf8',
+          icon: KI(<polygon key="a" points="12 2 2 7 12 12 22 7 12 2"/>,<polyline key="b" points="2 17 12 22 22 17"/>,<polyline key="c" points="2 12 12 17 22 12"/>) },
+        { label: 'Tables',
+          value: kpiTables,
+          lines: kpiViews != null && kpiViews > 0 ? [{ text: `+ ${kpiViews} views`, color: muted }] : [],
+          iconCol: '#10b981',
+          icon: KI(<rect key="a" x="3" y="3" width="18" height="18" rx="2"/>,<path key="b" d="M3 9h18M3 15h18M9 3v18"/>) },
+        { label: 'Columns',
+          value: kpiSchemas != null ? (profComplete ? (kpiCols ?? 0).toLocaleString() : '—') : null,
+          valueColor: kpiSchemas != null && (!profComplete || (kpiCols ?? 0) === 0) ? muted : null,
+          lines: kpiSchemas != null
+            ? (!profComplete
+                ? [{ text: 'Pending Profiling', color: warn }]
+                : (kpiCols ?? 0) > 0
+                  ? [{ text: 'Across all tables', color: muted }]
+                  : [{ text: 'No columns counted', color: muted }])
+            : [],
+          iconCol: '#a78bfa',
+          icon: KI(<line key="a" x1="18" y1="20" x2="18" y2="10"/>,<line key="b" x1="12" y1="20" x2="12" y2="4"/>,<line key="c" x1="6" y1="20" x2="6" y2="14"/>) },
+        { label: 'Business Terms',
+          value: dictCount > 0 ? `${dictPct}%` : null,
+          valueColor: dictCount > 0 && dictPct === 0 ? warn : null,
+          lines: dictCount > 0 ? [
+            { text: `${dictApproved.toLocaleString()} / ${dictCount.toLocaleString()} Approved`, color: muted },
+            { text: dictCount - dictApproved > 0 ? `${(dictCount - dictApproved).toLocaleString()} awaiting approval` : 'All approved', color: dictCount - dictApproved > 0 ? warn : success },
+          ] : [],
+          iconCol: '#f59e0b',
+          icon: KI(<path key="a" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>,<path key="b" d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>) },
+        { label: 'Domain Coverage',
+          value: domAssigned > 0 ? domAssigned : null,
+          lines: domSummary != null ? [
+            { text: `${domUnassigned ?? 0} Remaining`, color: muted },
+            { text: domPct != null ? `${domPct}% Coverage` : null, color: domPct != null && domPct >= 80 ? success : warn },
+          ].filter(l => l.text) : [],
+          iconCol: '#6366f1',
+          icon: KI(<circle key="a" cx="18" cy="5" r="3"/>,<circle key="b" cx="6" cy="12" r="3"/>,<circle key="c" cx="18" cy="19" r="3"/>,<line key="d" x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>,<line key="e" x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>) },
+        { label: 'Entity Coverage',
+          value: entAssigned > 0 ? entAssigned : null,
+          lines: entSummary != null ? [
+            { text: `${entUnassigned ?? 0} Remaining`, color: muted },
+            { text: entPct != null ? `${entPct}% Coverage` : null, color: entPct != null && entPct >= 80 ? success : warn },
+          ].filter(l => l.text) : [],
+          iconCol: '#ec4899',
+          icon: KI(<path key="a" d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>,<circle key="b" cx="9" cy="7" r="4"/>,<path key="c" d="M23 21v-2a4 4 0 0 0-3-3.87"/>,<path key="d" d="M16 3.13a4 4 0 0 1 0 7.75"/>) },
+      ].filter(k => k.value != null)
+
+      // ── Source config rows ────────────────────────────────────────────────────
+      const truncate = (str, n) => str && str.length > n ? str.slice(0, n) + '…' : str
+      const cfgRows = [
+        { label: 'Type',        value: stLabel,                                   color: null,
+          icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
+        { label: 'Connection',  value: truncate(src?.config_summary ?? null, 38), color: null,
+          icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg> },
+        { label: 'Environment', value: src?.metadata?.environment ?? null,         color: null,
+          icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg> },
+        { label: 'Status',      value: smBadge.label,                             color: smBadge.color,
+          icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> },
+      ].filter(r => r.value != null)
+
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+            {/* KPI Row */}
+            {kpiDefs.length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(kpiDefs.length, 6)}, 1fr)`, gap: '14px' }}>
+                {kpiDefs.map(k => (
+                  <div key={k.label} style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '14px 14px 12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 'calc(100% - 32px)' }}>{k.label}</span>
+                      <div style={{ width: '26px', height: '26px', borderRadius: '7px', background: `${k.iconCol}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <span style={{ color: k.iconCol, display: 'flex', alignItems: 'center' }}>{k.icon}</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '1.7rem', fontWeight: '800', color: k.valueColor ?? text, fontFamily: FONT, lineHeight: 1, letterSpacing: '-0.5px' }}>{k.value}</div>
+                    {(k.lines ?? []).map((line, i) => (
+                      <div key={i} style={{ fontSize: '0.62rem', color: line.color, fontFamily: FONT, marginTop: i === 0 ? '5px' : '2px', lineHeight: 1.3 }}>{line.text}</div>
+                    ))}
+                  </div>
+                ))}
+              </div>
             )}
-            <button onClick={() => !ts.loading && handleTest(dsSelectedSourceId)} disabled={ts.loading} style={{ ...btnGhost({ padding: '6px 14px', fontSize: '0.78rem' }), color: ts.loading ? `${muted}50` : accent, borderColor: `${accent}50`, cursor: ts.loading ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
-              {ts.loading && <Spinner />}{ts.loading ? 'Testing…' : 'Test Connection'}
-            </button>
-          </div>
-        </div>
-        {ts.status && !ts.loading && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: ts.status === 'success' ? `${success}12` : `${danger}12`, border: `1px solid ${ts.status === 'success' ? success + '40' : danger + '40'}` }}>
-            <span style={{ fontWeight: '700', fontSize: '0.78rem', color: ts.status === 'success' ? success : danger, fontFamily: FONT }}>{ts.status === 'success' ? '✓ Connected' : '✗ Failed'}</span>
-            {ts.latency_ms != null && <span style={{ fontSize: '0.74rem', color: muted, fontFamily: MONO, marginLeft: '10px' }}>{ts.latency_ms}ms</span>}
-            {ts.message && <p style={{ margin: '4px 0 0', fontSize: '0.77rem', color: textSec, fontFamily: FONT }}>{ts.message}</p>}
-          </div>
-        )}
 
-        {/* Pipeline grid */}
-        <div>
-          <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Metadata Pipeline</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '10px' }}>
-            {pipCard({ num: 1, title: 'Connect & Verify', status: s1, desc: 'Verify connectivity and credentials to the database.', stat: s1 === 'done' ? (ts.latency_ms ? `${ts.latency_ms}ms response` : 'Connected') : null, err: s1 === 'failed' ? (ts.message || src?.last_test_message || null) : null, action: { label: ts.loading ? 'Testing…' : 'Test Connection', primary: s1 !== 'done', onClick: () => !ts.loading && handleTest(dsSelectedSourceId), disabled: ts.loading, loading: ts.loading } })}
-            {pipCard({ num: 2, title: 'Discover & Profile', status: s2, desc: 'Crawl schemas, tables, and columns, then run structural profiling.', stat: hasSchema && profSnap ? `${profSnap.tables_profiled ?? '?'} / ${profSnap.tables_total ?? '?'} assets profiled · ${profSnap.status}` : hasSchema ? 'Schema snapshot available' : null, err: s2 === 'failed' ? (job?.error_message || discSt.error || null) : null, action: s2 === 'running' ? { label: js.loading ? 'Refreshing…' : 'Refresh Status', onClick: () => src?.metadata_job_id && loadJobStatus(dsSelectedSourceId, src.metadata_job_id), disabled: js.loading, loading: js.loading } : { label: hasSchema ? 'Re-run' : 'Discover & Profile', primary: !hasSchema, onClick: () => src && handleDiscoverAndProfile(src), disabled: discSt.loading || js.running, loading: discSt.loading || js.running }, viewTab: hasSchema ? 'schema' : null })}
-            {pipCard({ num: 3, title: 'Generate Dictionary', status: s3, desc: 'AI-generate business names, descriptions, and column semantics.', stat: dictCount > 0 ? `${dictCount} tables · ${dictPct}% approved` : null, err: s3 === 'failed' ? dict.error : null, action: { label: dict.generating ? 'Generating…' : dictCount > 0 ? 'Regenerate' : 'Generate', primary: dictCount === 0 && hasSchema, onClick: () => !dict.generating && handleGenerateDictionary(dsSelectedSourceId), disabled: dict.generating || !hasSchema, loading: dict.generating }, viewTab: dictCount > 0 ? 'dictionary' : null })}
-            {pipCard({ num: 4, title: 'Generate Domains', status: s4, desc: 'Classify tables into business domains (Sales, Finance, Product, etc.).', stat: domAssigned > 0 ? `${domAssigned} tables assigned` : null, err: s4 === 'failed' ? dom.error : null, action: { label: dom.generating ? 'Generating…' : domAssigned > 0 ? 'Regenerate' : 'Generate', primary: domAssigned === 0 && dictCount > 0, onClick: () => !dom.generating && handleGenerateDomains(dsSelectedSourceId), disabled: dom.generating || dictCount === 0, loading: dom.generating }, viewTab: domAssigned > 0 ? 'domains' : null })}
-            {pipCard({ num: 5, title: 'Generate Entities', status: s5, desc: 'Identify the primary business entity each table represents.', stat: entAssigned > 0 ? `${entAssigned} entities assigned` : null, err: s5 === 'failed' ? ent.error : null, action: { label: ent.generating ? 'Generating…' : entAssigned > 0 ? 'Regenerate' : 'Generate', primary: entAssigned === 0 && domAssigned > 0, onClick: () => !ent.generating && handleGenerateEntities(dsSelectedSourceId), disabled: ent.generating || domAssigned === 0, loading: ent.generating }, viewTab: entAssigned > 0 ? 'entities' : null })}
-            {pipCard({ num: 6, title: 'Govern & Refine', status: s6, desc: 'Review domain rules, entity rules, and refinement suggestions.', stat: totalPending > 0 ? `${totalPending} items pending review` : s6 === 'done' ? 'No pending items' : null, viewTab: s6 !== 'locked' ? 'governance' : null })}
-          </div>
-        </div>
-
-        {/* Intelligence summary metrics */}
-        {(hasSchema || dictCount > 0 || domAssigned > 0 || entAssigned > 0) && (
-          <div>
-            <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Intelligence Summary</div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '10px' }}>
-              {profSnap?.tables_total != null && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Tables</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{profSnap.tables_total.toLocaleString()}</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>discovered</div></div>)}
-              {dictCount > 0 && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Dictionary</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{dictPct}%</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{dictApproved} / {dictCount} approved</div></div>)}
-              {domSummary?.total_domains != null && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Domains</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{domSummary.total_domains}</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{domAssigned} tables assigned</div></div>)}
-              {entSummary?.total_entities != null && (<div style={card({ padding: '12px 14px' })}><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Entities</div><div style={{ fontSize: '1.4rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1 }}>{entSummary.total_entities}</div><div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{entAssigned} tables assigned</div></div>)}
+            {/* Metadata Intelligence Pipeline */}
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px 16px 14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '18px' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Metadata Intelligence Pipeline</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                {pipelineStages.map((stage, idx) => {
+                  const col    = stgCol(stage.status)
+                  const isLast = idx === pipelineStages.length - 1
+                  const isDone = stage.status === 'done'
+                  const isRun  = stage.status === 'running'
+                  const isLock = stage.status === 'locked'
+                  return (
+                    <div key={stage.num} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', opacity: isLock ? 0.4 : 1 }}>
+                      {!isLast && (
+                        <div style={{ position: 'absolute', top: '17px', left: 'calc(50% + 18px)', width: 'calc(100% - 36px)', height: '2px', background: isDone ? `${success}70` : border, zIndex: 0 }} />
+                      )}
+                      <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: `${col}18`, border: `2px solid ${col}`, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, position: 'relative', flexShrink: 0 }}>
+                        {isRun ? <Spinner size={14} /> : <span style={{ color: col, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{stage.icon}</span>}
+                      </div>
+                      <div style={{ marginTop: '8px', textAlign: 'center', padding: '0 2px', width: '100%' }}>
+                        <div style={{ fontSize: '0.6rem', fontWeight: '600', color: isLock ? muted : text, lineHeight: 1.3, fontFamily: FONT }}>{stage.label}</div>
+                        <div style={{ marginTop: '3px', fontSize: '0.55rem', fontWeight: '700', color: col, fontFamily: FONT, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{stgLbl(stage.status)}</div>
+                        {stage.ts && <div style={{ marginTop: '2px', fontSize: '0.54rem', color: muted, fontFamily: FONT }}>{fmtDate(stage.ts)}</div>}
+                        {stage.metrics.length > 0 && (
+                          <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '1px', alignItems: 'center' }}>
+                            {stage.metrics.map((m, i) => (
+                              <span key={i} style={{ fontSize: '0.54rem', color: muted, fontFamily: FONT, lineHeight: 1.2 }}>{m}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
+
+            {/* Recent Pipeline Runs */}
+            {profHist.data && Array.isArray(profHist.data) && profHist.data.length > 0 && (
+              <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', overflow: 'hidden' }}>
+                <div style={{ padding: '11px 16px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Recent Pipeline Runs</span>
+                  <button onClick={() => setDsActiveTab('runs')} style={{ background: 'none', border: 'none', color: accent, fontSize: '0.72rem', fontFamily: FONT, cursor: 'pointer', padding: 0 }}>View all →</button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 150px 110px', padding: '6px 16px', borderBottom: `1px solid ${border}`, background: bg }}>
+                  {['Run Type', 'Status', 'Started', 'Assets'].map(h => (
+                    <span key={h} style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>{h}</span>
+                  ))}
+                </div>
+                {profHist.data.slice(0, 4).map((run, i) => {
+                  const runCol = run.status === 'COMPLETE' ? success : run.status === 'RUNNING' ? accent : danger
+                  return (
+                    <div key={run.id ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 150px 110px', padding: '8px 16px', borderBottom: i < Math.min(profHist.data.length, 4) - 1 ? `1px solid ${border}20` : 'none', background: i % 2 === 0 ? 'transparent' : `${bg}50` }}>
+                      <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>Full Pipeline Run</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', gap: '3px', padding: '1px 7px', borderRadius: '5px', fontSize: '0.62rem', fontWeight: '700', background: `${runCol}15`, color: runCol, border: `1px solid ${runCol}35`, fontFamily: FONT }}>{run.status ?? '—'}</span>
+                      <span style={{ fontSize: '0.73rem', color: muted, fontFamily: FONT }}>{run.created_at ? fmtDate(run.created_at) : '—'}</span>
+                      <span style={{ fontSize: '0.73rem', color: textSec, fontFamily: FONT }}>{run.tables_profiled != null ? `${run.tables_profiled} / ${run.tables_total ?? '?'}` : '—'}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Action Required · Recent Activity · Source Configuration */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '14px', alignItems: 'start' }}>
+
+            {/* Next Best Action */}
+            <div style={{ background: surface, border: `1px solid ${nba.urgencyColor}50`, borderLeft: `3px solid ${nba.urgencyColor}`, borderRadius: '10px', padding: '16px' }}>
+              <div style={{ marginBottom: '10px' }}>
+                <span style={{ fontSize: '0.58rem', fontWeight: '800', color: nba.urgencyColor, letterSpacing: '0.09em', textTransform: 'uppercase', fontFamily: FONT }}>{nba.urgency}</span>
+              </div>
+              <div style={{ fontSize: '0.86rem', fontWeight: '700', color: text, fontFamily: FONT, marginBottom: '8px', lineHeight: 1.3 }}>{nba.title}</div>
+              <p style={{ margin: '0 0 14px', fontSize: '0.73rem', color: muted, fontFamily: FONT, lineHeight: 1.6 }}>{nba.desc}</p>
+              {nba.cta && (
+                <button
+                  onClick={() => { if (nba.act) nba.act(); if (nba.tab) setDsActiveTab(nba.tab) }}
+                  style={{ width: '100%', background: nba.urgencyColor === danger ? danger : accent, color: '#fff', border: 'none', borderRadius: '7px', padding: '8px 14px', fontSize: '0.78rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                >
+                  {nba.cta} →
+                </button>
+              )}
+            </div>
+
+            {/* Recent Activity */}
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px' }}>
+              <div style={{ marginBottom: '12px' }}>
+                <span style={{ fontSize: '0.62rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Recent Activity</span>
+              </div>
+              {actItems.length === 0 ? (
+                <p style={{ margin: 0, fontSize: '0.73rem', color: muted, fontFamily: FONT }}>No activity recorded yet.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {actItems.slice(0, 6).map((item, i) => (
+                    <div key={i} style={{ display: 'flex', gap: '9px', alignItems: 'flex-start' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.col, flexShrink: 0, marginTop: '5px' }} />
+                      <div>
+                        <div style={{ fontSize: '0.73rem', color: textSec, fontFamily: FONT, lineHeight: 1.35 }}>{item.label}</div>
+                        {item.ts
+                          ? <div style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT, marginTop: '1px' }}>{fmtRelative(item.ts)}</div>
+                          : <div style={{ fontSize: '0.61rem', color: `${muted}60`, fontFamily: FONT, marginTop: '1px' }}>This session</div>
+                        }
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Source Configuration */}
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px' }}>
+              <div style={{ marginBottom: '12px' }}>
+                <span style={{ fontSize: '0.62rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Source Configuration</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {cfgRows.map(row => (
+                  <div key={row.label} style={{ display: 'grid', gridTemplateColumns: '78px 1fr', gap: '8px', alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '0.64rem', color: muted, fontFamily: FONT, paddingTop: '1px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ color: muted, display: 'flex', flexShrink: 0 }}>{row.icon}</span>
+                      {row.label}
+                    </span>
+                    <span style={{ fontSize: '0.73rem', color: row.color ?? textSec, fontFamily: FONT, wordBreak: 'break-word' }}>{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
           </div>
-        )}
-      </div>
-    )
+        </div>
+      )
+    })()
 
     const schemaTab = (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -1359,27 +1669,48 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     return (
       <div style={{ fontFamily: FONT, color: text }}>
 
-        {/* ── Breadcrumb ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '20px', fontSize: '0.74rem', fontFamily: FONT }}>
-          <button onClick={() => setDsSelectedSourceId(null)} style={{ background: 'none', border: 'none', color: muted, cursor: 'pointer', fontFamily: FONT, fontSize: '0.74rem', padding: 0, display: 'flex', alignItems: 'center', gap: '5px' }} onMouseEnter={e => { e.currentTarget.style.color = accent }} onMouseLeave={e => { e.currentTarget.style.color = muted }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
-            Data Sources
-          </button>
-          <span style={{ color: border }}>/</span>
-          <span style={{ color: textSec }}>{src?.display_name ?? `Source #${dsSelectedSourceId}`}</span>
-        </div>
-
         {/* ── Workspace header ── */}
-        <div style={{ marginBottom: '20px' }}>
-          <h2 style={{ margin: '0 0 8px', fontSize: '1.4rem', fontWeight: '700', color: text, letterSpacing: '-0.4px' }}>{src?.display_name ?? `Source #${dsSelectedSourceId}`}</h2>
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '600', letterSpacing: '0.04em', background: `${accent}15`, color: accent, border: `1px solid ${accent}30` }}>{stLabel}</span>
-            <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: '10px', fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.05em', textTransform: 'uppercase', background: `${smBadge.color}20`, color: smBadge.color, border: `1px solid ${smBadge.color}50` }}>{smBadge.label}</span>
-            {matBadge('Schema',     s2 === 'done' ? 'done' : s2 === 'running' ? 'running' : 'none')}
-            {matBadge('Profile',    profComplete ? 'done' : profSnap ? 'partial' : 'none')}
-            {dictCount > 0  && matBadge(dictPct === 100 ? 'Dictionary' : 'Needs Review', dictPct === 100 ? 'done' : 'partial')}
-            {domAssigned > 0 && matBadge('Domains',   s4 === 'done' ? 'done' : 'partial')}
-            {entAssigned > 0 && matBadge('Entities',  s5 === 'done' ? 'done' : 'partial')}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', marginBottom: '20px', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
+              <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '700', color: text, letterSpacing: '-0.5px', fontFamily: FONT }}>{src?.display_name ?? `Source #${dsSelectedSourceId}`}</h2>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '12px', fontSize: '0.7rem', fontWeight: '700', background: `${smBadge.color}20`, color: smBadge.color, border: `1px solid ${smBadge.color}50`, fontFamily: FONT }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: smBadge.color, display: 'inline-block', flexShrink: 0 }} />
+                {smBadge.label}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.77rem', color: muted, fontFamily: FONT, flexWrap: 'wrap' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                {stLabel}
+              </span>
+              {src?.config_summary && (
+                <><span style={{ color: border }}>·</span><span>{src.config_summary}</span></>
+              )}
+              {src?.metadata?.environment && (
+                <><span style={{ color: border }}>·</span><span style={{ textTransform: 'capitalize' }}>{src.metadata.environment}</span></>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => !ts.loading && handleTest(dsSelectedSourceId)}
+              disabled={ts.loading}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', background: 'transparent', border: `1px solid ${border}`, color: ts.loading ? `${muted}60` : textSec, fontSize: '0.82rem', fontWeight: '500', cursor: ts.loading ? 'not-allowed' : 'pointer', fontFamily: FONT }}
+            >
+              {ts.loading
+                ? <Spinner size={11} />
+                : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>}
+              {ts.loading ? 'Testing…' : 'Test Connection'}
+            </button>
+            <button
+              onClick={() => src && !discSt.loading && !js.running && handleDiscoverAndProfile(src)}
+              disabled={discSt.loading || js.running}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', background: accent, border: 'none', color: '#fff', fontSize: '0.82rem', fontWeight: '600', cursor: (discSt.loading || js.running) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: (discSt.loading || js.running) ? 0.7 : 1 }}
+            >
+              {(discSt.loading || js.running) && <Spinner size={11} />}
+              {(discSt.loading || js.running) ? 'Scanning…' : 'Scan Metadata'}
+            </button>
           </div>
         </div>
 
@@ -1572,18 +1903,39 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           </button>
         </div>
       ) : (() => {
-        const connectedSrcs = sources.filter(s => s.source_status === 'ACTIVE').length
-        const scannedSrcs   = sources.filter(s => s.last_snapshot_id != null).length
-        const dictSrcs      = sources.filter(s => (dictState[s.id]?.tables?.length ?? 0) > 0).length
-        const domainSrcs    = sources.filter(s => (domainState[s.id]?.summary?.tables_assigned ?? 0) > 0).length
-        const entitySrcs    = sources.filter(s => (entityState[s.id]?.summary?.entities_assigned ?? 0) > 0).length
-        const n             = sources.length
+        const connectedSrcs      = sources.filter(s => s.source_status === 'ACTIVE').length
+        const n                   = sources.length
 
-        // Loading flags: true while async summaries are still in-flight for any scanned source
-        const scannedList   = sources.filter(s => s.last_snapshot_id != null)
-        const dictLoading   = scannedList.some(s => dictState[s.id]?.loading === true)
-        const domainLoading = scannedList.some(s => domainState[s.id]?.loading === true)
-        const entityLoading = scannedList.some(s => entityState[s.id]?.loading === true)
+        // Loading flags
+        const scannedList         = sources.filter(s => s.last_snapshot_id != null)
+        const dictLoading         = scannedList.some(s => dictState[s.id]?.loading === true)
+        const domainLoading       = scannedList.some(s => domainState[s.id]?.loading === true)
+        const entityLoading       = scannedList.some(s => entityState[s.id]?.loading === true)
+        const schemaLoadingAny    = scannedList.some(s => schemaState[s.id]?.loading === true)
+
+        // Assets Discovered — total tables from real schema data
+        const totalAssets = sources.reduce((acc, s) => {
+          const sc = schemaState[s.id]
+          if (!sc?.data?.schemas) return acc
+          return acc + sc.data.schemas.reduce((a, schema) => a + (schema.tables?.filter(t => t.table_type === 'TABLE').length ?? 0), 0)
+        }, 0)
+        const assetsAvailable = scannedList.some(s => schemaState[s.id]?.data?.schemas != null)
+
+        // Dictionary Review — portfolio-level approval rate
+        const totalDictTables    = sources.reduce((acc, s) => acc + (dictState[s.id]?.tables?.length ?? 0), 0)
+        const approvedDictTables = sources.reduce((acc, s) => {
+          const tables = dictState[s.id]?.tables ?? []
+          return acc + tables.filter(t => t.is_approved === 1 || t.is_approved === true).length
+        }, 0)
+        const pendingReviews  = totalDictTables - approvedDictTables
+        const dictApprovalPct = totalDictTables > 0 ? Math.round((approvedDictTables / totalDictTables) * 100) : null
+        const dictNavSrc      = openSource ? sources.find(s => (dictState[s.id]?.tables?.length ?? 0) > 0) : null
+
+        // Domain & Entity Coverage
+        const totalDomainAssigned = sources.reduce((acc, s) => acc + (domainState[s.id]?.summary?.tables_assigned ?? 0), 0)
+        const domNavSrc           = openSource ? sources.find(s => (domainState[s.id]?.summary?.tables_assigned ?? 0) > 0) : null
+        const totalEntityAssigned = sources.reduce((acc, s) => acc + (entityState[s.id]?.summary?.entities_assigned ?? 0), 0)
+        const entNavSrc           = openSource ? sources.find(s => (entityState[s.id]?.summary?.entities_assigned ?? 0) > 0) : null
 
         // Table column template and search-filtered source list
         const TABLE_COL = '1fr 100px 132px 110px 80px 90px 130px'
@@ -1606,29 +1958,76 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             {/* ── Metric cards ── */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '10px' }}>
               {[
-                { label: 'Total Sources', value: n,             sub: 'registered',         col: text,    top: border,          loading: false        },
-                { label: 'Connected',     value: connectedSrcs, sub: 'active connections',  col: success, top: `${success}70`,  loading: false        },
-                { label: 'Scanned',       value: scannedSrcs,   sub: 'schema discovered',   col: text,    top: `${accent}70`,   loading: false        },
-                { label: 'Dictionaries',  value: dictSrcs,      sub: 'business metadata',   col: text,    top: `${accent}70`,   loading: dictLoading  },
-                { label: 'Domains',       value: domainSrcs,    sub: 'classified',          col: text,    top: `${accent}70`,   loading: domainLoading },
-                { label: 'Entities',      value: entitySrcs,    sub: 'mapped',              col: text,    top: `${accent}70`,   loading: entityLoading },
+                {
+                  label: 'Data Sources', value: n, sub: 'registered', col: text, top: border, loading: false, iconCol: muted, onClick: null,
+                  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>,
+                },
+                {
+                  label: 'Connected', value: connectedSrcs, sub: 'active connections', col: success, top: `${success}70`, loading: false, iconCol: success, onClick: null,
+                  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>,
+                },
+                {
+                  label: 'Assets Discovered',
+                  value: schemaLoadingAny ? null : (assetsAvailable ? totalAssets.toLocaleString() : '—'),
+                  sub: assetsAvailable ? 'tables across all sources' : 'run schema discovery',
+                  col: assetsAvailable ? text : muted, top: assetsAvailable ? `${accent}70` : border,
+                  loading: schemaLoadingAny, iconCol: assetsAvailable ? accent : muted, onClick: null,
+                  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>,
+                },
+                {
+                  label: 'Dictionary Review',
+                  value: dictApprovalPct !== null ? `${dictApprovalPct}%` : '—',
+                  sub: dictApprovalPct !== null ? (pendingReviews > 0 ? `${pendingReviews} pending` : 'fully reviewed') : 'generate dictionary',
+                  col: dictApprovalPct !== null ? (dictApprovalPct === 100 ? success : warn) : muted,
+                  top: dictApprovalPct !== null ? (dictApprovalPct === 100 ? `${success}70` : `${warn}70`) : border,
+                  loading: dictLoading, iconCol: dictApprovalPct !== null ? (dictApprovalPct === 100 ? success : warn) : muted,
+                  onClick: dictNavSrc ? () => openSource(dictNavSrc.id, 'dictionary') : null,
+                  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>,
+                },
+                {
+                  label: 'Domain Coverage',
+                  value: domainLoading ? null : (totalDomainAssigned > 0 ? totalDomainAssigned : '—'),
+                  sub: totalDomainAssigned > 0 ? 'tables classified' : 'generate domains',
+                  col: totalDomainAssigned > 0 ? text : muted, top: totalDomainAssigned > 0 ? `${accent}70` : border,
+                  loading: domainLoading, iconCol: totalDomainAssigned > 0 ? accent : muted,
+                  onClick: domNavSrc ? () => openSource(domNavSrc.id, 'domains') : null,
+                  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>,
+                },
+                {
+                  label: 'Entity Coverage',
+                  value: entityLoading ? null : (totalEntityAssigned > 0 ? totalEntityAssigned : '—'),
+                  sub: totalEntityAssigned > 0 ? 'entities mapped' : 'generate entities',
+                  col: totalEntityAssigned > 0 ? text : muted, top: totalEntityAssigned > 0 ? `${accent}70` : border,
+                  loading: entityLoading, iconCol: totalEntityAssigned > 0 ? accent : muted,
+                  onClick: entNavSrc ? () => openSource(entNavSrc.id, 'entities') : null,
+                  icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+                },
               ].map(m => (
-                <div key={m.label} style={{ background: surface, border: `1px solid ${border}`, borderTop: `2px solid ${m.top}`, borderRadius: '10px', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                  <div style={{ fontSize: '2rem', fontWeight: '800', color: m.col, fontFamily: FONT, lineHeight: 1, letterSpacing: '-1px' }}>
+                <div key={m.label}
+                  onClick={m.onClick ?? undefined}
+                  onMouseEnter={m.onClick ? e => { e.currentTarget.style.boxShadow = `0 0 0 1px ${m.iconCol}40`; e.currentTarget.style.borderTopColor = m.iconCol } : undefined}
+                  onMouseLeave={m.onClick ? e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.borderTopColor = m.top } : undefined}
+                  style={{ background: surface, border: `1px solid ${border}`, borderTop: `2px solid ${m.top}`, borderRadius: '10px', padding: '14px 16px', display: 'flex', flexDirection: 'column', cursor: m.onClick ? 'pointer' : 'default', transition: 'box-shadow 0.15s' }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                    <span style={{ fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>{m.label}</span>
+                    <div style={{ width: '26px', height: '26px', borderRadius: '7px', background: `${m.iconCol}18`, color: m.iconCol, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      {m.icon}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '1.9rem', fontWeight: '800', color: m.col, fontFamily: FONT, lineHeight: 1, letterSpacing: '-1px' }}>
                     {m.loading
                       ? <span style={{ fontSize: '1rem', color: muted, fontWeight: '500', opacity: 0.5 }}>…</span>
                       : m.value}
                   </div>
-                  <div style={{ fontSize: '0.78rem', fontWeight: '600', color: textSec, fontFamily: FONT }}>{m.label}</div>
-                  <div style={{ fontSize: '0.64rem', color: muted, fontFamily: FONT }}>{m.sub}</div>
+                  <div style={{ fontSize: '0.64rem', color: muted, fontFamily: FONT, marginTop: '5px' }}>{m.sub}</div>
                 </div>
               ))}
             </div>
 
 
-
             {/* ── Data Sources enterprise table ── */}
-            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '12px', overflow: 'hidden' }}>
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '12px' }}>
 
               {/* Card header: title + subtitle + search */}
               <div style={{ padding: '16px 20px 14px' }}>
@@ -1718,6 +2117,35 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                             <div style={{ fontSize: '0.67rem', color: muted, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '1px' }}>
                               {src.config_summary ?? '—'}
                             </div>
+                          {/* Pipeline stage chips — clickable shortcuts into each tab */}
+                          {openSource && (() => {
+                            const srcDictTbls    = dictState[src.id]?.tables ?? []
+                            const srcDictCount   = srcDictTbls.length
+                            const srcDictPending = srcDictTbls.filter(t => t.is_approved !== 1 && t.is_approved !== true).length
+                            const srcDictApprPct = srcDictCount > 0 ? Math.round(((srcDictCount - srcDictPending) / srcDictCount) * 100) : null
+                            const srcDomAssigned = domainState[src.id]?.summary?.tables_assigned ?? 0
+                            const srcEntAssigned = entityState[src.id]?.summary?.entities_assigned ?? 0
+                            if (srcDictApprPct === null && srcDomAssigned === 0 && srcEntAssigned === 0) return null
+                            const chip = (label, color, tab) => (
+                              <button key={tab} onClick={e => { e.stopPropagation(); openSource(src.id, tab) }}
+                                style={{ display: 'inline-flex', alignItems: 'center', padding: '1px 6px', borderRadius: '5px', fontSize: '0.58rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, border: `1px solid ${color}35`, background: `${color}10`, color, lineHeight: 1.5 }}>
+                                {label}
+                              </button>
+                            )
+                            return (
+                              <div style={{ display: 'flex', gap: '3px', marginTop: '5px', flexWrap: 'wrap' }}>
+                                {srcDictApprPct !== null && chip(`Dict ${srcDictApprPct}%`, srcDictApprPct === 100 ? success : warn, 'dictionary')}
+                                {srcDomAssigned > 0 && chip(`Domains ${srcDomAssigned}`, accent, 'domains')}
+                                {srcEntAssigned > 0 && chip(`Entities ${srcEntAssigned}`, accent, 'entities')}
+                                {srcDictCount > 0 && srcDictPending > 0 && (
+                                  <button onClick={e => { e.stopPropagation(); openSource(src.id, 'dictionary') }}
+                                    style={{ display: 'inline-flex', alignItems: 'center', padding: '1px 2px', fontSize: '0.58rem', cursor: 'pointer', fontFamily: FONT, background: 'none', border: 'none', color: warn, textDecoration: 'underline', textUnderlineOffset: '2px', lineHeight: 1.5 }}>
+                                    Review {srcDictPending} definition{srcDictPending !== 1 ? 's' : ''} →
+                                  </button>
+                                )}
+                              </div>
+                            )
+                          })()}
                           </div>
 
                           {/* Type */}
@@ -1731,11 +2159,17 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                           </div>
 
                           {/* Last Activity — prefer snapshot/scan ts when available, fall back to last_tested_at */}
-                          <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, whiteSpace: 'nowrap' }}>
+                          <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>
                             {(() => {
                               const scanTs = profileState[src.id]?.data?.snapshot?.created_at ?? src.last_snapshot_at ?? null
                               const ts_val = scanTs ?? src.last_tested_at ?? null
-                              return ts_val ? fmtRelative(ts_val) : '—'
+                              if (!ts_val) return <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{'—'}</span>
+                              return (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "1px" }}>
+                                  <span style={{ fontSize: "0.72rem", color: muted, fontFamily: FONT }}>{fmtRelative(ts_val)}</span>
+                                  <span style={{ fontSize: "0.67rem", color: muted, fontFamily: FONT }}>{fmtDateTime(ts_val)}</span>
+                                </div>
+                              )
                             })()}
                           </div>
 
@@ -1775,13 +2209,60 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                                     Explore
                                   </button>
                                 )}
-                                <button
-                                  onClick={() => setSrcMenu(s => ({ ...s, [src.id]: !s[src.id] }))}
-                                  style={{ ...btnGhost({ padding: '5px 8px', fontSize: '1rem' }), color: menuOpen ? accent : muted, borderColor: menuOpen ? `${accent}50` : border, lineHeight: 1 }}
-                                  title="More actions"
-                                >
-                                  ⋮
-                                </button>
+                                {/* ⋮ button with floating dropdown */}
+                                <div style={{ position: 'relative' }}>
+                                  <button
+                                    onClick={() => setSrcMenu(s => { const isOpen = s[src.id]; return isOpen ? {} : { [src.id]: true } })}
+                                    style={{ ...btnGhost({ padding: '5px 8px', fontSize: '1rem' }), color: menuOpen ? accent : muted, borderColor: menuOpen ? `${accent}50` : border, lineHeight: 1 }}
+                                    title="More actions"
+                                  >
+                                    ⋮
+                                  </button>
+                                  {menuOpen && (
+                                    <>
+                                      {/* Backdrop — click anywhere outside to close */}
+                                      <div onClick={() => setSrcMenu({})} style={{ position: 'fixed', inset: 0, zIndex: 99 }} />
+                                      {/* Floating dropdown */}
+                                      <div style={{ position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 100, background: surface, border: `1px solid ${border}`, borderRadius: '10px', boxShadow: '0 8px 28px rgba(0,0,0,0.45)', minWidth: '170px', overflow: 'hidden' }}>
+                                        <button
+                                          onClick={() => { if (!ts.loading) handleTest(src.id) }}
+                                          disabled={ts.loading}
+                                          style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', color: ts.loading ? `${muted}55` : textSec, fontSize: '0.8rem', fontFamily: FONT, cursor: ts.loading ? 'not-allowed' : 'pointer', textAlign: 'left' }}
+                                        >
+                                          {ts.loading
+                                            ? <Spinner size={10} />
+                                            : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>}
+                                          {ts.loading ? 'Testing…' : 'Test Connection'}
+                                        </button>
+                                        <button
+                                          onClick={() => { if (!scanBusy && src.source_status === 'ACTIVE') { handleDiscoverAndProfile(src); setSrcMenu({}) } }}
+                                          disabled={scanBusy || src.source_status !== 'ACTIVE'}
+                                          style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', color: (scanBusy || src.source_status !== 'ACTIVE') ? `${muted}55` : textSec, fontSize: '0.8rem', fontFamily: FONT, cursor: (scanBusy || src.source_status !== 'ACTIVE') ? 'not-allowed' : 'pointer', textAlign: 'left' }}
+                                        >
+                                          {scanBusy
+                                            ? <Spinner size={10} />
+                                            : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>}
+                                          {scanBusy ? 'Scanning…' : 'Scan / Profile'}
+                                        </button>
+                                        {ts.status && !ts.loading && (
+                                          <div style={{ padding: '5px 14px 7px', borderTop: `1px solid ${border}30`, fontSize: '0.71rem', fontWeight: '600', color: ts.status === 'success' ? success : danger, fontFamily: FONT }}>
+                                            {ts.status === 'success'
+                                              ? `✓ Connected${ts.latency_ms != null ? ` · ${ts.latency_ms}ms` : ''}`
+                                              : `✗ ${ts.message ?? 'Failed'}`}
+                                          </div>
+                                        )}
+                                        <div style={{ height: '1px', background: `${border}60`, margin: '2px 0' }} />
+                                        <button
+                                          onClick={() => { handleDeleteClick(src.id); setSrcMenu({}) }}
+                                          style={{ display: 'flex', alignItems: 'center', gap: '9px', width: '100%', padding: '9px 14px', background: 'none', border: 'none', color: danger, fontSize: '0.8rem', fontFamily: FONT, cursor: 'pointer', textAlign: 'left' }}
+                                        >
+                                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                                          Remove
+                                        </button>
+                                      </div>
+                                    </>
+                                  )}
+                                </div>
                               </>
                             ) : (
                               <>
@@ -1791,40 +2272,6 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                             )}
                           </div>
                         </div>
-
-                        {/* Expandable ⋮ secondary actions */}
-                        {menuOpen && !delSt.confirming && (
-                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', padding: '9px 20px 11px 22px', background: `${accent}05`, borderTop: `1px solid ${border}30`, borderLeft: `3px solid ${accent}45`, flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginRight: '6px', flexShrink: 0 }}>Actions</span>
-                            <button
-                              onClick={() => { if (!ts.loading) { handleTest(src.id); setSrcMenu(s => ({ ...s, [src.id]: false })) } }}
-                              disabled={ts.loading}
-                              style={{ ...btnGhost({ padding: '5px 11px', fontSize: '0.74rem' }), color: ts.loading ? `${muted}50` : textSec, cursor: ts.loading ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                            >
-                              {ts.loading && <Spinner size={8} />}{ts.loading ? 'Testing…' : 'Test Connection'}
-                            </button>
-                            <button
-                              onClick={() => { if (!scanBusy && src.source_status === 'ACTIVE') { handleDiscoverAndProfile(src); setSrcMenu(s => ({ ...s, [src.id]: false })) } }}
-                              disabled={scanBusy || src.source_status !== 'ACTIVE'}
-                              style={{ ...btnGhost({ padding: '5px 11px', fontSize: '0.74rem' }), color: scanBusy || src.source_status !== 'ACTIVE' ? `${muted}50` : textSec, cursor: scanBusy || src.source_status !== 'ACTIVE' ? 'not-allowed' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                            >
-                              {scanBusy && <Spinner size={8} />}{scanBusy ? 'Scanning…' : 'Scan / Profile'}
-                            </button>
-                            <button
-                              onClick={() => { handleDeleteClick(src.id); setSrcMenu(s => ({ ...s, [src.id]: false })) }}
-                              style={{ ...btnGhost({ padding: '5px 11px', fontSize: '0.74rem' }), color: `${danger}99`, borderColor: `${danger}30` }}
-                            >
-                              Remove
-                            </button>
-                            {ts.status && !ts.loading && (
-                              <span style={{ marginLeft: '4px', fontSize: '0.74rem', fontWeight: '600', color: ts.status === 'success' ? success : danger, fontFamily: FONT }}>
-                                {ts.status === 'success'
-                                  ? `✓ Connected${ts.latency_ms != null ? ` · ${ts.latency_ms}ms` : ''}`
-                                  : `✗ ${ts.message ?? 'Failed'}`}
-                              </span>
-                            )}
-                          </div>
-                        )}
                       </div>
                     )
                   })}

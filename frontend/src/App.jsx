@@ -2244,6 +2244,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   const [activeNav,       setActiveNav]       = useState(() => localStorage.getItem('ts_active_nav') ?? 'ai-workspace')
   const [dsSelectedSourceId, setDsSelectedSourceId] = useState(() => { const v = localStorage.getItem('ts_ds_source'); return v ? Number(v) : null })
   const [dsActiveTab,        setDsActiveTab]        = useState(() => localStorage.getItem('ts_ds_tab') ?? 'overview')
+  const [dsSourceName,       setDsSourceName]       = useState(null)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [cpCurrent,   setCpCurrent]   = useState('')
   const [cpNew,       setCpNew]       = useState('')
@@ -2401,6 +2402,13 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
     else localStorage.setItem('ts_ds_source', String(dsSelectedSourceId))
   }, [dsSelectedSourceId])
   useEffect(() => { localStorage.setItem('ts_ds_tab', dsActiveTab) }, [dsActiveTab])
+  useEffect(() => {
+    if (activeNav !== 'data-sources') {
+      setDsSelectedSourceId(null)
+      setDsActiveTab('overview')
+      setDsSourceName(null)
+    }
+  }, [activeNav]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function openSource(id, tab = 'overview') {
     setDsSelectedSourceId(id)
@@ -3062,8 +3070,23 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '0 28px', zIndex: 50, flexShrink: 0,
         }}>
-          {/* Back to Reports — shown in header when viewing a report detail */}
-          {activeNav === 'reports' && reportViewMode === 'detail' ? (
+          {/* Left header slot — breadcrumbs / back buttons */}
+          {activeNav === 'data-sources' && dsSelectedSourceId != null ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontFamily: FONT }}>
+              <button
+                onClick={() => { setDsSelectedSourceId(null); setDsSourceName(null); setDsActiveTab('overview') }}
+                style={{ background: 'none', border: 'none', color: C.textMuted, cursor: 'pointer', fontFamily: FONT, fontSize: '0.74rem', padding: 0 }}
+                onMouseEnter={e => { e.currentTarget.style.color = C.accent }}
+                onMouseLeave={e => { e.currentTarget.style.color = C.textMuted }}
+              >
+                Data Sources
+              </button>
+              <span style={{ color: C.textMuted }}>›</span>
+              <span style={{ color: C.textMuted }}>{dsSourceName ?? `Source #${dsSelectedSourceId}`}</span>
+              <span style={{ color: C.textMuted }}>›</span>
+              <span style={{ color: C.textSec, textTransform: 'capitalize' }}>{dsActiveTab}</span>
+            </div>
+          ) : activeNav === 'reports' && reportViewMode === 'detail' ? (
             <button
               onClick={() => { setReportViewMode('list'); setSelectedReportId(null); setSelectedReportData(null) }}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', color: C.textSec, cursor: 'pointer', fontFamily: FONT, fontSize: '0.76rem', fontWeight: '500', padding: '0', letterSpacing: '0.01em' }}
@@ -3297,7 +3320,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {activeNav === 'data-sources' && (
               <ErrorBoundary C={C}>
                 <Suspense fallback={<LazyFallback />}>
-                  <DataSourceManager C={C} token={token} setActiveNav={setActiveNav} openSource={openSource} dsSelectedSourceId={dsSelectedSourceId} dsActiveTab={dsActiveTab} setDsSelectedSourceId={setDsSelectedSourceId} setDsActiveTab={setDsActiveTab} />
+                  <DataSourceManager C={C} token={token} setActiveNav={setActiveNav} openSource={openSource} dsSelectedSourceId={dsSelectedSourceId} dsActiveTab={dsActiveTab} setDsSelectedSourceId={setDsSelectedSourceId} setDsActiveTab={setDsActiveTab} setDsSourceName={setDsSourceName} />
                 </Suspense>
               </ErrorBoundary>
             )}
@@ -5682,6 +5705,9 @@ function App() {
   function handleLogout() {
     localStorage.removeItem('ts_token')
     localStorage.removeItem('ts_user')
+    localStorage.removeItem('ts_active_nav')
+    localStorage.removeItem('ts_ds_source')
+    localStorage.removeItem('ts_ds_tab')
     sessionStorage.removeItem('admin_greeted')
     setToken(null)
     setUser(null)
