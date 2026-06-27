@@ -3340,7 +3340,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
             {activeNav === 'enterprise-search' && (
               <ErrorBoundary C={C}>
                 <Suspense fallback={<LazyFallback />}>
-                  <EnterpriseSearch C={C} token={token} setActiveNav={setActiveNav} />
+                  <EnterpriseSearch C={C} token={token} setActiveNav={setActiveNav} openSource={openSource} />
                 </Suspense>
               </ErrorBoundary>
             )}

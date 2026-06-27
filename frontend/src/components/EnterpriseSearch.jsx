@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { searchMetadata } from '../api/client'
+import { searchMetadata, getSearchFilters } from '../api/client'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -30,7 +30,20 @@ const FIELD_LABELS = {
 
 const PAGE_SIZE = 20
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+const INITIAL_FILTERS = {
+  assetType:         '',
+  sourceFilter:      '',
+  schemaFilter:      '',
+  domainFilter:      '',
+  entityFilter:      '',
+  semanticTypeFilter:'',
+  piiFilter:         false,
+  dictStatusFilter:  '',
+  classFilter:       '',
+  profileStatusFilter: '',
+}
+
+// ── Badge / chip helpers ──────────────────────────────────────────────────────
 
 function assetTypeBadge(C, type) {
   const styles = {
@@ -84,9 +97,9 @@ function dictChip(status, C) {
 }
 
 function scoreBar(score, C) {
-  const max    = 200
-  const pct    = Math.min(100, Math.round((score / max) * 100))
-  const color  = pct >= 70 ? '#10b981' : pct >= 40 ? '#f59e0b' : '#60a5fa'
+  const max   = 400   // raised ceiling now that phrase+multi bonuses can stack
+  const pct   = Math.min(100, Math.round((score / max) * 100))
+  const color = pct >= 70 ? '#10b981' : pct >= 40 ? '#f59e0b' : '#60a5fa'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
       <div style={{
@@ -102,96 +115,21 @@ function scoreBar(score, C) {
   )
 }
 
-// ── Result card ───────────────────────────────────────────────────────────────
-
-function ResultCard({ result, C, onOpenAsset }) {
-  const matchedLabel = FIELD_LABELS[result.matched_field] || result.matched_field
-
+function confidencePill(C, confidence) {
+  if (!confidence || confidence <= 0) return null
+  const pct = Math.round(confidence * 100)
   return (
-    <div style={{
-      background: C.surface, border: `1px solid ${C.border}`,
-      borderRadius: '10px', padding: '18px 20px',
-      display: 'flex', flexDirection: 'column', gap: '10px',
-      transition: 'border-color 0.15s',
-    }}
-      onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
-      onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
-    >
-      {/* ── Top row: type badge + name + score ── */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', flex: 1 }}>
-          {assetTypeBadge(C, result.asset_type)}
-          <span style={{ color: C.text, fontWeight: '600', fontSize: '0.95rem', lineHeight: 1.3 }}>
-            {result.display_name}
-          </span>
-          {result.pii_indicator && piiChip(C)}
-          {dictChip(result.dictionary_status, C)}
-        </div>
-        {scoreBar(result.relevance_score, C)}
-      </div>
-
-      {/* ── Source path ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-        <PathCrumb C={C} label="Source"  value={result.source_name} />
-        {result.schema_name && <PathCrumb C={C} label="Schema" value={result.schema_name} />}
-        {result.table_name  && result.asset_type === 'column' &&
-          <PathCrumb C={C} label="Table" value={result.table_name} />}
-        {result.column_name &&
-          <PathCrumb C={C} label="Column" value={result.column_name} />}
-      </div>
-
-      {/* ── Match reason ── */}
-      {result.matched_field !== 'unknown' && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '0.72rem', color: C.textMuted }}>Matched because</span>
-          <span style={{
-            fontSize: '0.72rem', color: C.accent,
-            background: C.accentSoft, borderRadius: '4px',
-            padding: '1px 6px',
-          }}>
-            {matchedLabel}
-          </span>
-        </div>
-      )}
-
-      {/* ── Description ── */}
-      {result.short_description && (
-        <p style={{
-          margin: 0, fontSize: '0.82rem', color: C.textSec,
-          lineHeight: 1.55, maxWidth: '720px',
-        }}>
-          {result.short_description}
-        </p>
-      )}
-
-      {/* ── Bottom metadata row ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginTop: '2px' }}>
-        {result.domain && <MetaChip C={C} label="Domain" value={result.domain} />}
-        {result.entity && <MetaChip C={C} label="Entity" value={result.entity} />}
-        {result.semantic_type && <MetaChip C={C} label="Classification" value={result.semantic_type} />}
-        <div style={{ flex: 1 }} />
-        <button
-          onClick={() => onOpenAsset(result)}
-          style={{
-            background: 'transparent',
-            border: `1px solid ${C.border}`,
-            borderRadius: '7px',
-            color: C.accent,
-            cursor: 'pointer',
-            fontSize: '0.78rem',
-            fontWeight: '600',
-            padding: '5px 14px',
-            transition: 'background 0.12s',
-          }}
-          onMouseEnter={e => e.currentTarget.style.background = C.accentSoft}
-          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-        >
-          Open Asset →
-        </button>
-      </div>
-    </div>
+    <span style={{
+      fontSize: '0.67rem', color: C.textMuted,
+      background: C.bg, border: `1px solid ${C.border}`,
+      borderRadius: '4px', padding: '1px 6px',
+    }}>
+      {pct}% conf
+    </span>
   )
 }
+
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function PathCrumb({ C, label, value }) {
   return (
@@ -222,13 +160,132 @@ function MetaChip({ C, label, value }) {
   )
 }
 
-// ── Filter bar ────────────────────────────────────────────────────────────────
+// ── Result card ───────────────────────────────────────────────────────────────
+
+function ResultCard({ result, C, onOpenAsset }) {
+  const matchedLabel = FIELD_LABELS[result.matched_field] || result.matched_field
+
+  return (
+    <div
+      style={{
+        background: C.surface, border: `1px solid ${C.border}`,
+        borderRadius: '10px', padding: '16px 20px',
+        display: 'flex', flexDirection: 'column', gap: '8px',
+        transition: 'border-color 0.15s',
+      }}
+      onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+      onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
+    >
+      {/* ── Top row: type + name + badges + score ── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', flex: 1 }}>
+          {assetTypeBadge(C, result.asset_type)}
+          <span style={{ color: C.text, fontWeight: '600', fontSize: '0.95rem', lineHeight: 1.3 }}>
+            {result.display_name}
+          </span>
+          {result.pii_indicator && piiChip(C)}
+          {dictChip(result.dictionary_status, C)}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          {confidencePill(C, result.confidence)}
+          {scoreBar(result.relevance_score, C)}
+        </div>
+      </div>
+
+      {/* ── Asset path breadcrumb ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+        <PathCrumb C={C} label="Source"  value={result.source_name} />
+        {result.schema_name && <PathCrumb C={C} label="Schema" value={result.schema_name} />}
+        {result.table_name && result.asset_type === 'column' &&
+          <PathCrumb C={C} label="Table" value={result.table_name} />}
+        {result.column_name &&
+          <PathCrumb C={C} label="Column" value={result.column_name} />}
+      </div>
+
+      {/* ── Match reasons ── */}
+      {result.match_reasons?.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.69rem', color: C.textMuted, flexShrink: 0 }}>
+            Matched:
+          </span>
+          {result.match_reasons.map((reason, i) => (
+            <span key={i} style={{
+              fontSize: '0.69rem', color: C.accent,
+              background: C.accentSoft, borderRadius: '4px',
+              padding: '1px 6px',
+            }}>
+              {reason}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Fall back to single matched_field when match_reasons not present */}
+      {(!result.match_reasons?.length) && result.matched_field !== 'unknown' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span style={{ fontSize: '0.72rem', color: C.textMuted }}>Matched because</span>
+          <span style={{
+            fontSize: '0.72rem', color: C.accent,
+            background: C.accentSoft, borderRadius: '4px',
+            padding: '1px 6px',
+          }}>
+            {matchedLabel}
+          </span>
+        </div>
+      )}
+
+      {/* ── Description ── */}
+      {result.short_description && (
+        <p style={{
+          margin: 0, fontSize: '0.82rem', color: C.textSec,
+          lineHeight: 1.55, maxWidth: '720px',
+        }}>
+          {result.short_description}
+        </p>
+      )}
+
+      {/* ── Bottom metadata row ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', marginTop: '2px' }}>
+        {result.domain        && <MetaChip C={C} label="Domain"     value={result.domain} />}
+        {result.entity        && <MetaChip C={C} label="Entity"     value={result.entity} />}
+        {result.semantic_type && <MetaChip C={C} label="Class"      value={result.semantic_type} />}
+        {result.profiled_at   && (
+          <span style={{ fontSize: '0.69rem', color: C.textMuted }}>
+            Profiled {result.profiled_at.slice(0, 10)}
+          </span>
+        )}
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={() => onOpenAsset(result)}
+          style={{
+            background: 'transparent',
+            border: `1px solid ${C.border}`,
+            borderRadius: '7px',
+            color: C.accent,
+            cursor: 'pointer',
+            fontSize: '0.78rem',
+            fontWeight: '600',
+            padding: '5px 14px',
+            transition: 'background 0.12s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = C.accentSoft}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          title={`Open in ${result.nav_target?.tab || 'data-sources'}`}
+        >
+          Open Asset →
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Filter controls ───────────────────────────────────────────────────────────
 
 function FilterSelect({ C, label, value, onChange, options }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
       <label style={{
-        fontSize: '0.65rem', color: C.textMuted,
+        fontSize: '0.63rem', color: C.textMuted,
         fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em',
       }}>
         {label}
@@ -239,8 +296,8 @@ function FilterSelect({ C, label, value, onChange, options }) {
         style={{
           background: C.bg, border: `1px solid ${C.border}`,
           borderRadius: '7px', color: C.text,
-          fontSize: '0.82rem', padding: '7px 10px',
-          cursor: 'pointer', minWidth: '130px',
+          fontSize: '0.8rem', padding: '6px 9px',
+          cursor: 'pointer', minWidth: '110px',
           outline: 'none',
         }}
       >
@@ -252,57 +309,65 @@ function FilterSelect({ C, label, value, onChange, options }) {
   )
 }
 
-function FilterInput({ C, label, value, onChange, placeholder }) {
+function FilterToggle({ C, label, active, onToggle }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
       <label style={{
-        fontSize: '0.65rem', color: C.textMuted,
+        fontSize: '0.63rem', color: C.textMuted,
         fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em',
       }}>
         {label}
       </label>
-      <input
-        type="text"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
+      <button
+        type="button"
+        onClick={onToggle}
         style={{
-          background: C.bg, border: `1px solid ${C.border}`,
-          borderRadius: '7px', color: C.text,
-          fontSize: '0.82rem', padding: '7px 10px',
-          outline: 'none', minWidth: '130px',
+          background: active ? '#f8717122' : C.bg,
+          border: `1px solid ${active ? '#f87171' : C.border}`,
+          borderRadius: '7px', color: active ? '#f87171' : C.textSec,
+          cursor: 'pointer', fontSize: '0.8rem', fontWeight: '600',
+          padding: '6px 12px',
+          transition: 'all 0.15s',
         }}
-      />
+      >
+        {active ? '✓ PII' : 'PII'}
+      </button>
     </div>
   )
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function EnterpriseSearch({ C, token, setActiveNav }) {
-  const [query,        setQuery]       = useState('')
-  const [submitted,    setSubmitted]   = useState('')
-  const [assetType,    setAssetType]   = useState('')
-  const [domainFilter, setDomainFilter]= useState('')
-  const [entityFilter, setEntityFilter]= useState('')
-  const [piiFilter,    setPiiFilter]   = useState(false)
-  const [sourceOptions,setSourceOptions]= useState([])
-  const [sourceFilter, setSourceFilter]= useState('')
+export default function EnterpriseSearch({ C, token, setActiveNav, openSource }) {
+  const [query,     setQuery]     = useState('')
+  const [submitted, setSubmitted] = useState('')
+  const [page,      setPage]      = useState(0)
 
+  // All filters in one object — all drive server-side SQL
+  const [filters, setFilters] = useState(INITIAL_FILTERS)
+
+  // Results
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState(null)
   const [results,  setResults]  = useState([])
   const [total,    setTotal]    = useState(0)
   const [tokens,   setTokens]   = useState([])
-  const [page,     setPage]     = useState(0)
 
-  const inputRef  = useRef(null)
-  const abortRef  = useRef(null)
+  // Filter options from /v1/search/filters
+  const [filterOptions, setFilterOptions] = useState(null)
 
-  // Focus the search bar on mount
-  useEffect(() => { inputRef.current?.focus() }, [])
+  const inputRef = useRef(null)
+  const abortRef = useRef(null)
 
-  const runSearch = useCallback(async (q, type, srcId, pageNum) => {
+  useEffect(() => {
+    inputRef.current?.focus()
+    if (!token) return
+    getSearchFilters(token)
+      .then(res => setFilterOptions(res?.data || null))
+      .catch(() => {}) // non-fatal — filters still work without options
+  }, [token])
+
+  const runSearch = useCallback(async (q, searchFilters, pageNum) => {
     if (!q.trim()) return
     if (abortRef.current) abortRef.current.abort()
     const ctrl = new AbortController()
@@ -311,29 +376,26 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
     setLoading(true)
     setError(null)
     try {
-      const res = await searchMetadata(q, token, {
-        asset_type: type || undefined,
-        source_id:  srcId ? Number(srcId) : undefined,
-        limit:      PAGE_SIZE,
-        offset:     pageNum * PAGE_SIZE,
-      })
-      const d = res?.data || {}
-      setResults(d.results || [])
-      setTotal(d.total || 0)
-      setTokens(d.tokens || [])
-
-      // Collect unique sources from results for the source dropdown
-      const seen = new Map()
-      ;(d.results || []).forEach(r => {
-        if (r.source_id && !seen.has(r.source_id)) {
-          seen.set(r.source_id, r.source_name)
-        }
-      })
-      if (pageNum === 0 && !srcId) {
-        const opts = [{ value: '', label: 'All Sources' }]
-        seen.forEach((name, id) => opts.push({ value: String(id), label: name }))
-        setSourceOptions(opts)
+      const params = {
+        limit:  PAGE_SIZE,
+        offset: pageNum * PAGE_SIZE,
       }
+      if (searchFilters.assetType)          params.asset_type         = searchFilters.assetType
+      if (searchFilters.sourceFilter)       params.source_id          = Number(searchFilters.sourceFilter)
+      if (searchFilters.schemaFilter)       params.schema             = searchFilters.schemaFilter
+      if (searchFilters.domainFilter)       params.domain             = searchFilters.domainFilter
+      if (searchFilters.entityFilter)       params.entity             = searchFilters.entityFilter
+      if (searchFilters.semanticTypeFilter) params.semantic_type      = searchFilters.semanticTypeFilter
+      if (searchFilters.piiFilter)          params.pii                = true
+      if (searchFilters.dictStatusFilter)   params.dictionary_status  = searchFilters.dictStatusFilter
+      if (searchFilters.classFilter)        params.classification     = searchFilters.classFilter
+      if (searchFilters.profileStatusFilter)params.profile_status     = searchFilters.profileStatusFilter
+
+      const res = await searchMetadata(q, token, params)
+      const d   = res?.data || {}
+      setResults(d.results || [])
+      setTotal(d.total   || 0)
+      setTokens(d.tokens || [])
     } catch (err) {
       if (err.name === 'AbortError') return
       setError(err.message || 'Search failed')
@@ -349,55 +411,84 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
     if (!query.trim()) return
     setSubmitted(query.trim())
     setPage(0)
-    setDomainFilter('')
-    setEntityFilter('')
-    setPiiFilter(false)
-    setSourceFilter('')
-    setSourceOptions([])
-    runSearch(query.trim(), assetType, '', 0)
+    runSearch(query.trim(), filters, 0)
   }
 
-  const handleAssetTypeChange = (val) => {
-    setAssetType(val)
-    if (submitted) runSearch(submitted, val, sourceFilter, 0)
-    setPage(0)
+  const handleFilterChange = (key, val) => {
+    const next = { ...filters, [key]: val }
+    setFilters(next)
+    if (submitted) {
+      setPage(0)
+      runSearch(submitted, next, 0)
+    }
   }
 
-  const handleSourceChange = (val) => {
-    setSourceFilter(val)
-    if (submitted) runSearch(submitted, assetType, val, 0)
-    setPage(0)
+  const handleClearFilters = () => {
+    setFilters(INITIAL_FILTERS)
+    if (submitted) {
+      setPage(0)
+      runSearch(submitted, INITIAL_FILTERS, 0)
+    }
   }
 
   const handlePage = (dir) => {
     const next = page + dir
     if (next < 0) return
     setPage(next)
-    runSearch(submitted, assetType, sourceFilter, next)
+    runSearch(submitted, filters, next)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const handleOpenAsset = (result) => {
-    if (setActiveNav) setActiveNav('data-sources')
+    const nav = result.nav_target
+    if (!nav) { setActiveNav?.('data-sources'); return }
+    const tab = nav.tab || (nav.type === 'column' ? 'profile' : 'schema')
+    if (openSource && nav.source_id != null) {
+      openSource(nav.source_id, tab)
+    } else {
+      setActiveNav?.('data-sources')
+    }
   }
 
-  // Client-side live filters applied on top of server results
-  const filtered = results.filter(r => {
-    if (domainFilter && !(r.domain || '').toLowerCase().includes(domainFilter.toLowerCase())) return false
-    if (entityFilter && !(r.entity || '').toLowerCase().includes(entityFilter.toLowerCase())) return false
-    if (piiFilter && !r.pii_indicator) return false
-    return true
-  })
-
-  const hasResults  = filtered.length > 0
+  const hasResults  = results.length > 0
   const hasSearched = submitted.length > 0
   const totalPages  = Math.ceil(total / PAGE_SIZE)
 
+  // Check whether any filter is active (for "clear" button)
+  const hasActiveFilter = Object.entries(filters).some(([, v]) => v !== '' && v !== false)
+
+  // Build option arrays from API response (only when values exist)
+  const fo = filterOptions
+  const sourceOpts = fo?.sources?.length
+    ? [{ value: '', label: 'All Sources' }, ...fo.sources.map(s => ({ value: String(s.id), label: s.name }))]
+    : null
+  const schemaOpts = fo?.schemas?.length
+    ? [{ value: '', label: 'All Schemas' }, ...fo.schemas.map(s => ({ value: s, label: s }))]
+    : null
+  const domainOpts = fo?.domains?.length
+    ? [{ value: '', label: 'All Domains' }, ...fo.domains.map(d => ({ value: d, label: d }))]
+    : null
+  const entityOpts = fo?.entities?.length
+    ? [{ value: '', label: 'All Entities' }, ...fo.entities.map(e => ({ value: e, label: e }))]
+    : null
+  const semTypeOpts = fo?.semantic_types?.length
+    ? [{ value: '', label: 'Any Type' }, ...fo.semantic_types.map(t => ({ value: t, label: t }))]
+    : null
+  const classOpts = fo?.classifications?.length
+    ? [{ value: '', label: 'Any Class' }, ...fo.classifications.map(c => ({ value: c, label: c }))]
+    : null
+  const dictOpts = fo?.dictionary_statuses?.length
+    ? [{ value: '', label: 'Any Status' }, ...fo.dictionary_statuses.map(s => ({ value: s, label: s.charAt(0).toUpperCase() + s.slice(1) }))]
+    : null
+  const profileOpts = fo?.profile_statuses?.length
+    ? [{ value: '', label: 'Any Status' }, ...fo.profile_statuses.map(s => ({ value: s, label: s }))]
+    : null
+
   return (
-    <div style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
+    <div style={{ maxWidth: '960px', margin: '0 auto', padding: '32px 24px' }}>
 
       {/* ── Page header ── */}
-      <div style={{ marginBottom: '28px' }}>
+      <div style={{ marginBottom: '24px' }}>
         <h1 style={{ margin: 0, color: C.text, fontSize: '1.45rem', fontWeight: '700' }}>
           Enterprise Metadata Search
         </h1>
@@ -407,7 +498,7 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
       </div>
 
       {/* ── Search bar ── */}
-      <form onSubmit={handleSubmit} style={{ marginBottom: '20px' }}>
+      <form onSubmit={handleSubmit} style={{ marginBottom: '16px' }}>
         <div style={{ display: 'flex', gap: '10px' }}>
           <div style={{ flex: 1, position: 'relative' }}>
             <SearchIcon style={{
@@ -447,7 +538,7 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
           </button>
         </div>
 
-        {/* Matched tokens hint */}
+        {/* Token hint */}
         {tokens.length > 0 && (
           <div style={{ marginTop: '8px', display: 'flex', gap: '6px', alignItems: 'center' }}>
             <span style={{ fontSize: '0.72rem', color: C.textMuted }}>Searching for:</span>
@@ -461,54 +552,126 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
         )}
       </form>
 
-      {/* ── Filter row ── */}
+      {/* ── Sticky filter panel ── */}
       <div style={{
-        background: C.surface, border: `1px solid ${C.border}`,
-        borderRadius: '10px', padding: '14px 18px',
-        display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '24px',
-        alignItems: 'flex-end',
+        position: 'sticky', top: 0, zIndex: 10,
+        background: C.bg, paddingBottom: '16px',
       }}>
-        <FilterSelect
-          C={C} label="Asset Type"
-          value={assetType} onChange={handleAssetTypeChange}
-          options={ASSET_TYPE_OPTIONS}
-        />
-        {sourceOptions.length > 1 && (
+        <div style={{
+          background: C.surface, border: `1px solid ${C.border}`,
+          borderRadius: '10px', padding: '12px 16px',
+          display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end',
+        }}>
+          {/* Asset Type — always shown */}
           <FilterSelect
-            C={C} label="Source"
-            value={sourceFilter} onChange={handleSourceChange}
-            options={sourceOptions}
+            C={C} label="Asset Type"
+            value={filters.assetType}
+            onChange={v => handleFilterChange('assetType', v)}
+            options={ASSET_TYPE_OPTIONS}
           />
-        )}
-        <FilterInput
-          C={C} label="Domain" value={domainFilter}
-          onChange={setDomainFilter} placeholder="filter…"
-        />
-        <FilterInput
-          C={C} label="Entity" value={entityFilter}
-          onChange={setEntityFilter} placeholder="filter…"
-        />
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-          <label style={{
-            fontSize: '0.65rem', color: C.textMuted,
-            fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.07em',
-          }}>
-            PII Only
-          </label>
-          <button
-            type="button"
-            onClick={() => setPiiFilter(v => !v)}
-            style={{
-              background: piiFilter ? '#f8717122' : C.bg,
-              border: `1px solid ${piiFilter ? '#f87171' : C.border}`,
-              borderRadius: '7px', color: piiFilter ? '#f87171' : C.textSec,
-              cursor: 'pointer', fontSize: '0.82rem', fontWeight: '600',
-              padding: '7px 14px',
-              transition: 'all 0.15s',
-            }}
-          >
-            {piiFilter ? '✓ PII' : 'PII'}
-          </button>
+
+          {/* Source — shown when API returns sources */}
+          {sourceOpts && (
+            <FilterSelect C={C} label="Source"
+              value={filters.sourceFilter}
+              onChange={v => handleFilterChange('sourceFilter', v)}
+              options={sourceOpts}
+            />
+          )}
+
+          {/* Schema */}
+          {schemaOpts && (
+            <FilterSelect C={C} label="Schema"
+              value={filters.schemaFilter}
+              onChange={v => handleFilterChange('schemaFilter', v)}
+              options={schemaOpts}
+            />
+          )}
+
+          {/* Domain */}
+          {domainOpts && (
+            <FilterSelect C={C} label="Domain"
+              value={filters.domainFilter}
+              onChange={v => handleFilterChange('domainFilter', v)}
+              options={domainOpts}
+            />
+          )}
+
+          {/* Entity */}
+          {entityOpts && (
+            <FilterSelect C={C} label="Entity"
+              value={filters.entityFilter}
+              onChange={v => handleFilterChange('entityFilter', v)}
+              options={entityOpts}
+            />
+          )}
+
+          {/* Semantic Type */}
+          {semTypeOpts && (
+            <FilterSelect C={C} label="Semantic Type"
+              value={filters.semanticTypeFilter}
+              onChange={v => handleFilterChange('semanticTypeFilter', v)}
+              options={semTypeOpts}
+            />
+          )}
+
+          {/* Classification */}
+          {classOpts && (
+            <FilterSelect C={C} label="Classification"
+              value={filters.classFilter}
+              onChange={v => handleFilterChange('classFilter', v)}
+              options={classOpts}
+            />
+          )}
+
+          {/* Dictionary Status */}
+          {dictOpts && (
+            <FilterSelect C={C} label="Dictionary"
+              value={filters.dictStatusFilter}
+              onChange={v => handleFilterChange('dictStatusFilter', v)}
+              options={dictOpts}
+            />
+          )}
+
+          {/* Profile Status */}
+          {profileOpts && (
+            <FilterSelect C={C} label="Profile"
+              value={filters.profileStatusFilter}
+              onChange={v => handleFilterChange('profileStatusFilter', v)}
+              options={profileOpts}
+            />
+          )}
+
+          {/* PII toggle — shown only when PII data exists */}
+          {fo?.pii_available && (
+            <FilterToggle C={C} label="PII Only"
+              active={filters.piiFilter}
+              onToggle={() => handleFilterChange('piiFilter', !filters.piiFilter)}
+            />
+          )}
+
+          {/* Clear filters — shown when any filter is active */}
+          {hasActiveFilter && (
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              style={{
+                alignSelf: 'flex-end',
+                background: 'transparent',
+                border: `1px solid ${C.border}`,
+                borderRadius: '7px',
+                color: C.textMuted,
+                cursor: 'pointer',
+                fontSize: '0.75rem',
+                padding: '6px 10px',
+                transition: 'color 0.12s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = C.text}
+              onMouseLeave={e => e.currentTarget.style.color = C.textMuted}
+            >
+              Clear filters
+            </button>
+          )}
         </div>
       </div>
 
@@ -532,28 +695,26 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
           <span style={{ fontSize: '0.82rem', color: C.textMuted }}>
             {total === 0
               ? 'No results'
-              : `${total.toLocaleString()} result${total !== 1 ? 's' : ''} — showing ${filtered.length} on this page`}
+              : `${total.toLocaleString()} result${total !== 1 ? 's' : ''} — page ${page + 1} of ${totalPages || 1}`}
           </span>
           {totalPages > 1 && (
             <span style={{ fontSize: '0.78rem', color: C.textMuted }}>
-              Page {page + 1} of {totalPages}
+              Showing {results.length} of {total.toLocaleString()}
             </span>
           )}
         </div>
       )}
 
-      {/* ── Result cards ── */}
+      {/* ── Loading state ── */}
       {loading && (
         <div style={{ textAlign: 'center', padding: '48px 0', color: C.textMuted, fontSize: '0.9rem' }}>
           Searching metadata…
         </div>
       )}
 
+      {/* ── Empty state after search ── */}
       {!loading && hasSearched && !hasResults && (
-        <div style={{
-          textAlign: 'center', padding: '64px 0',
-          color: C.textMuted, fontSize: '0.92rem',
-        }}>
+        <div style={{ textAlign: 'center', padding: '64px 0', color: C.textMuted, fontSize: '0.92rem' }}>
           <EmptyIcon style={{ marginBottom: '16px', color: C.border }} />
           <div style={{ fontWeight: '600', color: C.textSec, marginBottom: '6px' }}>
             No metadata assets match your search.
@@ -564,10 +725,9 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
         </div>
       )}
 
+      {/* ── Pre-search prompt ── */}
       {!loading && !hasSearched && (
-        <div style={{
-          textAlign: 'center', padding: '64px 0', color: C.textMuted,
-        }}>
+        <div style={{ textAlign: 'center', padding: '64px 0', color: C.textMuted }}>
           <SearchIconLarge style={{ marginBottom: '16px', color: C.border }} />
           <div style={{ fontSize: '0.92rem', color: C.textSec, fontWeight: '600', marginBottom: '6px' }}>
             Search your metadata catalog
@@ -578,9 +738,10 @@ export default function EnterpriseSearch({ C, token, setActiveNav }) {
         </div>
       )}
 
-      {!loading && filtered.length > 0 && (
+      {/* ── Result cards ── */}
+      {!loading && hasResults && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {filtered.map((result, i) => (
+          {results.map((result, i) => (
             <ResultCard
               key={`${result.asset_type}-${result.qualified_name}-${i}`}
               result={result}

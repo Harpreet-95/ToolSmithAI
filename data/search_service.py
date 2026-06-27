@@ -256,6 +256,66 @@ def _multi_field_bonus(token_matched_field_count: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Navigation target builders — produce structured nav objects from result rows
+# ---------------------------------------------------------------------------
+
+def _table_nav_target(d: dict, asset_type: Optional[str]) -> dict:
+    """Return the correct nav_target for a table-level result.
+
+    When the query was filtered by dictionary / domain / entity, the navigation
+    target points at that specific tab rather than the generic schema tab.
+    All IDs come from real DB rows — nothing is hardcoded.
+    """
+    if asset_type == "dictionary" and d.get("dict_id"):
+        return {
+            "type":          "dictionary",
+            "source_id":     d.get("source_id"),
+            "dictionary_id": d.get("dict_id"),
+            "tab":           "dictionary",
+        }
+    if asset_type == "domain" and d.get("domain_id"):
+        return {
+            "type":      "domain",
+            "source_id": d.get("source_id"),
+            "domain_id": d.get("domain_id"),
+            "tab":       "domains",
+        }
+    if asset_type == "entity" and d.get("entity_id"):
+        return {
+            "type":      "entity",
+            "source_id": d.get("source_id"),
+            "entity_id": d.get("entity_id"),
+            "tab":       "entities",
+        }
+    return {
+        "type":      "table",
+        "source_id": d.get("source_id"),
+        "schema":    d.get("schema_name") or "",
+        "table_fqn": d.get("table_fqn") or "",
+        "tab":       "schema",
+    }
+
+
+def _column_nav_target(d: dict, asset_type: Optional[str]) -> dict:
+    """Return the correct nav_target for a column-level result."""
+    if asset_type == "dictionary" and d.get("dict_col_id"):
+        return {
+            "type":          "dictionary",
+            "source_id":     d.get("source_id"),
+            "dictionary_id": d.get("dict_col_id"),
+            "tab":           "dictionary",
+        }
+    return {
+        "type":        "column",
+        "source_id":   d.get("source_id"),
+        "schema":      d.get("schema_name") or "",
+        "table_fqn":   d.get("table_fqn") or "",
+        "column_name": d.get("column_name") or "",
+        "tab":         "profile",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Best-matching field for the result card "Matched because" label
 # ---------------------------------------------------------------------------
 
@@ -332,12 +392,17 @@ _TABLE_BASE_SQL = """
         ptp.table_type,
         ptp.table_class,
         ptp.pii_column_count,
+        ptp.profiling_status,
+        ptp.updated_at            AS profiled_at,
+        ddt.id                    AS dict_id,
         ddt.business_name,
         ddt.description,
         ddt.domain                AS dict_domain,
         ddt.is_approved           AS dict_approved,
+        da.id                     AS domain_id,
         da.domain                 AS assigned_domain,
         da.confidence             AS domain_confidence,
+        ea.id                     AS entity_id,
         ea.entity                 AS assigned_entity,
         ea.confidence             AS entity_confidence
     FROM profiling_table_profiles ptp
@@ -381,13 +446,18 @@ _COLUMN_BASE_SQL = """
         pcp.column_name,
         pcp.semantic_type,
         pcp.pii_confirmed,
+        ddc.id                    AS dict_col_id,
         ddc.business_label,
         ddc.meaning,
         ddc.pii_risk,
         ddc.is_approved           AS dict_approved,
         da.domain                 AS assigned_domain,
+        da.confidence             AS domain_confidence,
         ea.entity                 AS assigned_entity,
-        ptp.table_class
+        ea.confidence             AS entity_confidence,
+        ptp.table_class,
+        pcp.profiling_status,
+        pcp.updated_at            AS profiled_at
     FROM profiling_column_profiles pcp
     JOIN data_source_connections dsc
         ON dsc.id = pcp.source_id
@@ -418,18 +488,33 @@ def search_metadata(
     offset: int = 0,
     source_id: Optional[int] = None,
     asset_type: Optional[str] = None,
+    schema: Optional[str] = None,
+    domain: Optional[str] = None,
+    entity: Optional[str] = None,
+    semantic_type: Optional[str] = None,
+    pii: Optional[bool] = None,
+    dictionary_status: Optional[str] = None,
+    classification: Optional[str] = None,
+    profile_status: Optional[str] = None,
 ) -> dict:
     """
-    Keyword search across all stored metadata.
+    Keyword search across all stored metadata with server-side filtering.
 
     Parameters
     ----------
-    q           : search query string
-    limit       : max results per page (1–100)
-    offset      : pagination offset
-    source_id   : restrict to a single data source
-    asset_type  : one of 'table', 'column', 'dictionary', 'domain', 'entity';
-                  None means search all
+    q                 : search query string
+    limit             : max results per page (1–100)
+    offset            : pagination offset
+    source_id         : restrict to a single data source
+    asset_type        : 'table', 'column', 'dictionary', 'domain', 'entity'; None = all
+    schema            : exact schema_name filter
+    domain            : exact domain filter
+    entity            : exact entity filter
+    semantic_type     : exact semantic_type filter (columns)
+    pii               : True = only PII assets
+    dictionary_status : 'approved', 'generated', or 'none'
+    classification    : exact table_class filter
+    profile_status    : exact profiling_status filter
 
     Returns
     -------
@@ -471,6 +556,32 @@ def search_metadata(
             elif asset_type == "dictionary":
                 sql += " AND (ddt.business_name IS NOT NULL OR ddt.description IS NOT NULL)"
 
+            # ── Server-side field filters ──────────────────────────────────
+            if schema:
+                sql += " AND ptp.schema_name = ?"
+                params.append(schema)
+            if domain:
+                sql += " AND (da.domain = ? OR ddt.domain = ?)"
+                params.extend([domain, domain])
+            if entity:
+                sql += " AND ea.entity = ?"
+                params.append(entity)
+            if pii is True:
+                sql += " AND ptp.pii_column_count > 0"
+            if dictionary_status == "approved":
+                sql += " AND ddt.is_approved = 1"
+            elif dictionary_status == "generated":
+                sql += " AND ddt.business_name IS NOT NULL AND (ddt.is_approved = 0 OR ddt.is_approved IS NULL)"
+            elif dictionary_status == "none":
+                sql += " AND ddt.business_name IS NULL"
+            if classification:
+                sql += " AND ptp.table_class = ?"
+                params.append(classification)
+            if profile_status:
+                sql += " AND ptp.profiling_status = ?"
+                params.append(profile_status)
+            # semantic_type is a column-level concept; ignored for table results
+
             sql += f" LIMIT {_MAX_CANDIDATES}"
             rows = cursor.execute(sql, params).fetchall()
 
@@ -492,9 +603,13 @@ def search_metadata(
                 score += _multi_field_bonus(len(token_reasons))
 
                 matched_f, matched_t = _best_match(d, expanded_tokens, _TABLE_FIELD_PRIORITY)
-                domain = d.get("assigned_domain") or d.get("dict_domain") or ""
-                entity = d.get("assigned_entity") or ""
-                pii = bool(d.get("pii_column_count") and d["pii_column_count"] > 0)
+                result_domain = d.get("assigned_domain") or d.get("dict_domain") or ""
+                result_entity = d.get("assigned_entity") or ""
+                result_pii    = bool(d.get("pii_column_count") and d["pii_column_count"] > 0)
+                confidence    = round(max(
+                    float(d.get("domain_confidence") or 0),
+                    float(d.get("entity_confidence") or 0),
+                ), 2)
                 results.append({
                     "asset_type":        "table",
                     "display_name":      d.get("business_name") or d.get("table_name") or "",
@@ -509,21 +624,20 @@ def search_metadata(
                     "relevance_score":   score,
                     "match_reasons":     reasons,
                     "short_description": (d.get("description") or "")[:200],
-                    "domain":            domain,
-                    "entity":            entity,
+                    "domain":            result_domain,
+                    "entity":            result_entity,
                     "dictionary_status": (
                         "approved"  if d.get("dict_approved")
                         else "generated" if d.get("business_name")
                         else "none"
                     ),
-                    "pii_indicator":     pii,
+                    "pii_indicator":     result_pii,
                     "semantic_type":     d.get("table_class") or "",
                     "table_type":        d.get("table_type") or "TABLE",
-                    "nav_target": {
-                        "view":      "data-sources",
-                        "source_id": d.get("source_id"),
-                        "table_fqn": d.get("table_fqn"),
-                    },
+                    "confidence":        confidence,
+                    "profiled_at":       d.get("profiled_at") or "",
+                    "profiling_status":  d.get("profiling_status") or "",
+                    "nav_target":        _table_nav_target(d, asset_type),
                 })
 
         # ── Column-level search ───────────────────────────────────────────────
@@ -537,6 +651,34 @@ def search_metadata(
                 params.append(source_id)
             if asset_type == "dictionary":
                 sql += " AND (ddc.business_label IS NOT NULL OR ddc.meaning IS NOT NULL)"
+
+            # ── Server-side field filters ──────────────────────────────────
+            if schema:
+                sql += " AND ptp.schema_name = ?"
+                params.append(schema)
+            if domain:
+                sql += " AND da.domain = ?"
+                params.append(domain)
+            if entity:
+                sql += " AND ea.entity = ?"
+                params.append(entity)
+            if semantic_type:
+                sql += " AND pcp.semantic_type = ?"
+                params.append(semantic_type)
+            if pii is True:
+                sql += " AND (pcp.pii_confirmed = 1 OR ddc.pii_risk = 1)"
+            if dictionary_status == "approved":
+                sql += " AND ddc.is_approved = 1"
+            elif dictionary_status == "generated":
+                sql += " AND ddc.business_label IS NOT NULL AND (ddc.is_approved = 0 OR ddc.is_approved IS NULL)"
+            elif dictionary_status == "none":
+                sql += " AND ddc.business_label IS NULL"
+            if classification:
+                sql += " AND ptp.table_class = ?"
+                params.append(classification)
+            if profile_status:
+                sql += " AND pcp.profiling_status = ?"
+                params.append(profile_status)
 
             sql += f" LIMIT {_MAX_CANDIDATES}"
             rows = cursor.execute(sql, params).fetchall()
@@ -559,9 +701,13 @@ def search_metadata(
                 score += _multi_field_bonus(len(token_reasons))
 
                 matched_f, matched_t = _best_match(d, expanded_tokens, _COLUMN_FIELD_PRIORITY)
-                domain = d.get("assigned_domain") or ""
-                entity = d.get("assigned_entity") or ""
-                pii    = bool(d.get("pii_confirmed") or d.get("pii_risk"))
+                result_domain = d.get("assigned_domain") or ""
+                result_entity = d.get("assigned_entity") or ""
+                result_pii    = bool(d.get("pii_confirmed") or d.get("pii_risk"))
+                confidence    = round(max(
+                    float(d.get("domain_confidence") or 0),
+                    float(d.get("entity_confidence") or 0),
+                ), 2)
                 results.append({
                     "asset_type":        "column",
                     "display_name":      d.get("business_label") or d.get("column_name") or "",
@@ -576,22 +722,20 @@ def search_metadata(
                     "relevance_score":   score,
                     "match_reasons":     reasons,
                     "short_description": (d.get("meaning") or "")[:200],
-                    "domain":            domain,
-                    "entity":            entity,
+                    "domain":            result_domain,
+                    "entity":            result_entity,
                     "dictionary_status": (
                         "approved"  if d.get("dict_approved")
                         else "generated" if d.get("business_label")
                         else "none"
                     ),
-                    "pii_indicator":     pii,
+                    "pii_indicator":     result_pii,
                     "semantic_type":     d.get("semantic_type") or "",
                     "table_type":        None,
-                    "nav_target": {
-                        "view":        "data-sources",
-                        "source_id":   d.get("source_id"),
-                        "table_fqn":   d.get("table_fqn"),
-                        "column_name": d.get("column_name"),
-                    },
+                    "confidence":        confidence,
+                    "profiled_at":       d.get("profiled_at") or "",
+                    "profiling_status":  d.get("profiling_status") or "",
+                    "nav_target":        _column_nav_target(d, asset_type),
                 })
 
     finally:
@@ -606,4 +750,113 @@ def search_metadata(
         "total":   total,
         "query":   q,
         "tokens":  tokens,      # original tokens only — expanded set is internal
+    }
+
+
+# ---------------------------------------------------------------------------
+# Filter metadata — returns available values for every filterable dimension
+# ---------------------------------------------------------------------------
+
+def get_search_filters() -> dict:
+    """Return distinct filter values that actually exist in the metadata catalog.
+
+    Only values present in the database are returned — the frontend uses this
+    to hide filter controls that would always yield zero results.  No AI, no
+    embeddings; all values come directly from stored profiling and dictionary
+    metadata.
+    """
+    conn = get_connection()
+    try:
+        sources = [
+            {"id": row["id"], "name": row["display_name"]}
+            for row in conn.execute(
+                "SELECT id, display_name FROM data_source_connections"
+                " WHERE is_active = 1 ORDER BY display_name"
+            ).fetchall()
+        ]
+
+        schemas = [
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT schema_name FROM profiling_table_profiles"
+                " WHERE schema_name IS NOT NULL AND schema_name != ''"
+                " ORDER BY schema_name"
+            ).fetchall()
+        ]
+
+        domain_rows = conn.execute(
+            "SELECT DISTINCT domain FROM domain_assignments"
+            " WHERE domain IS NOT NULL AND domain != ''"
+            " UNION"
+            " SELECT DISTINCT domain FROM data_dictionary_tables"
+            " WHERE domain IS NOT NULL AND domain != ''"
+            " ORDER BY domain"
+        ).fetchall()
+        domains = [r[0] for r in domain_rows]
+
+        entity_rows = conn.execute(
+            "SELECT DISTINCT entity FROM entity_assignments"
+            " WHERE entity IS NOT NULL AND entity != ''"
+            " ORDER BY entity"
+        ).fetchall()
+        entities = [r[0] for r in entity_rows]
+
+        sem_rows = conn.execute(
+            "SELECT DISTINCT semantic_type FROM profiling_column_profiles"
+            " WHERE semantic_type IS NOT NULL AND semantic_type != ''"
+            " UNION"
+            " SELECT DISTINCT semantic_type FROM data_dictionary_columns"
+            " WHERE semantic_type IS NOT NULL AND semantic_type != ''"
+            " ORDER BY semantic_type"
+        ).fetchall()
+        semantic_types = [r[0] for r in sem_rows]
+
+        class_rows = conn.execute(
+            "SELECT DISTINCT table_class FROM profiling_table_profiles"
+            " WHERE table_class IS NOT NULL AND table_class != ''"
+            " ORDER BY table_class"
+        ).fetchall()
+        classifications = [r[0] for r in class_rows]
+
+        status_rows = conn.execute(
+            "SELECT DISTINCT profiling_status FROM profiling_table_profiles"
+            " WHERE profiling_status IS NOT NULL AND profiling_status != ''"
+            " ORDER BY profiling_status"
+        ).fetchall()
+        profile_statuses = [r[0] for r in status_rows]
+
+        pii_row = conn.execute(
+            "SELECT 1 FROM profiling_table_profiles WHERE pii_column_count > 0 LIMIT 1"
+        ).fetchone()
+        pii_available = pii_row is not None
+
+        approved_row = conn.execute(
+            "SELECT 1 FROM data_dictionary_tables WHERE is_approved = 1 LIMIT 1"
+        ).fetchone()
+        generated_row = conn.execute(
+            "SELECT 1 FROM data_dictionary_tables"
+            " WHERE business_name IS NOT NULL AND (is_approved = 0 OR is_approved IS NULL)"
+            " LIMIT 1"
+        ).fetchone()
+        dict_statuses: list[str] = []
+        if approved_row:
+            dict_statuses.append("approved")
+        if generated_row:
+            dict_statuses.append("generated")
+        if approved_row or generated_row:
+            dict_statuses.append("none")
+
+    finally:
+        conn.close()
+
+    return {
+        "sources":             sources,
+        "schemas":             schemas,
+        "domains":             domains,
+        "entities":            entities,
+        "semantic_types":      semantic_types,
+        "classifications":     classifications,
+        "profile_statuses":    profile_statuses,
+        "dictionary_statuses": dict_statuses,
+        "pii_available":       pii_available,
     }

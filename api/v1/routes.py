@@ -4597,6 +4597,22 @@ def get_metadata_job_route(
 _VALID_ASSET_TYPES = {"table", "column", "dictionary", "domain", "entity"}
 
 
+@router.get("/search/filters")
+def search_filters_route(
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return distinct filter values available in the metadata catalog.
+
+    Only values that actually exist in the database are returned so the
+    frontend can hide filter controls that would always produce zero results.
+    """
+    from data.search_service import get_search_filters
+    return {"status": "success", "data": get_search_filters()}
+
+
+_VALID_DICT_STATUSES = {"approved", "generated", "none"}
+
+
 @router.get("/search")
 def search_metadata_route(
     q: str = Query(..., min_length=1, max_length=500, description="Search query"),
@@ -4604,6 +4620,14 @@ def search_metadata_route(
     offset: int = Query(0, ge=0),
     source_id: int | None = Query(None),
     asset_type: str | None = Query(None),
+    schema: str | None = Query(None),
+    domain: str | None = Query(None),
+    entity: str | None = Query(None),
+    semantic_type: str | None = Query(None),
+    pii: bool | None = Query(None),
+    dictionary_status: str | None = Query(None),
+    classification: str | None = Query(None),
+    profile_status: str | None = Query(None),
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> dict:
     if asset_type is not None and asset_type not in _VALID_ASSET_TYPES:
@@ -4613,6 +4637,13 @@ def search_metadata_route(
                 f"Invalid asset_type '{asset_type}'. Must be one of: {', '.join(sorted(_VALID_ASSET_TYPES))}"
             ),
         )
+    if dictionary_status is not None and dictionary_status not in _VALID_DICT_STATUSES:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Invalid dictionary_status '{dictionary_status}'. Must be one of: {', '.join(sorted(_VALID_DICT_STATUSES))}"
+            ),
+        )
     from data.search_service import search_metadata
     result = search_metadata(
         q=q,
@@ -4620,5 +4651,13 @@ def search_metadata_route(
         offset=offset,
         source_id=source_id,
         asset_type=asset_type,
+        schema=schema,
+        domain=domain,
+        entity=entity,
+        semantic_type=semantic_type,
+        pii=pii,
+        dictionary_status=dictionary_status,
+        classification=classification,
+        profile_status=profile_status,
     )
     return {"status": "success", "data": result}

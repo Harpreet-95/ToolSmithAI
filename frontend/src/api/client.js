@@ -945,10 +945,23 @@ export async function continueBatchProfile(sourceId, snapshotId, token) {
 
 export async function searchMetadata(q, token, params = {}) {
   const qs = new URLSearchParams({ q })
-  if (params.limit     != null)  qs.set('limit',      params.limit)
-  if (params.offset    != null)  qs.set('offset',     params.offset)
-  if (params.source_id != null)  qs.set('source_id',  params.source_id)
-  if (params.asset_type)         qs.set('asset_type', params.asset_type)
+  if (params.limit             != null) qs.set('limit',             params.limit)
+  if (params.offset            != null) qs.set('offset',            params.offset)
+  if (params.source_id         != null) qs.set('source_id',         params.source_id)
+  if (params.asset_type)                qs.set('asset_type',        params.asset_type)
+  if (params.schema)                    qs.set('schema',            params.schema)
+  if (params.domain)                    qs.set('domain',            params.domain)
+  if (params.entity)                    qs.set('entity',            params.entity)
+  if (params.semantic_type)             qs.set('semantic_type',     params.semantic_type)
+  if (params.pii === true)              qs.set('pii',               'true')
+  if (params.dictionary_status)         qs.set('dictionary_status', params.dictionary_status)
+  if (params.classification)            qs.set('classification',    params.classification)
+  if (params.profile_status)            qs.set('profile_status',    params.profile_status)
   const res = await fetch(`/v1/search?${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getSearchFilters(token) {
+  const res = await fetch('/v1/search/filters', { headers: AUTH_HEADERS(token) })
   return parseResponse(res)
 }
