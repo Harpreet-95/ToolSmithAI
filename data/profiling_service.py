@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -991,3 +992,317 @@ def _batch_state_from_row(psnap) -> ProfilingBatchState:
         completed_tables=psnap["tables_profiled"] or 0,
         status=ProfilingStatus(psnap["status"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Profile Review Tasks
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_CONFIDENCE_THRESHOLD = 0.70  # columns below this trigger a review task
+
+_SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def _make_review_task(
+    *,
+    task_type: str,
+    asset_type: str,
+    asset_name: str,
+    table_fqn: str,
+    table_name: str,
+    schema_name: str,
+    column_name: str | None,
+    reason: str,
+    severity: str,
+    nav_target: dict,
+    created_at: str,
+) -> dict:
+    raw = f"{task_type}:{table_fqn}:{column_name or ''}"
+    task_id = hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:12]
+    return {
+        "id":          task_id,
+        "task_type":   task_type,
+        "asset_type":  asset_type,
+        "asset_name":  asset_name,
+        "table_fqn":   table_fqn,
+        "table_name":  table_name,
+        "schema_name": schema_name,
+        "column_name": column_name,
+        "reason":      reason,
+        "severity":    severity,
+        "status":      "OPEN",
+        "nav_target":  nav_target,
+        "created_at":  created_at,
+    }
+
+
+def _review_summary(tasks: list[dict]) -> dict:
+    counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    open_count = completed_count = 0
+    for t in tasks:
+        if t["status"] == "OPEN":
+            open_count += 1
+            counts[t["severity"]] = counts.get(t["severity"], 0) + 1
+        else:
+            completed_count += 1
+    return {
+        "total":     len(tasks),
+        "open":      open_count,
+        "critical":  counts["CRITICAL"],
+        "high":      counts["HIGH"],
+        "medium":    counts["MEDIUM"],
+        "low":       counts["LOW"],
+        "completed": completed_count,
+    }
+
+
+def get_profile_review_tasks(source_id: int, user_id: str) -> dict | None:
+    """Return review tasks generated from the latest profiling snapshot.
+
+    Tasks are derived entirely from stored profiling, dictionary, domain, and
+    entity rows.  No values are fabricated.  Returns None when the source does
+    not exist or does not belong to user_id.  Returns an empty task list when
+    profiling has not yet run or no issues are found.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        snap = conn.execute(
+            "SELECT id, created_at FROM profiling_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if snap is None:
+            return {"tasks": [], "summary": _review_summary([])}
+
+        snap_id: int = snap["id"]
+        snap_ts: str = snap["created_at"] or ""
+        tasks: list[dict] = []
+
+        # ── 1. PII detected but not confirmed (CRITICAL) ─────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.pii_name_heuristic = 1
+                 AND pcp.pii_confirmed = 0""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Review PII Classification",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason="PII signals detected by heuristic but not yet confirmed by a human reviewer.",
+                severity="CRITICAL",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 2. Semantic type confidence below threshold (HIGH) ────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, pcp.semantic_type,
+                      pcp.semantic_confidence, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.semantic_type IS NOT NULL
+                 AND pcp.semantic_confidence IS NOT NULL
+                 AND pcp.semantic_confidence < ?""",
+            (snap_id, _SEMANTIC_CONFIDENCE_THRESHOLD),
+        ).fetchall()
+        for r in rows:
+            conf = r["semantic_confidence"]
+            tasks.append(_make_review_task(
+                task_type="Review Semantic Classification",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Semantic type '{r['semantic_type']}' assigned with "
+                    f"{conf:.0%} confidence (threshold: {_SEMANTIC_CONFIDENCE_THRESHOLD:.0%})."
+                ),
+                severity="HIGH",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 3. Column classification failed (HIGH) ────────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.profiling_status = 'FAILED'""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Review Classification",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason="Column profiling failed during classification and requires manual review.",
+                severity="HIGH",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 4. No Domain assigned (MEDIUM) ────────────────────────────────────
+        rows = conn.execute(
+            """SELECT ptp.table_fqn, ptp.table_name, ptp.schema_name
+               FROM profiling_table_profiles ptp
+               LEFT JOIN domain_assignments da
+                 ON da.source_id = ptp.source_id AND da.table_fqn = ptp.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND da.id IS NULL""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Assign Domain",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason="No business domain has been assigned to this table.",
+                severity="MEDIUM",
+                nav_target={"tab": "domains", "table_fqn": r["table_fqn"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 5. No Entity assigned (MEDIUM) ────────────────────────────────────
+        rows = conn.execute(
+            """SELECT ptp.table_fqn, ptp.table_name, ptp.schema_name
+               FROM profiling_table_profiles ptp
+               LEFT JOIN entity_assignments ea
+                 ON ea.source_id = ptp.source_id AND ea.table_fqn = ptp.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ea.id IS NULL""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Assign Entity",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason="No business entity has been assigned to this table.",
+                severity="MEDIUM",
+                nav_target={"tab": "entities", "table_fqn": r["table_fqn"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 6. Table profiling skipped (MEDIUM) ───────────────────────────────
+        rows = conn.execute(
+            """SELECT ptp.table_fqn, ptp.table_name, ptp.schema_name, ptp.skip_reason
+               FROM profiling_table_profiles ptp
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ptp.profiling_status = 'SKIPPED'""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            reason = r["skip_reason"] or "Table was skipped during profiling."
+            tasks.append(_make_review_task(
+                task_type="Review Profiling Failure",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason=reason,
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 7a. Table dictionary entry pending approval (LOW) ─────────────────
+        rows = conn.execute(
+            """SELECT ddt.table_fqn, ptp.table_name, ptp.schema_name,
+                      ddt.business_name, ddt.created_at AS dict_ts
+               FROM data_dictionary_tables ddt
+               JOIN profiling_table_profiles ptp
+                 ON ptp.source_id = ddt.source_id AND ptp.table_fqn = ddt.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ddt.source_id = ?
+                 AND ddt.is_approved = 0
+                 AND ddt.business_name IS NOT NULL""",
+            (snap_id, source_id),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Approve Dictionary Entry",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason=f"Business name '{r['business_name']}' is generated but awaiting human approval.",
+                severity="LOW",
+                nav_target={"tab": "dictionary", "table_fqn": r["table_fqn"]},
+                created_at=r["dict_ts"] or snap_ts,
+            ))
+
+        # ── 7b. Column dictionary entry pending approval (LOW) ────────────────
+        rows = conn.execute(
+            """SELECT ddc.table_fqn, ddc.column_name, ptp.table_name, ptp.schema_name,
+                      ddc.business_label, ddc.created_at AS dict_ts
+               FROM data_dictionary_columns ddc
+               JOIN profiling_table_profiles ptp
+                 ON ptp.source_id = ddc.source_id AND ptp.table_fqn = ddc.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ddc.source_id = ?
+                 AND ddc.is_approved = 0
+                 AND ddc.business_label IS NOT NULL""",
+            (snap_id, source_id),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Approve Dictionary Entry",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=f"Business label '{r['business_label']}' is generated but awaiting human approval.",
+                severity="LOW",
+                nav_target={"tab": "dictionary", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=r["dict_ts"] or snap_ts,
+            ))
+
+    finally:
+        conn.close()
+
+    tasks.sort(key=lambda t: (_SEVERITY_ORDER.get(t["severity"], 99), t["asset_name"]))
+    return {"tasks": tasks, "summary": _review_summary(tasks)}

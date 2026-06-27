@@ -117,6 +117,7 @@ from data.profiling_service import (
     continue_batch_profiling,
     get_column_profiles,
     get_latest_profile,
+    get_profile_review_tasks,
     get_table_profile_detail,
     list_profile_history,
     run_full_profiling,
@@ -4106,6 +4107,17 @@ def get_profile_history_route(
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> dict:
     result = list_profile_history(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/profile/review-tasks")
+def get_profile_review_tasks_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = get_profile_review_tasks(source_id, user.user_id)
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}

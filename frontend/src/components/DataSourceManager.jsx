@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, createDataSource, deleteDataSource, discoverDataSourceSchema, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getEntityRules, getEntitySummary, getMetadataJob, getProfile, getProfileHistory, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, testDataSource } from '../api/client'
+import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, continueBatchProfile, createDataSource, deleteDataSource, discoverDataSourceSchema, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getEntityRules, getEntitySummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, startBatchProfile, testDataSource } from '../api/client'
 import DictionaryReview from './DictionaryReview'
 import ColumnProfileExplorer from './ColumnProfileExplorer'
 
@@ -115,7 +115,9 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [domAssignState,  setDomAssignState]  = useState({})  // { [srcId]: { loading, data, error } }
   const [entAssignState,  setEntAssignState]  = useState({})  // { [srcId]: { loading, data, error } }
   const [profileHistState,setProfileHistState]= useState({})  // { [srcId]: { loading, data, error } }
-  const [srcMenu,          setSrcMenu]         = useState({})  // { [id]: bool } per-source three-dot menu
+  const [fullProfState,    setFullProfState]    = useState({})  // { [id]: { loading, snapshotId, progress, total, error } }
+  const [reviewTaskState,  setReviewTaskState]  = useState({})  // { [id]: { loading, data, error } }
+  const [srcMenu,          setSrcMenu]          = useState({})  // { [id]: bool } per-source three-dot menu
   const [landingSearch,    setLandingSearch]    = useState('')    // landing-page search filter
 
   function notify(msg, ok = true) {
@@ -160,6 +162,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           loadDictSummary(src.id)
           loadDomainSummary(src.id)
           loadEntitySummary(src.id)
+          loadReviewTasks(src.id)
         }
       })
     } catch (e) {
@@ -381,6 +384,20 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     }
   }
 
+  async function loadReviewTasks(id) {
+    setReviewTaskState(s => ({ ...s, [id]: { loading: true, data: null, error: null } }))
+    try {
+      const resp = await getProfileReviewTasks(id, token)
+      setReviewTaskState(s => ({ ...s, [id]: { loading: false, data: resp?.data ?? null, error: null } }))
+    } catch (e) {
+      if (_is404(e)) {
+        setReviewTaskState(s => ({ ...s, [id]: { loading: false, data: null, error: null } }))
+      } else {
+        setReviewTaskState(s => ({ ...s, [id]: { loading: false, data: null, error: e?.message ?? 'Failed to load review tasks.' } }))
+      }
+    }
+  }
+
   async function loadSchema(id) {
     setSchemaState(s => ({ ...s, [id]: { loading: true } }))
     try {
@@ -406,6 +423,35 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     loadDictSummary(src.id)
     loadDomainSummary(src.id)
     loadEntitySummary(src.id)
+    loadReviewTasks(src.id)
+  }
+
+  async function handleRunDataProfile(src) {
+    const id = src.id
+    setFullProfState(s => ({ ...s, [id]: { loading: true, snapshotId: null, progress: 0, total: 0, error: null } }))
+    try {
+      const startResp = await startBatchProfile(id, token)
+      const snap = startResp?.data
+      const snapshotId = snap?.profiling_snapshot_id
+      const total = snap?.total_tables ?? 0
+      setFullProfState(s => ({ ...s, [id]: { loading: true, snapshotId, progress: 0, total, error: null } }))
+      let isComplete = total === 0 || (snap?.next_table_index != null && snap.next_table_index >= total)
+      while (!isComplete) {
+        // eslint-disable-next-line no-await-in-loop
+        const contResp = await continueBatchProfile(id, snapshotId, token)
+        const cont = contResp?.data
+        isComplete = cont?.is_complete ?? false
+        setFullProfState(s => ({ ...s, [id]: { loading: !isComplete, snapshotId, progress: cont?.completed_tables ?? 0, total: cont?.total_tables ?? total, error: null } }))
+      }
+      await loadProfile(id)
+      await loadProfileHistory(id)
+      loadReviewTasks(id)
+      notify('Data profile complete.')
+    } catch (e) {
+      const msg = e?.message ?? 'Data profiling failed.'
+      setFullProfState(s => ({ ...s, [id]: { ...(s[id] ?? {}), loading: false, error: msg } }))
+      notify(msg, false)
+    }
   }
 
   async function handleGenerateDictionary(id) {
@@ -846,7 +892,9 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     const gs       = govState[dsSelectedSourceId]        ?? {}
     const domAsgn  = domAssignState[dsSelectedSourceId]  ?? {}
     const entAsgn  = entAssignState[dsSelectedSourceId]  ?? {}
-    const profHist = profileHistState[dsSelectedSourceId]?? {}
+    const profHist     = profileHistState[dsSelectedSourceId] ?? {}
+    const fullProfSt   = fullProfState[dsSelectedSourceId]   ?? {}
+    const reviewTaskSt = reviewTaskState[dsSelectedSourceId] ?? {}
 
     // Pipeline computed values (mirrors existing logic exactly)
     const hasSchema    = src?.last_snapshot_id != null || !!discSt.result
@@ -1419,18 +1467,132 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       </div>
     )
 
+    const profileDepth   = profSnap?.mode
+    const reviewSummary  = reviewTaskSt.data?.summary ?? null
+    const reviewTasks    = reviewTaskSt.data?.tasks   ?? []
+    const SEV_COLOR      = { CRITICAL: danger, HIGH: warn, MEDIUM: '#38bdf8', LOW: muted }
+    const SEV_BG         = { CRITICAL: `${danger}12`, HIGH: `${warn}12`, MEDIUM: '#38bdf812', LOW: `${muted}10` }
+
+    function handleOpenReview(task) {
+      const tab = task.nav_target?.tab
+      if (tab && tab !== 'profile' && setDsActiveTab) setDsActiveTab(tab)
+    }
+
     const profileTab = (
-      <ColumnProfileExplorer
-        C={C}
-        token={token}
-        sourceId={dsSelectedSourceId}
-        profileData={prof.data}
-        profLoading={prof.loading}
-        profError={prof.error}
-        hasSchema={hasSchema}
-        onRunProfile={() => src && handleDiscoverAndProfile(src)}
-        profileRunning={js.running || discSt.loading}
-      />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+        {/* ── Profile mode badge ── */}
+        {profSnap && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', borderRadius: '8px', background: profileDepth === 'FULL' ? `${success}10` : `${warn}10`, border: `1px solid ${profileDepth === 'FULL' ? success : warn}30` }}>
+            <span style={{ fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, color: profileDepth === 'FULL' ? success : warn, flexShrink: 0 }}>
+              {profileDepth === 'FULL' ? 'Full Profile' : 'Structural Only'}
+            </span>
+            <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>
+              {profileDepth === 'FULL'
+                ? 'Includes statistical analysis: row counts, null rates, distributions, and PII detection.'
+                : 'Schema structure only — no row-level statistics. Use Run Data Profile for full analysis.'}
+            </span>
+          </div>
+        )}
+
+        {/* ── Profile Review Summary ── */}
+        {reviewSummary && (
+          <div style={{ ...card({ padding: '14px 18px' }) }}>
+            <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Profile Review Summary</div>
+            <div style={{ display: 'flex', gap: '28px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              {[
+                { label: 'Open Tasks', value: reviewSummary.open,      color: reviewSummary.open > 0 ? warn : success },
+                { label: 'Critical',   value: reviewSummary.critical,  color: reviewSummary.critical > 0 ? danger : muted },
+                { label: 'High',       value: reviewSummary.high,      color: reviewSummary.high > 0 ? warn : muted },
+                { label: 'Medium',     value: reviewSummary.medium,    color: reviewSummary.medium > 0 ? '#38bdf8' : muted },
+                { label: 'Low',        value: reviewSummary.low,       color: muted },
+                { label: 'Completed',  value: reviewSummary.completed, color: success },
+              ].map(({ label, value, color }) => (
+                <div key={label}>
+                  <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '3px' }}>{label}</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: '700', color, fontFamily: FONT, lineHeight: 1 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {reviewTaskSt.loading && !reviewSummary && (
+          <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}>
+            <Spinner size={12} /> Loading review tasks…
+          </div>
+        )}
+
+        {/* ── Review Tasks ── */}
+        {(reviewTaskSt.data != null) && (
+          <div style={card({ padding: '0' })}>
+            <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Review Tasks</span>
+              {reviewTasks.length > 0 && (
+                <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{reviewTasks.length} task{reviewTasks.length !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+
+            {reviewTasks.length === 0 && (
+              <div style={{ padding: '28px 18px', textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT }}>
+                No review tasks generated.
+              </div>
+            )}
+
+            {reviewTasks.length > 0 && (
+              <div>
+                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(sev => {
+                  const sevTasks = reviewTasks.filter(t => t.severity === sev)
+                  if (sevTasks.length === 0) return null
+                  return (
+                    <div key={sev}>
+                      <div style={{ padding: '6px 18px', background: SEV_BG[sev], borderBottom: `1px solid ${border}20`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: SEV_COLOR[sev], letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT }}>{sev}</span>
+                        <span style={{ fontSize: '0.65rem', color: muted, fontFamily: FONT }}>{sevTasks.length} task{sevTasks.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      {sevTasks.map((task, i) => (
+                        <div key={task.id} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 1fr auto', gap: '0', padding: '10px 18px', borderBottom: `1px solid ${border}15`, background: i % 2 === 0 ? 'transparent' : `${bg}50`, alignItems: 'start' }}>
+                          <div>
+                            <span style={{ fontSize: '0.72rem', fontWeight: '600', color: SEV_COLOR[sev], fontFamily: FONT }}>{task.task_type}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <span style={{ fontSize: '0.78rem', color: text, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {task.column_name ? `${task.table_fqn}.${task.column_name}` : task.table_fqn}
+                            </span>
+                            <span style={{ fontSize: '0.68rem', color: muted, fontFamily: FONT, textTransform: 'capitalize' }}>{task.asset_type}</span>
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT, paddingRight: '12px', lineHeight: 1.45 }}>
+                            {task.reason}
+                          </div>
+                          <button
+                            onClick={() => handleOpenReview(task)}
+                            style={{ padding: '4px 12px', borderRadius: '6px', background: 'transparent', border: `1px solid ${border}`, color: accent, fontSize: '0.73rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}
+                            onMouseEnter={e => e.currentTarget.style.background = accentSoft}
+                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                          >
+                            Open Review →
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        <ColumnProfileExplorer
+          C={C}
+          token={token}
+          sourceId={dsSelectedSourceId}
+          profileData={prof.data}
+          profLoading={prof.loading}
+          profError={prof.error}
+          hasSchema={hasSchema}
+          onRunProfile={() => src && handleDiscoverAndProfile(src)}
+          profileRunning={js.running || discSt.loading}
+        />
+      </div>
     )
 
     const domainsTab = (
@@ -1702,6 +1864,16 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             >
               {(discSt.loading || js.running) && <Spinner size={11} />}
               {(discSt.loading || js.running) ? 'Scanning…' : 'Scan Metadata'}
+            </button>
+            <button
+              onClick={() => src && !fullProfSt.loading && hasSchema && handleRunDataProfile(src)}
+              disabled={fullProfSt.loading || !hasSchema}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', background: 'transparent', border: `1px solid ${border}`, color: (fullProfSt.loading || !hasSchema) ? muted : textSec, fontSize: '0.82rem', fontWeight: '500', cursor: (fullProfSt.loading || !hasSchema) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: (fullProfSt.loading || !hasSchema) ? 0.6 : 1 }}
+            >
+              {fullProfSt.loading && <Spinner size={11} />}
+              {fullProfSt.loading
+                ? (fullProfSt.total > 0 ? `Profiling ${fullProfSt.progress}/${fullProfSt.total}…` : 'Profiling…')
+                : 'Run Data Profile'}
             </button>
           </div>
         </div>

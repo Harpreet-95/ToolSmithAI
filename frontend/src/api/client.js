@@ -893,6 +893,13 @@ export async function getProfileHistory(sourceId, token) {
   return parseResponse(res)
 }
 
+export async function getProfileReviewTasks(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/profile/review-tasks`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
 export async function getColumnProfiles(sourceId, token, params = {}) {
   const qs = new URLSearchParams()
   if (params.table_fqn)        qs.set('table_fqn',     params.table_fqn)
@@ -912,6 +919,22 @@ export async function getTableProfileDetail(sourceId, tableFqn, token) {
   const res = await fetch(
     `/v1/sources/${sourceId}/profile/tables/${encodeURIComponent(tableFqn)}`,
     { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function startBatchProfile(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/profile/batch/start`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function continueBatchProfile(sourceId, snapshotId, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/profile/batch/${snapshotId}/continue`,
+    { method: 'POST', headers: AUTH_HEADERS(token) },
   )
   return parseResponse(res)
 }
