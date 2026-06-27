@@ -6,7 +6,9 @@ relevance scoring.  No AI, no embeddings, no external dependencies.
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Optional
 
 from data.db import get_connection
@@ -40,6 +42,72 @@ def _tokenize(q: str) -> list[str]:
     """Lowercase, split on whitespace / underscore / dash, drop tokens < 2 chars."""
     tokens = re.split(r"[\s_\-/]+", q.lower().strip())
     return [t for t in tokens if len(t) >= 2]
+
+
+# ---------------------------------------------------------------------------
+# Synonym expansion
+# ---------------------------------------------------------------------------
+
+_SYNONYMS_PATH = Path(__file__).parent / "synonyms.json"
+
+
+class _SynonymExpander:
+    """Expands query tokens using a JSON-backed synonym dictionary.
+
+    Each synonym group is a list of equivalent terms.  Any term in a group
+    maps to the full group so that searching one term also scores against all
+    others.  The dictionary lives in data/synonyms.json and is loaded once at
+    module import time — add new groups there to extend coverage.
+    """
+
+    def __init__(self, groups: list[list[str]]) -> None:
+        self._map: dict[str, frozenset[str]] = {}
+        self._groups: list[frozenset[str]] = []
+        for group in groups:
+            # Normalise and drop terms shorter than 2 characters
+            normalised = frozenset(t.lower() for t in group if len(t) >= 2)
+            if len(normalised) < 2:
+                continue  # single-term groups provide no expansion value
+            self._groups.append(normalised)
+            for term in normalised:
+                self._map[term] = normalised
+
+    def expand(self, token: str) -> frozenset[str]:
+        """Return the full synonym set for *token*, including itself."""
+        return self._map.get(token.lower(), frozenset({token.lower()}))
+
+    def __len__(self) -> int:
+        """Number of synonym groups loaded."""
+        return len(self._groups)
+
+
+def _load_synonym_expander() -> _SynonymExpander:
+    """Load synonyms from disk; return an empty expander on any error."""
+    try:
+        raw = json.loads(_SYNONYMS_PATH.read_text(encoding="utf-8"))
+        return _SynonymExpander(raw.get("groups", []))
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return _SynonymExpander([])
+
+
+_SYNONYM_EXPANDER: _SynonymExpander = _load_synonym_expander()
+
+
+def _expand_tokens(tokens: list[str]) -> list[str]:
+    """Return *tokens* extended with synonyms from the loaded dictionary.
+
+    Original tokens are preserved at the front in their original order.
+    Synonym additions are appended alphabetically.  Deduplication ensures
+    that if the query already contains a synonym term it appears only once.
+    """
+    seen: set[str] = set(tokens)
+    result: list[str] = list(tokens)
+    for tok in tokens:
+        for syn in sorted(_SYNONYM_EXPANDER.expand(tok) - {tok}):
+            if syn not in seen:
+                seen.add(syn)
+                result.append(syn)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +345,10 @@ def search_metadata(
     if not tokens:
         return {"results": [], "total": 0, "query": q, "tokens": []}
 
+    # Expand query tokens with synonyms for SQL candidate fetch and scoring.
+    # The original tokens are preserved in the response for backward compatibility.
+    expanded_tokens = _expand_tokens(tokens)
+
     include_tables  = asset_type in (None, "table", "dictionary", "domain", "entity")
     include_columns = asset_type in (None, "column", "dictionary")
 
@@ -287,9 +359,9 @@ def search_metadata(
     try:
         # ── Table-level search ────────────────────────────────────────────────
         if include_tables:
-            where = _where_block(_TABLE_SEARCH_FIELDS, len(tokens))
+            where = _where_block(_TABLE_SEARCH_FIELDS, len(expanded_tokens))
             sql   = _TABLE_BASE_SQL.format(where=where)
-            params: list = _like_params(tokens, len(_TABLE_SEARCH_FIELDS))
+            params: list = _like_params(expanded_tokens, len(_TABLE_SEARCH_FIELDS))
 
             if source_id is not None:
                 sql += " AND ptp.source_id = ?"
@@ -306,10 +378,10 @@ def search_metadata(
 
             for row in rows:
                 d = dict(row)
-                score = _score_table_row(d, tokens)
+                score = _score_table_row(d, expanded_tokens)
                 if score <= 0:
                     continue
-                matched_f, matched_t = _best_match(d, tokens, _TABLE_FIELD_PRIORITY)
+                matched_f, matched_t = _best_match(d, expanded_tokens, _TABLE_FIELD_PRIORITY)
                 domain = d.get("assigned_domain") or d.get("dict_domain") or ""
                 entity = d.get("assigned_entity") or ""
                 pii = bool(d.get("pii_column_count") and d["pii_column_count"] > 0)
@@ -345,9 +417,9 @@ def search_metadata(
 
         # ── Column-level search ───────────────────────────────────────────────
         if include_columns:
-            where = _where_block(_COLUMN_SEARCH_FIELDS, len(tokens))
+            where = _where_block(_COLUMN_SEARCH_FIELDS, len(expanded_tokens))
             sql   = _COLUMN_BASE_SQL.format(where=where)
-            params = _like_params(tokens, len(_COLUMN_SEARCH_FIELDS))
+            params = _like_params(expanded_tokens, len(_COLUMN_SEARCH_FIELDS))
 
             if source_id is not None:
                 sql += " AND pcp.source_id = ?"
@@ -360,10 +432,10 @@ def search_metadata(
 
             for row in rows:
                 d = dict(row)
-                score = _score_column_row(d, tokens)
+                score = _score_column_row(d, expanded_tokens)
                 if score <= 0:
                     continue
-                matched_f, matched_t = _best_match(d, tokens, _COLUMN_FIELD_PRIORITY)
+                matched_f, matched_t = _best_match(d, expanded_tokens, _COLUMN_FIELD_PRIORITY)
                 domain = d.get("assigned_domain") or ""
                 entity = d.get("assigned_entity") or ""
                 pii    = bool(d.get("pii_confirmed") or d.get("pii_risk"))
@@ -409,5 +481,5 @@ def search_metadata(
         "results": page,
         "total":   total,
         "query":   q,
-        "tokens":  tokens,
+        "tokens":  tokens,      # original tokens only — expanded set is internal
     }

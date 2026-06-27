@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "description": "Enterprise metadata search synonym dictionary. Each group is a list of equivalent terms — searching any one term will match all others in the group. Extend this file to add new synonym coverage. No restart required if the service is reloaded.",
+  "groups": [
+    ["bi", "report", "reporting", "dashboard"],
+    ["project", "programme", "program", "initiative"],
+    ["customer", "client", "account"],
+    ["employee", "worker", "staff", "personnel"],
+    ["user", "person", "individual", "member"],
+    ["email", "mail"],
+    ["invoice", "billing", "finance", "purchase", "order"]
+  ]
+}
