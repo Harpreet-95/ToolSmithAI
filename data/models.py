@@ -714,6 +714,29 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # One-time repair: back-fill columns_total for profiling_snapshots rows that
+    # were created by the pre-fix batch profiling INSERT (which omitted the field,
+    # leaving the DB DEFAULT of 0).  Only rows that already have stored
+    # profiling_table_profiles data are touched; snapshots with no table profiles
+    # keep columns_total = 0 because there is nothing to derive from.
+    # Safe to run on every init: the WHERE columns_total = 0 guard makes it a
+    # no-op once any affected row has been repaired.
+    cursor.execute("""
+        UPDATE profiling_snapshots
+        SET columns_total = (
+            SELECT COALESCE(SUM(column_count), 0)
+            FROM profiling_table_profiles
+            WHERE profiling_table_profiles.profiling_snapshot_id = profiling_snapshots.id
+        )
+        WHERE columns_total = 0
+        AND EXISTS (
+            SELECT 1
+            FROM profiling_table_profiles
+            WHERE profiling_table_profiles.profiling_snapshot_id = profiling_snapshots.id
+        )
+    """)
+    conn.commit()
+
     # profiling_column_profiles — per-column statistical and semantic-type results.
     cursor.executescript("""
         CREATE TABLE IF NOT EXISTS profiling_column_profiles (
