@@ -965,3 +965,9 @@ export async function getSearchFilters(token) {
   const res = await fetch('/v1/search/filters', { headers: AUTH_HEADERS(token) })
   return parseResponse(res)
 }
+
+export async function getSearchSuggestions(q, token, limit = 8) {
+  const qs = new URLSearchParams({ q, limit })
+  const res = await fetch(`/v1/search/suggestions?${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}

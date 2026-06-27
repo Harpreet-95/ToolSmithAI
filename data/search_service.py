@@ -860,3 +860,91 @@ def get_search_filters() -> dict:
         "dictionary_statuses": dict_statuses,
         "pii_available":       pii_available,
     }
+
+
+# ---------------------------------------------------------------------------
+# Autocomplete suggestions — drawn exclusively from real stored metadata
+# ---------------------------------------------------------------------------
+
+def get_search_suggestions(q: str, limit: int = 8) -> list[dict]:
+    """Return up to *limit* autocomplete suggestions from real metadata.
+
+    Searches table names, business names, column names, business labels,
+    domain assignments, and entity assignments.  No suggestion is hardcoded —
+    all values come from stored profiling and dictionary metadata.
+
+    Results are sorted so prefix matches (starts-with) rank before
+    contains-only matches, then alphabetically within each group.
+
+    Parameters
+    ----------
+    q     : partial query string (min length checked by caller)
+    limit : maximum suggestions to return (capped at 20 by the route layer)
+
+    Returns
+    -------
+    list of {"text": str, "type": str} dicts
+    """
+    if not q or not q.strip():
+        return []
+
+    q_clean = q.strip()
+    q_lower = q_clean.lower()
+    like    = f"%{q_lower}%"
+
+    conn = get_connection()
+    candidates: list[dict] = []
+    try:
+        for sql, stype in (
+            (
+                "SELECT DISTINCT table_name AS t FROM profiling_table_profiles"
+                " WHERE LOWER(table_name) LIKE ? AND table_name IS NOT NULL LIMIT 50",
+                "table",
+            ),
+            (
+                "SELECT DISTINCT business_name AS t FROM data_dictionary_tables"
+                " WHERE LOWER(business_name) LIKE ? AND business_name IS NOT NULL LIMIT 50",
+                "business_name",
+            ),
+            (
+                "SELECT DISTINCT column_name AS t FROM profiling_column_profiles"
+                " WHERE LOWER(column_name) LIKE ? AND column_name IS NOT NULL LIMIT 50",
+                "column",
+            ),
+            (
+                "SELECT DISTINCT business_label AS t FROM data_dictionary_columns"
+                " WHERE LOWER(business_label) LIKE ? AND business_label IS NOT NULL LIMIT 50",
+                "business_name",
+            ),
+            (
+                "SELECT DISTINCT domain AS t FROM domain_assignments"
+                " WHERE LOWER(domain) LIKE ? AND domain IS NOT NULL LIMIT 20",
+                "domain",
+            ),
+            (
+                "SELECT DISTINCT entity AS t FROM entity_assignments"
+                " WHERE LOWER(entity) LIKE ? AND entity IS NOT NULL LIMIT 20",
+                "entity",
+            ),
+        ):
+            for row in conn.execute(sql, (like,)).fetchall():
+                if row[0]:
+                    candidates.append({"text": row[0], "type": stype})
+    finally:
+        conn.close()
+
+    # Deduplicate by lower-cased text, preserving first occurrence per source order
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for c in candidates:
+        key = c["text"].lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+
+    # Prefix matches first, then alphabetical within each group
+    unique.sort(
+        key=lambda c: (0 if c["text"].lower().startswith(q_lower) else 1, c["text"].lower())
+    )
+
+    return unique[:limit]

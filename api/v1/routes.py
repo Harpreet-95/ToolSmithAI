@@ -4610,6 +4610,21 @@ def search_filters_route(
     return {"status": "success", "data": get_search_filters()}
 
 
+@router.get("/search/suggestions")
+def search_suggestions_route(
+    q: str = Query(..., min_length=1, max_length=200, description="Partial search query"),
+    limit: int = Query(8, ge=1, le=20),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return autocomplete suggestions from real stored metadata.
+
+    All suggestions are drawn from profiling and dictionary tables —
+    nothing is hardcoded.  Prefix matches rank before contains matches.
+    """
+    from data.search_service import get_search_suggestions
+    return {"status": "success", "data": get_search_suggestions(q, limit)}
+
+
 _VALID_DICT_STATUSES = {"approved", "generated", "none"}
 
 
