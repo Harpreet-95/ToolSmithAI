@@ -33,6 +33,9 @@ _W_SEMANTIC_TYPE   = 50
 
 _MAX_CANDIDATES = 2000  # cap DB rows before Python scoring
 
+_PHRASE_BONUS               = 150  # awarded when the full query phrase appears verbatim in a key text field
+_MULTI_FIELD_BONUS_PER_FIELD = 25  # awarded per additional distinct field hit beyond the first
+
 
 # ---------------------------------------------------------------------------
 # Query tokenisation
@@ -155,6 +158,101 @@ def _score_column_row(row: dict, tokens: list[str]) -> int:
     s += _score_field(row.get("assigned_domain"), tokens, _W_ASSIGNED_DOMAIN)
     s += _score_field(row.get("assigned_entity"), tokens, _W_ASSIGNED_ENTITY)
     return s
+
+
+# ---------------------------------------------------------------------------
+# Detailed scoring — per-field labels, phrase check, multi-field bonus
+# ---------------------------------------------------------------------------
+
+_TABLE_FIELD_LABELS: dict[str, str] = {
+    "table_name":      "Table name",
+    "business_name":   "Business name",
+    "description":     "Dictionary definition",
+    "schema_name":     "Schema name",
+    "source_name":     "Source name",
+    "table_class":     "Table classification",
+    "dict_domain":     "Dictionary domain",
+    "assigned_domain": "Domain assignment",
+    "assigned_entity": "Entity assignment",
+}
+_COLUMN_FIELD_LABELS: dict[str, str] = {
+    "column_name":     "Column name",
+    "business_label":  "Business name",
+    "meaning":         "Dictionary definition",
+    "semantic_type":   "Semantic type",
+    "table_name":      "Table name",
+    "source_name":     "Source name",
+    "assigned_domain": "Domain assignment",
+    "assigned_entity": "Entity assignment",
+}
+
+# High-signal text fields searched for verbatim phrase presence
+_TABLE_PHRASE_FIELDS  = ["table_name", "business_name", "description"]
+_COLUMN_PHRASE_FIELDS = ["column_name", "business_label", "meaning"]
+
+
+def _score_table_detailed(row: dict, tokens: list[str]) -> tuple[int, list[str]]:
+    """Score a table row; return (base_score, match_reasons).
+
+    Arithmetic is identical to _score_table_row.  Additionally collects the
+    human-readable label for every field that contributed a non-zero score.
+    """
+    score = 0
+    reasons: list[str] = []
+    for field, weight in (
+        ("table_name",      _W_TABLE_NAME),
+        ("business_name",   _W_BUSINESS_NAME),
+        ("description",     _W_DESCRIPTION),
+        ("schema_name",     _W_SCHEMA_NAME),
+        ("source_name",     _W_SOURCE_NAME),
+        ("table_class",     _W_TABLE_CLASS),
+        ("dict_domain",     _W_DICT_DOMAIN),
+        ("assigned_domain", _W_ASSIGNED_DOMAIN),
+        ("assigned_entity", _W_ASSIGNED_ENTITY),
+    ):
+        fs = _score_field(row.get(field), tokens, weight)
+        if fs > 0:
+            score += fs
+            reasons.append(_TABLE_FIELD_LABELS[field])
+    return score, reasons
+
+
+def _score_column_detailed(row: dict, tokens: list[str]) -> tuple[int, list[str]]:
+    """Score a column row; return (base_score, match_reasons)."""
+    score = 0
+    reasons: list[str] = []
+    for field, weight in (
+        ("column_name",     _W_COLUMN_NAME),
+        ("business_label",  _W_BUSINESS_LABEL),
+        ("meaning",         _W_MEANING),
+        ("semantic_type",   _W_SEMANTIC_TYPE),
+        ("table_name",      _W_TABLE_NAME // 2),
+        ("source_name",     _W_SOURCE_NAME),
+        ("assigned_domain", _W_ASSIGNED_DOMAIN),
+        ("assigned_entity", _W_ASSIGNED_ENTITY),
+    ):
+        fs = _score_field(row.get(field), tokens, weight)
+        if fs > 0:
+            score += fs
+            reasons.append(_COLUMN_FIELD_LABELS[field])
+    return score, reasons
+
+
+def _check_phrase(row: dict, phrase_fields: list[str], query_phrase: str) -> bool:
+    """Return True if the lowercased query phrase appears verbatim in any phrase field."""
+    phrase = query_phrase.lower().strip()
+    if not phrase:
+        return False
+    for field in phrase_fields:
+        val = row.get(field)
+        if val and phrase in val.lower():
+            return True
+    return False
+
+
+def _multi_field_bonus(token_matched_field_count: int) -> int:
+    """Bonus for matching more than one distinct field with query tokens."""
+    return max(0, token_matched_field_count - 1) * _MULTI_FIELD_BONUS_PER_FIELD
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +476,21 @@ def search_metadata(
 
             for row in rows:
                 d = dict(row)
-                score = _score_table_row(d, expanded_tokens)
-                if score <= 0:
+                base_score, token_reasons = _score_table_detailed(d, expanded_tokens)
+                if base_score <= 0:
                     continue
+
+                reasons = list(token_reasons)
+                score   = base_score
+
+                # Exact phrase bonus — full query string found verbatim in a key field
+                if _check_phrase(d, _TABLE_PHRASE_FIELDS, q):
+                    score  += _PHRASE_BONUS
+                    reasons = ["Exact phrase match"] + reasons
+
+                # Multi-field bonus — breadth of token-matched evidence
+                score += _multi_field_bonus(len(token_reasons))
+
                 matched_f, matched_t = _best_match(d, expanded_tokens, _TABLE_FIELD_PRIORITY)
                 domain = d.get("assigned_domain") or d.get("dict_domain") or ""
                 entity = d.get("assigned_entity") or ""
@@ -397,6 +507,7 @@ def search_metadata(
                     "matched_field":     matched_f,
                     "matched_text":      matched_t,
                     "relevance_score":   score,
+                    "match_reasons":     reasons,
                     "short_description": (d.get("description") or "")[:200],
                     "domain":            domain,
                     "entity":            entity,
@@ -432,9 +543,21 @@ def search_metadata(
 
             for row in rows:
                 d = dict(row)
-                score = _score_column_row(d, expanded_tokens)
-                if score <= 0:
+                base_score, token_reasons = _score_column_detailed(d, expanded_tokens)
+                if base_score <= 0:
                     continue
+
+                reasons = list(token_reasons)
+                score   = base_score
+
+                # Exact phrase bonus
+                if _check_phrase(d, _COLUMN_PHRASE_FIELDS, q):
+                    score  += _PHRASE_BONUS
+                    reasons = ["Exact phrase match"] + reasons
+
+                # Multi-field bonus
+                score += _multi_field_bonus(len(token_reasons))
+
                 matched_f, matched_t = _best_match(d, expanded_tokens, _COLUMN_FIELD_PRIORITY)
                 domain = d.get("assigned_domain") or ""
                 entity = d.get("assigned_entity") or ""
@@ -451,6 +574,7 @@ def search_metadata(
                     "matched_field":     matched_f,
                     "matched_text":      matched_t,
                     "relevance_score":   score,
+                    "match_reasons":     reasons,
                     "short_description": (d.get("meaning") or "")[:200],
                     "domain":            domain,
                     "entity":            entity,
