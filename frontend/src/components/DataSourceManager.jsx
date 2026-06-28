@@ -912,7 +912,11 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     // Pipeline computed values (mirrors existing logic exactly)
     const hasSchema    = src?.last_snapshot_id != null || !!discSt.result
     const profSnap     = prof.data?.snapshot
-    const profComplete = profSnap?.status === 'COMPLETE'
+    const profComplete          = profSnap?.status === 'COMPLETE'
+    const profTables            = Array.isArray(prof.data?.tables) ? prof.data.tables : []
+    const profTablesStatistical = profTables.filter(t => t.profiling_depth === 'STATISTICAL' || t.profiling_depth === 'FULL').length
+    const profTablesStructOnly  = profTables.filter(t => t.profiling_depth === 'STRUCTURAL_ONLY').length
+    const hasStatisticalData    = profTablesStatistical > 0
     const dictTables   = Array.isArray(dict.tables) ? dict.tables : null
     const dictCount    = dictTables?.length ?? 0
     const dictApproved = dictTables?.filter(t => t.is_approved === 1 || t.is_approved === true).length ?? 0
@@ -1095,7 +1099,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       const profTablesProfiled = profSnap?.tables_profiled ?? 0
       const profTablesTotal    = profSnap?.tables_total ?? (kpiTables ?? 0)
       const profCoveragePct    = profTablesTotal > 0 ? Math.round(profTablesProfiled / profTablesTotal * 100) : null
-      const isStructuralOnly   = profSnap?.mode === 'STRUCTURAL_ONLY'
+      const isStructuralOnly   = profSnap?.mode?.toLowerCase() === 'structural_only'
 
       // ── Stage statuses ────────────────────────────────────────────────────────
       let sProfile = 'locked'
@@ -1235,13 +1239,16 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
       )
       const kpiDefs = [
-        // 1. Profile Coverage — from profSnap tables_profiled / tables_total
-        { label: 'Profile Coverage',
+        // 1. Structural Coverage — tables_profiled/tables_total (any depth); statistical breakdown from per-table data
+        { label: 'Structural Coverage',
           value: profTablesTotal > 0 ? `${profCoveragePct ?? 0}%` : (hasSchema && profSnap == null ? '—' : null),
           valueColor: profTablesTotal > 0 && !profComplete ? warn : null,
           lines: profTablesTotal > 0 ? [
-            { text: `${profTablesProfiled.toLocaleString()} / ${profTablesTotal.toLocaleString()} assets`, color: muted },
-            { text: isStructuralOnly ? 'Structural only — full profile needed' : profComplete ? 'Full profile complete' : 'Profiling in progress', color: isStructuralOnly ? warn : profComplete ? success : accent },
+            { text: `${profTablesProfiled.toLocaleString()} / ${profTablesTotal.toLocaleString()} tables have profile records`, color: muted },
+            ...(profComplete && profTables.length > 0
+              ? [{ text: `${profTablesStatistical} with statistics · ${profTablesStructOnly} structural-only`, color: hasStatisticalData ? success : warn }]
+              : []),
+            { text: isStructuralOnly ? 'Schema-only — no row statistics captured' : profComplete ? (hasStatisticalData ? 'Full profile run · statistics available' : 'Full profile run · no statistics captured') : 'Profiling in progress', color: isStructuralOnly ? warn : profComplete ? (hasStatisticalData ? success : warn) : accent },
           ] : hasSchema ? [{ text: 'Not yet profiled', color: warn }] : [],
           iconCol: '#38bdf8', tab: 'profile',
           icon: KI(<polyline key="a" points="22 12 18 12 15 21 9 3 6 12 2 12"/>) },
@@ -1622,18 +1629,49 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
 
         {/* ── Profile mode badge ── */}
-        {profSnap && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', borderRadius: '8px', background: profileDepth === 'FULL' ? `${success}10` : `${warn}10`, border: `1px solid ${profileDepth === 'FULL' ? success : warn}30` }}>
-            <span style={{ fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, color: profileDepth === 'FULL' ? success : warn, flexShrink: 0 }}>
-              {profileDepth === 'FULL' ? 'Full Profile' : 'Structural Only'}
-            </span>
-            <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>
-              {profileDepth === 'FULL'
-                ? 'Includes statistical analysis: row counts, null rates, distributions, and PII detection.'
-                : 'Schema structure only — no row-level statistics. Use Run Data Profile for full analysis.'}
-            </span>
-          </div>
-        )}
+        {profSnap && (() => {
+          const modeIsFull      = profSnap?.mode?.toLowerCase() === 'full'
+          const tableDataLoaded = profTables.length > 0
+          if (modeIsFull && tableDataLoaded && profTablesStatistical > 0 && profTablesStructOnly > 0) {
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', borderRadius: '8px', background: `${warn}10`, border: `1px solid ${warn}30` }}>
+                <span style={{ fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, color: warn, flexShrink: 0 }}>Partial Statistics</span>
+                <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>
+                  Full profiling run exists, but only {profTablesStatistical} table{profTablesStatistical !== 1 ? 's' : ''} have row-level statistics. {profTablesStructOnly} table{profTablesStructOnly !== 1 ? 's' : ''} are structural-only.
+                </span>
+              </div>
+            )
+          }
+          if (modeIsFull && tableDataLoaded && profTablesStatistical === 0) {
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', borderRadius: '8px', background: `${warn}10`, border: `1px solid ${warn}30` }}>
+                <span style={{ fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, color: warn, flexShrink: 0 }}>No Statistics Captured</span>
+                <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>
+                  Full profile mode was used, but no tables have row-level statistics. Tables may have exceeded row count limits.
+                </span>
+              </div>
+            )
+          }
+          if (modeIsFull) {
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', borderRadius: '8px', background: `${success}10`, border: `1px solid ${success}30` }}>
+                <span style={{ fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, color: success, flexShrink: 0 }}>Full Profile</span>
+                <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>
+                  Includes statistical analysis: row counts, null rates, distributions, and PII detection.
+                </span>
+              </div>
+            )
+          }
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', borderRadius: '8px', background: `${warn}10`, border: `1px solid ${warn}30` }}>
+              <span style={{ fontSize: '0.65rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, color: warn, flexShrink: 0 }}>Structural Only</span>
+              <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>
+                Schema structure only — no row-level statistics. Use Run Data Profile for full analysis.
+              </span>
+            </div>
+          )
+        })()
+        }
 
 
         <ColumnProfileExplorer
