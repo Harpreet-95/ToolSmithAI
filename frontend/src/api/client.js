@@ -893,10 +893,15 @@ export async function getProfileHistory(sourceId, token) {
   return parseResponse(res)
 }
 
-export async function getProfileReviewTasks(sourceId, token) {
-  const res = await fetch(`/v1/sources/${sourceId}/profile/review-tasks`, {
-    headers: AUTH_HEADERS(token),
-  })
+export async function getProfileReviewTasks(sourceId, token, params = {}) {
+  const qs = new URLSearchParams()
+  if (params.limit  != null) qs.set('limit',  params.limit)
+  if (params.offset != null) qs.set('offset', params.offset)
+  const query = qs.toString()
+  const res = await fetch(
+    `/v1/sources/${sourceId}/profile/review-tasks${query ? '?' + query : ''}`,
+    { headers: AUTH_HEADERS(token) },
+  )
   return parseResponse(res)
 }
 

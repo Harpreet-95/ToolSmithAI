@@ -787,3 +787,84 @@ def test_fully_governed_source_returns_no_tasks(db):
     result = get_profile_review_tasks(src, "u1")
     assert result["tasks"] == []
     assert result["summary"]["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 14. Pagination — limit / offset / total_count
+# ---------------------------------------------------------------------------
+
+def test_no_snapshot_includes_total_count_zero(db):
+    src = _src(db)
+    result = get_profile_review_tasks(src, "u1")
+    assert result is not None
+    assert result["total_count"] == 0
+
+
+def test_pagination_limit_slices_returned_tasks(db):
+    """limit=2 returns at most 2 tasks while total_count reflects the full set."""
+    src = _src(db)
+    snap = _snap(db, src)
+    # 3 tables, each unassigned for domain and entity → 6 MEDIUM tasks total
+    for name in ["Alpha", "Beta", "Gamma"]:
+        _table(db, snap, src, f"dbo.{name}")
+
+    result = get_profile_review_tasks(src, "u1", limit=2, offset=0)
+    assert result["total_count"] == 6
+    assert len(result["tasks"]) == 2
+
+
+def test_pagination_offset_pages_without_overlap(db):
+    """Consecutive pages cover disjoint task IDs and total_count is stable."""
+    src = _src(db)
+    snap = _snap(db, src)
+    for name in ["Alpha", "Beta", "Gamma"]:
+        _table(db, snap, src, f"dbo.{name}")
+
+    p0 = get_profile_review_tasks(src, "u1", limit=2, offset=0)
+    p1 = get_profile_review_tasks(src, "u1", limit=2, offset=2)
+    p2 = get_profile_review_tasks(src, "u1", limit=2, offset=4)
+
+    ids_p0 = {t["id"] for t in p0["tasks"]}
+    ids_p1 = {t["id"] for t in p1["tasks"]}
+    ids_p2 = {t["id"] for t in p2["tasks"]}
+    assert ids_p0.isdisjoint(ids_p1), "page 0 and page 1 must not overlap"
+    assert ids_p1.isdisjoint(ids_p2), "page 1 and page 2 must not overlap"
+    assert p0["total_count"] == p1["total_count"] == p2["total_count"] == 6
+
+
+def test_summary_always_reflects_all_tasks_regardless_of_page(db):
+    """summary counts must equal the global total even when offset skips most tasks."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.T")
+    _col(db, snap, src, "dbo.T", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    # Request a page well beyond the last task
+    result = get_profile_review_tasks(src, "u1", limit=1, offset=1000)
+    assert len(result["tasks"]) == 0
+    assert result["total_count"] >= 1
+    assert result["summary"]["critical"] == 1  # global count, not page count
+
+
+def test_summary_pii_pending_counts_unconfirmed_pii_tasks(db):
+    """pii_pending in summary counts PII tasks globally, not by page."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "Email", pii_heuristic=1, pii_confirmed=0)
+    _col(db, snap, src, "dbo.Customers", "Phone", pii_heuristic=1, pii_confirmed=0)
+    _col(db, snap, src, "dbo.Customers", "SSN",   pii_heuristic=1, pii_confirmed=1)  # confirmed → no task
+
+    result = get_profile_review_tasks(src, "u1")
+    assert result["summary"]["pii_pending"] == 2
+
+    result_page1 = get_profile_review_tasks(src, "u1", limit=1, offset=0)
+    assert result_page1["summary"]["pii_pending"] == 2  # still global
+
+def test_summary_pii_pending_zero_when_no_pii_tasks(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+
+    result = get_profile_review_tasks(src, "u1")
+    assert result["summary"]["pii_pending"] == 0

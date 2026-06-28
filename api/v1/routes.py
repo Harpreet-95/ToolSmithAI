@@ -4116,8 +4116,10 @@ def get_profile_history_route(
 def get_profile_review_tasks_route(
     source_id: int,
     user: AuthenticatedUser = Depends(require_jwt),
+    limit: int = Query(default=100, ge=1, le=500, description="Page size (1–500)"),
+    offset: int = Query(default=0, ge=0, description="Zero-based page start"),
 ) -> dict:
-    result = get_profile_review_tasks(source_id, user.user_id)
+    result = get_profile_review_tasks(source_id, user.user_id, limit=limit, offset=offset)
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}

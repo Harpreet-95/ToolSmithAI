@@ -1038,25 +1038,34 @@ def _make_review_task(
 
 def _review_summary(tasks: list[dict]) -> dict:
     counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-    open_count = completed_count = 0
+    open_count = completed_count = pii_pending = 0
     for t in tasks:
         if t["status"] == "OPEN":
             open_count += 1
             counts[t["severity"]] = counts.get(t["severity"], 0) + 1
+            if t["task_type"] == "Review PII Classification":
+                pii_pending += 1
         else:
             completed_count += 1
     return {
-        "total":     len(tasks),
-        "open":      open_count,
-        "critical":  counts["CRITICAL"],
-        "high":      counts["HIGH"],
-        "medium":    counts["MEDIUM"],
-        "low":       counts["LOW"],
-        "completed": completed_count,
+        "total":       len(tasks),
+        "open":        open_count,
+        "critical":    counts["CRITICAL"],
+        "high":        counts["HIGH"],
+        "medium":      counts["MEDIUM"],
+        "low":         counts["LOW"],
+        "completed":   completed_count,
+        "pii_pending": pii_pending,
     }
 
 
-def get_profile_review_tasks(source_id: int, user_id: str) -> dict | None:
+def get_profile_review_tasks(
+    source_id: int,
+    user_id: str,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict | None:
     """Return review tasks generated from the latest profiling snapshot.
 
     Tasks are derived entirely from stored profiling, dictionary, domain, and
@@ -1079,7 +1088,7 @@ def get_profile_review_tasks(source_id: int, user_id: str) -> dict | None:
             (source_id,),
         ).fetchone()
         if snap is None:
-            return {"tasks": [], "summary": _review_summary([])}
+            return {"tasks": [], "summary": _review_summary([]), "total_count": 0}
 
         snap_id: int = snap["id"]
         snap_ts: str = snap["created_at"] or ""
@@ -1305,4 +1314,6 @@ def get_profile_review_tasks(source_id: int, user_id: str) -> dict | None:
         conn.close()
 
     tasks.sort(key=lambda t: (_SEVERITY_ORDER.get(t["severity"], 99), t["asset_name"]))
-    return {"tasks": tasks, "summary": _review_summary(tasks)}
+    total_count = len(tasks)
+    summary = _review_summary(tasks)
+    return {"tasks": tasks[offset : offset + limit], "summary": summary, "total_count": total_count}

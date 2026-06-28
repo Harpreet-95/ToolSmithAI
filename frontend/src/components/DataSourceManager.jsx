@@ -32,6 +32,8 @@ const INITIAL_FORM = {
   trust_server_certificate: false,
 }
 
+const _REVIEW_PAGE_SIZE = 50
+
 function fmtRelative(iso) {
   if (!iso) return null
   const diff = Date.now() - new Date(iso).getTime()
@@ -117,6 +119,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [profileHistState,setProfileHistState]= useState({})  // { [srcId]: { loading, data, error } }
   const [fullProfState,    setFullProfState]    = useState({})  // { [id]: { loading, snapshotId, progress, total, error } }
   const [reviewTaskState,  setReviewTaskState]  = useState({})  // { [id]: { loading, data, error } }
+  const [reviewPage,       setReviewPage]       = useState({})  // { [id]: number } 0-indexed current page
   const [srcMenu,          setSrcMenu]          = useState({})  // { [id]: bool } per-source three-dot menu
   const [landingSearch,    setLandingSearch]    = useState('')    // landing-page search filter
 
@@ -162,7 +165,6 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           loadDictSummary(src.id)
           loadDomainSummary(src.id)
           loadEntitySummary(src.id)
-          loadReviewTasks(src.id)
         }
       })
     } catch (e) {
@@ -206,6 +208,9 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     }
     if (dsActiveTab === 'runs' && !profileHistState[id]?.data && !profileHistState[id]?.loading) {
       loadProfileHistory(id)
+    }
+    if (dsActiveTab === 'governance' && !reviewTaskState[id]?.data && !reviewTaskState[id]?.loading) {
+      loadReviewTasks(id, 0)
     }
   }, [dsActiveTab, dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -384,10 +389,17 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     }
   }
 
-  async function loadReviewTasks(id) {
-    setReviewTaskState(s => ({ ...s, [id]: { loading: true, data: null, error: null } }))
+  async function loadReviewTasks(id, page = 0) {
+    // Preserve existing data during page navigation so the list stays visible
+    // while the next page loads. For a first load, s[id] is undefined so data
+    // stays absent, which correctly triggers the loading spinner.
+    setReviewTaskState(s => ({ ...s, [id]: { ...(s[id] ?? {}), loading: true, error: null } }))
+    setReviewPage(s => ({ ...s, [id]: page }))
     try {
-      const resp = await getProfileReviewTasks(id, token)
+      const resp = await getProfileReviewTasks(id, token, {
+        limit:  _REVIEW_PAGE_SIZE,
+        offset: page * _REVIEW_PAGE_SIZE,
+      })
       setReviewTaskState(s => ({ ...s, [id]: { loading: false, data: resp?.data ?? null, error: null } }))
     } catch (e) {
       if (_is404(e)) {
@@ -893,8 +905,9 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     const domAsgn  = domAssignState[dsSelectedSourceId]  ?? {}
     const entAsgn  = entAssignState[dsSelectedSourceId]  ?? {}
     const profHist     = profileHistState[dsSelectedSourceId] ?? {}
-    const fullProfSt   = fullProfState[dsSelectedSourceId]   ?? {}
-    const reviewTaskSt = reviewTaskState[dsSelectedSourceId] ?? {}
+    const fullProfSt      = fullProfState[dsSelectedSourceId]   ?? {}
+    const reviewTaskSt    = reviewTaskState[dsSelectedSourceId] ?? {}
+    const reviewCurrentPage = reviewPage[dsSelectedSourceId] ?? 0
 
     // Pipeline computed values (mirrors existing logic exactly)
     const hasSchema    = src?.last_snapshot_id != null || !!discSt.result
@@ -1073,6 +1086,17 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       const entTotal      = entAssigned + (entUnassigned ?? 0)
       const entPct        = entTotal > 0 ? Math.round(entAssigned / entTotal * 100) : null
 
+      // ── Executive readiness KPIs ──────────────────────────────────────────────
+      const rtTasks           = reviewTaskSt.data?.tasks   ?? []
+      const rtSummary         = reviewTaskSt.data?.summary ?? null
+      const criticalTaskCount = rtSummary?.critical ?? rtTasks.filter(t => t.severity === 'CRITICAL').length
+      const openTaskCount     = rtSummary?.open     ?? rtTasks.length
+      const piiPendingCount   = rtSummary?.pii_pending ?? rtTasks.filter(t => t.task_type === 'Review PII Classification').length
+      const profTablesProfiled = profSnap?.tables_profiled ?? 0
+      const profTablesTotal    = profSnap?.tables_total ?? (kpiTables ?? 0)
+      const profCoveragePct    = profTablesTotal > 0 ? Math.round(profTablesProfiled / profTablesTotal * 100) : null
+      const isStructuralOnly   = profSnap?.mode === 'STRUCTURAL_ONLY'
+
       // ── Stage statuses ────────────────────────────────────────────────────────
       let sProfile = 'locked'
       if (hasSchema) {
@@ -1124,6 +1148,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
 
       // ── Next Best Action ──────────────────────────────────────────────────────
       const nba = (() => {
+        // Prerequisites — cannot be bypassed
         if (s1 !== 'done') return { urgency: 'ACTION REQUIRED', urgencyColor: danger,
           title: 'Test Connection',
           desc: 'Verify connectivity and credentials before the metadata pipeline can proceed.',
@@ -1132,33 +1157,63 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           title: 'Discover Schema',
           desc: 'Scan all schemas, tables, and columns to build the metadata foundation.',
           cta: 'Discover Schema', tab: 'schema', act: () => src && handleDiscoverAndProfile(src) }
+        // Priority 1: Critical review tasks block certification
+        if (criticalTaskCount > 0) return { urgency: 'ACTION REQUIRED', urgencyColor: danger,
+          title: 'Resolve Critical Review Tasks',
+          desc: `${criticalTaskCount} critical issue${criticalTaskCount !== 1 ? 's' : ''} require immediate attention before this source can be certified for governed use.`,
+          cta: 'Review Tasks', tab: 'governance', act: null }
+        // Priority 2: Dictionary must be generated and fully approved
         if (dictCount === 0) return { urgency: 'NEXT STEP', urgencyColor: accent,
           title: 'Generate Business Dictionary',
           desc: 'AI-generate business names and descriptions for all discovered tables.',
           cta: 'Generate Dictionary', tab: 'dictionary', act: () => handleGenerateDictionary(dsSelectedSourceId) }
-        if (dictCount > 0 && dictApproved === 0) return { urgency: 'ACTION REQUIRED', urgencyColor: danger,
+        if (dictApproved === 0) return { urgency: 'ACTION REQUIRED', urgencyColor: danger,
           title: 'Approve Business Dictionary',
-          desc: `${dictCount.toLocaleString()} business terms are awaiting approval. Governance cannot begin until dictionary review is complete.`,
+          desc: `${dictCount.toLocaleString()} business terms are awaiting approval. Governance cannot proceed until dictionary review is complete.`,
           cta: 'Review Dictionary', tab: 'dictionary', act: null }
-        if (dictCount > 0 && dictApproved < dictCount) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+        if (dictApproved < dictCount) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
           title: 'Complete Dictionary Review',
           desc: `${(dictCount - dictApproved).toLocaleString()} of ${dictCount.toLocaleString()} business terms are still pending approval.`,
           cta: 'Review Dictionary', tab: 'dictionary', act: null }
+        // Priority 3: Domain coverage gaps
         if (domAssigned === 0) return { urgency: 'NEXT STEP', urgencyColor: accent,
           title: 'Assign Business Domains',
           desc: 'Classify tables into business domains to enable ownership and governance.',
           cta: 'Generate Domains', tab: 'domains', act: () => handleGenerateDomains(dsSelectedSourceId) }
+        if (domPct != null && domPct < 100 && domTotal > 0) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+          title: 'Complete Domain Coverage',
+          desc: `${(domTotal - domAssigned).toLocaleString()} table${domTotal - domAssigned !== 1 ? 's' : ''} ${domTotal - domAssigned !== 1 ? 'have' : 'has'} no domain assignment. Current coverage: ${domPct}%.`,
+          cta: 'Assign Domains', tab: 'domains', act: null }
+        // Priority 4: Entity coverage gaps
         if (entAssigned === 0) return { urgency: 'NEXT STEP', urgencyColor: accent,
           title: 'Map Business Entities',
           desc: 'Identify the primary business object each table represents — Customer, Order, Product.',
           cta: 'Generate Entities', tab: 'entities', act: () => handleGenerateEntities(dsSelectedSourceId) }
+        if (entPct != null && entPct < 100 && entTotal > 0) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+          title: 'Complete Entity Coverage',
+          desc: `${(entTotal - entAssigned).toLocaleString()} table${entTotal - entAssigned !== 1 ? 's' : ''} ${entTotal - entAssigned !== 1 ? 'lack' : 'lacks'} entity classification. Current coverage: ${entPct}%.`,
+          cta: 'Map Entities', tab: 'entities', act: null }
+        // Priority 5: Full profile not yet run
+        if (!profComplete) return { urgency: 'NEXT STEP', urgencyColor: accent,
+          title: 'Run Data Profile',
+          desc: 'Profile data assets to uncover column statistics, PII risk, and data quality issues.',
+          cta: 'Run Profile', tab: 'profile', act: null }
+        if (isStructuralOnly) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+          title: 'Run Full Data Profile',
+          desc: 'Current profile is structural only. Run full profiling to capture column metrics and enable PII detection.',
+          cta: 'Run Full Profile', tab: 'profile', act: null }
+        // Remaining open tasks and governance
+        if (openTaskCount > 0) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
+          title: 'Review Open Tasks',
+          desc: `${openTaskCount} review task${openTaskCount !== 1 ? 's' : ''} ${openTaskCount !== 1 ? 'are' : 'is'} open. Resolve before certifying this source.`,
+          cta: 'Review Tasks', tab: 'governance', act: null }
         if (totalPending > 0) return { urgency: 'ATTENTION NEEDED', urgencyColor: warn,
           title: 'Review Governance Items',
           desc: `${totalPending} governance item${totalPending !== 1 ? 's' : ''} require review before this source can be certified.`,
           cta: 'Review Governance', tab: 'governance', act: null }
         return { urgency: 'COMPLETE', urgencyColor: success,
-          title: 'Pipeline Complete',
-          desc: 'All metadata intelligence steps are complete. This source is ready for governed use.',
+          title: 'Source Ready for Governed Use',
+          desc: 'All metadata intelligence and governance steps are complete. This source is certified for governed use.',
           cta: null, tab: null, act: null }
       })()
 
@@ -1175,57 +1230,69 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
         return a.ts ? -1 : b.ts ? 1 : 0
       })
 
-      // ── KPI card definitions ──────────────────────────────────────────────────
+      // ── KPI card definitions (Executive readiness view) ───────────────────────
       const KI = (...paths) => (
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{paths}</svg>
       )
       const kpiDefs = [
-        { label: 'Schemas',
-          value: kpiSchemas,
-          lines: sc.data?.schemas?.length > 0 ? [{ text: sc.data.schemas.map(s => s.schema_name).join(', '), color: muted }] : [],
-          iconCol: '#38bdf8',
-          icon: KI(<polygon key="a" points="12 2 2 7 12 12 22 7 12 2"/>,<polyline key="b" points="2 17 12 22 22 17"/>,<polyline key="c" points="2 12 12 17 22 12"/>) },
-        { label: 'Tables',
-          value: kpiTables,
-          lines: kpiViews != null && kpiViews > 0 ? [{ text: `+ ${kpiViews} views`, color: muted }] : [],
-          iconCol: '#10b981',
-          icon: KI(<rect key="a" x="3" y="3" width="18" height="18" rx="2"/>,<path key="b" d="M3 9h18M3 15h18M9 3v18"/>) },
-        { label: 'Columns',
-          value: kpiSchemas != null ? (profComplete ? (kpiCols ?? 0).toLocaleString() : '—') : null,
-          valueColor: kpiSchemas != null && (!profComplete || (kpiCols ?? 0) === 0) ? muted : null,
-          lines: kpiSchemas != null
-            ? (!profComplete
-                ? [{ text: 'Pending Profiling', color: warn }]
-                : (kpiCols ?? 0) > 0
-                  ? [{ text: 'Across all tables', color: muted }]
-                  : [{ text: 'No columns counted', color: muted }])
-            : [],
-          iconCol: '#a78bfa',
-          icon: KI(<line key="a" x1="18" y1="20" x2="18" y2="10"/>,<line key="b" x1="12" y1="20" x2="12" y2="4"/>,<line key="c" x1="6" y1="20" x2="6" y2="14"/>) },
-        { label: 'Business Terms',
-          value: dictCount > 0 ? `${dictPct}%` : null,
-          valueColor: dictCount > 0 && dictPct === 0 ? warn : null,
-          lines: dictCount > 0 ? [
-            { text: `${dictApproved.toLocaleString()} / ${dictCount.toLocaleString()} Approved`, color: muted },
-            { text: dictCount - dictApproved > 0 ? `${(dictCount - dictApproved).toLocaleString()} awaiting approval` : 'All approved', color: dictCount - dictApproved > 0 ? warn : success },
+        // 1. Profile Coverage — from profSnap tables_profiled / tables_total
+        { label: 'Profile Coverage',
+          value: profTablesTotal > 0 ? `${profCoveragePct ?? 0}%` : (hasSchema && profSnap == null ? '—' : null),
+          valueColor: profTablesTotal > 0 && !profComplete ? warn : null,
+          lines: profTablesTotal > 0 ? [
+            { text: `${profTablesProfiled.toLocaleString()} / ${profTablesTotal.toLocaleString()} assets`, color: muted },
+            { text: isStructuralOnly ? 'Structural only — full profile needed' : profComplete ? 'Full profile complete' : 'Profiling in progress', color: isStructuralOnly ? warn : profComplete ? success : accent },
+          ] : hasSchema ? [{ text: 'Not yet profiled', color: warn }] : [],
+          iconCol: '#38bdf8', tab: 'profile',
+          icon: KI(<polyline key="a" points="22 12 18 12 15 21 9 3 6 12 2 12"/>) },
+        // 2. PII Pending Review — tasks where task_type === 'Review PII Classification'
+        { label: 'PII Pending Review',
+          value: reviewTaskSt.data != null ? piiPendingCount : null,
+          valueColor: piiPendingCount > 0 ? danger : null,
+          lines: reviewTaskSt.data != null ? [
+            { text: piiPendingCount > 0 ? 'Classification review required' : 'No PII tasks pending', color: piiPendingCount > 0 ? danger : success },
           ] : [],
-          iconCol: '#f59e0b',
+          iconCol: '#ef4444', tab: piiPendingCount > 0 ? 'governance' : null,
+          icon: KI(<path key="a" d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,<line key="b" x1="12" y1="8" x2="12" y2="12"/>,<line key="c" x1="12" y1="16" x2="12.01" y2="16"/>) },
+        // 3. Assets Requiring Review — total open review tasks from summary.open
+        { label: 'Assets Requiring Review',
+          value: reviewTaskSt.data != null ? openTaskCount : null,
+          valueColor: openTaskCount > 0 ? (criticalTaskCount > 0 ? danger : warn) : null,
+          lines: reviewTaskSt.data != null ? [
+            ...(criticalTaskCount > 0 ? [{ text: `${criticalTaskCount} critical · action required`, color: danger }] : []),
+            { text: openTaskCount > 0 ? 'Review in Governance tab' : 'All tasks resolved', color: openTaskCount > 0 ? warn : success },
+          ] : [],
+          iconCol: '#f59e0b', tab: openTaskCount > 0 ? 'governance' : null,
+          icon: KI(<path key="a" d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>,<line key="b" x1="12" y1="9" x2="12" y2="13"/>,<line key="c" x1="12" y1="17" x2="12.01" y2="17"/>) },
+        // 4. Dictionary Approval — approved / total and %
+        { label: 'Dictionary Approval',
+          value: dictCount > 0 ? `${dictPct}%` : null,
+          valueColor: dictCount > 0 && dictPct < 100 ? (dictPct === 0 ? danger : warn) : null,
+          lines: dictCount > 0 ? [
+            { text: `${dictApproved.toLocaleString()} / ${dictCount.toLocaleString()} approved`, color: muted },
+            { text: dictApproved === dictCount ? 'All terms approved' : `${(dictCount - dictApproved).toLocaleString()} pending approval`, color: dictApproved === dictCount ? success : warn },
+          ] : [],
+          iconCol: '#f59e0b', tab: 'dictionary',
           icon: KI(<path key="a" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>,<path key="b" d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>) },
+        // 5. Domain Coverage — assigned / total and %
         { label: 'Domain Coverage',
-          value: domAssigned > 0 ? domAssigned : null,
+          value: domSummary != null ? (domPct != null ? `${domPct}%` : '0%') : null,
+          valueColor: domSummary != null && (domPct == null || domPct < 80) ? warn : null,
           lines: domSummary != null ? [
-            { text: `${domUnassigned ?? 0} Remaining`, color: muted },
-            { text: domPct != null ? `${domPct}% Coverage` : null, color: domPct != null && domPct >= 80 ? success : warn },
-          ].filter(l => l.text) : [],
-          iconCol: '#6366f1',
+            { text: `${domAssigned.toLocaleString()} / ${domTotal.toLocaleString()} tables assigned`, color: muted },
+            { text: domPct === 100 ? 'Full coverage' : `${(domTotal - domAssigned).toLocaleString()} tables unassigned`, color: domPct === 100 ? success : warn },
+          ] : [],
+          iconCol: '#6366f1', tab: 'domains',
           icon: KI(<circle key="a" cx="18" cy="5" r="3"/>,<circle key="b" cx="6" cy="12" r="3"/>,<circle key="c" cx="18" cy="19" r="3"/>,<line key="d" x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>,<line key="e" x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>) },
+        // 6. Entity Coverage — assigned / total and %
         { label: 'Entity Coverage',
-          value: entAssigned > 0 ? entAssigned : null,
+          value: entSummary != null ? (entPct != null ? `${entPct}%` : '0%') : null,
+          valueColor: entSummary != null && (entPct == null || entPct < 80) ? warn : null,
           lines: entSummary != null ? [
-            { text: `${entUnassigned ?? 0} Remaining`, color: muted },
-            { text: entPct != null ? `${entPct}% Coverage` : null, color: entPct != null && entPct >= 80 ? success : warn },
-          ].filter(l => l.text) : [],
-          iconCol: '#ec4899',
+            { text: `${entAssigned.toLocaleString()} / ${entTotal.toLocaleString()} tables mapped`, color: muted },
+            { text: entPct === 100 ? 'Full coverage' : `${(entTotal - entAssigned).toLocaleString()} tables unmapped`, color: entPct === 100 ? success : warn },
+          ] : [],
+          iconCol: '#ec4899', tab: 'entities',
           icon: KI(<path key="a" d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>,<circle key="b" cx="9" cy="7" r="4"/>,<path key="c" d="M23 21v-2a4 4 0 0 0-3-3.87"/>,<path key="d" d="M16 3.13a4 4 0 0 1 0 7.75"/>) },
       ].filter(k => k.value != null)
 
@@ -1242,6 +1309,46 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           icon: <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> },
       ].filter(r => r.value != null)
 
+      // ── Governance Readiness checks ───────────────────────────────────────────
+      const rcStatusCol = { ok: success, warn, error: danger, locked: muted }
+      const readinessChecks = [
+        { key: 'profile', label: 'Profile',
+          status: !hasSchema ? 'locked' : profComplete && !isStructuralOnly ? 'ok' : profComplete ? 'warn' : 'warn',
+          detail: !hasSchema ? 'No schema' : profComplete && !isStructuralOnly ? `${profCoveragePct ?? 100}%` : profComplete ? 'Structural only' : 'Not run',
+          tab: 'profile' },
+        { key: 'pii', label: 'PII',
+          status: reviewTaskSt.data == null ? 'locked' : piiPendingCount === 0 ? 'ok' : 'error',
+          detail: reviewTaskSt.data == null ? '—' : piiPendingCount === 0 ? 'Clear' : `${piiPendingCount} pending`,
+          tab: 'governance' },
+        { key: 'tasks', label: 'Open Tasks',
+          status: reviewTaskSt.data == null ? 'locked' : openTaskCount === 0 ? 'ok' : criticalTaskCount > 0 ? 'error' : 'warn',
+          detail: reviewTaskSt.data == null ? '—' : openTaskCount === 0 ? 'All clear' : `${openTaskCount}${criticalTaskCount > 0 ? ` (${criticalTaskCount} crit)` : ''}`,
+          tab: 'governance' },
+        { key: 'dict', label: 'Dictionary',
+          status: dictCount === 0 ? 'locked' : dictApproved === dictCount ? 'ok' : dictApproved === 0 ? 'error' : 'warn',
+          detail: dictCount === 0 ? 'Not generated' : `${dictPct}%`,
+          tab: 'dictionary' },
+        { key: 'domains', label: 'Domains',
+          status: domSummary == null ? 'locked' : domPct === 100 ? 'ok' : domPct != null && domPct >= 50 ? 'warn' : 'error',
+          detail: domSummary == null ? '—' : domPct != null ? `${domPct}%` : '0%',
+          tab: 'domains' },
+        { key: 'entities', label: 'Entities',
+          status: entSummary == null ? 'locked' : entPct === 100 ? 'ok' : entPct != null && entPct >= 50 ? 'warn' : 'error',
+          detail: entSummary == null ? '—' : entPct != null ? `${entPct}%` : '0%',
+          tab: 'entities' },
+      ]
+      const readinessOk      = readinessChecks.filter(c => c.status === 'ok').length
+      const readinessBlocked = readinessChecks.some(c => c.status === 'error')
+      const readinessOverall = readinessBlocked ? 'blocked' : readinessOk === readinessChecks.length ? 'ready' : 'in-progress'
+      const readinessColor   = readinessOverall === 'ready' ? success : readinessOverall === 'blocked' ? danger : warn
+      const readinessLabel   = readinessOverall === 'ready' ? 'Source Ready' : readinessOverall === 'blocked' ? 'Blocked' : 'In Progress'
+      const rcStatusIcon = {
+        ok:     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>,
+        warn:   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+        error:  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+        locked: <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
+      }
+
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
@@ -1249,7 +1356,9 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             {kpiDefs.length > 0 && (
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(kpiDefs.length, 6)}, 1fr)`, gap: '14px' }}>
                 {kpiDefs.map(k => (
-                  <div key={k.label} style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '14px 14px 12px' }}>
+                  <div key={k.label}
+                    onClick={k.tab ? () => setDsActiveTab(k.tab) : undefined}
+                    style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '14px 14px 12px', cursor: k.tab ? 'pointer' : 'default' }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                       <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 'calc(100% - 32px)' }}>{k.label}</span>
                       <div style={{ width: '26px', height: '26px', borderRadius: '7px', background: `${k.iconCol}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
@@ -1264,6 +1373,36 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                 ))}
               </div>
             )}
+
+            {/* Governance Readiness */}
+            <div style={{ background: surface, border: `1px solid ${readinessColor}40`, borderLeft: `3px solid ${readinessColor}`, borderRadius: '10px', padding: '14px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={readinessColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Governance Readiness</span>
+                  <span style={{ fontSize: '0.65rem', color: muted, fontFamily: FONT }}>{readinessOk} / {readinessChecks.length} complete</span>
+                </div>
+                <span style={{ padding: '3px 12px', borderRadius: '20px', fontSize: '0.62rem', fontWeight: '800', letterSpacing: '0.08em', textTransform: 'uppercase', background: `${readinessColor}18`, color: readinessColor, border: `1px solid ${readinessColor}40`, fontFamily: FONT }}>
+                  {readinessLabel}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '8px' }}>
+                {readinessChecks.map(check => {
+                  const col = rcStatusCol[check.status] ?? muted
+                  return (
+                    <div key={check.key}
+                      onClick={check.tab ? () => setDsActiveTab(check.tab) : undefined}
+                      style={{ background: `${col}08`, border: `1px solid ${col}30`, borderRadius: '8px', padding: '10px 10px 8px', cursor: check.tab ? 'pointer' : 'default' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
+                        <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>{check.label}</span>
+                        <span style={{ color: col, display: 'flex', alignItems: 'center' }}>{rcStatusIcon[check.status]}</span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: col, fontWeight: '600', fontFamily: FONT, lineHeight: 1.3 }}>{check.detail}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
 
             {/* Metadata Intelligence Pipeline */}
             <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px 16px 14px' }}>
@@ -1470,12 +1609,13 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     const profileDepth   = profSnap?.mode
     const reviewSummary  = reviewTaskSt.data?.summary ?? null
     const reviewTasks    = reviewTaskSt.data?.tasks   ?? []
+    const reviewTotal    = reviewTaskSt.data?.total_count ?? 0
     const SEV_COLOR      = { CRITICAL: danger, HIGH: warn, MEDIUM: '#38bdf8', LOW: muted }
     const SEV_BG         = { CRITICAL: `${danger}12`, HIGH: `${warn}12`, MEDIUM: '#38bdf812', LOW: `${muted}10` }
 
     function handleOpenReview(task) {
       const tab = task.nav_target?.tab
-      if (tab && tab !== 'profile' && setDsActiveTab) setDsActiveTab(tab)
+      if (tab && tab !== 'governance' && setDsActiveTab) setDsActiveTab(tab)
     }
 
     const profileTab = (
@@ -1495,91 +1635,6 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           </div>
         )}
 
-        {/* ── Profile Review Summary ── */}
-        {reviewSummary && (
-          <div style={{ ...card({ padding: '14px 18px' }) }}>
-            <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Profile Review Summary</div>
-            <div style={{ display: 'flex', gap: '28px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              {[
-                { label: 'Open Tasks', value: reviewSummary.open,      color: reviewSummary.open > 0 ? warn : success },
-                { label: 'Critical',   value: reviewSummary.critical,  color: reviewSummary.critical > 0 ? danger : muted },
-                { label: 'High',       value: reviewSummary.high,      color: reviewSummary.high > 0 ? warn : muted },
-                { label: 'Medium',     value: reviewSummary.medium,    color: reviewSummary.medium > 0 ? '#38bdf8' : muted },
-                { label: 'Low',        value: reviewSummary.low,       color: muted },
-                { label: 'Completed',  value: reviewSummary.completed, color: success },
-              ].map(({ label, value, color }) => (
-                <div key={label}>
-                  <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '3px' }}>{label}</div>
-                  <div style={{ fontSize: '1.25rem', fontWeight: '700', color, fontFamily: FONT, lineHeight: 1 }}>{value}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-        {reviewTaskSt.loading && !reviewSummary && (
-          <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}>
-            <Spinner size={12} /> Loading review tasks…
-          </div>
-        )}
-
-        {/* ── Review Tasks ── */}
-        {(reviewTaskSt.data != null) && (
-          <div style={card({ padding: '0' })}>
-            <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Review Tasks</span>
-              {reviewTasks.length > 0 && (
-                <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{reviewTasks.length} task{reviewTasks.length !== 1 ? 's' : ''}</span>
-              )}
-            </div>
-
-            {reviewTasks.length === 0 && (
-              <div style={{ padding: '28px 18px', textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT }}>
-                No review tasks generated.
-              </div>
-            )}
-
-            {reviewTasks.length > 0 && (
-              <div>
-                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(sev => {
-                  const sevTasks = reviewTasks.filter(t => t.severity === sev)
-                  if (sevTasks.length === 0) return null
-                  return (
-                    <div key={sev}>
-                      <div style={{ padding: '6px 18px', background: SEV_BG[sev], borderBottom: `1px solid ${border}20`, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: SEV_COLOR[sev], letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT }}>{sev}</span>
-                        <span style={{ fontSize: '0.65rem', color: muted, fontFamily: FONT }}>{sevTasks.length} task{sevTasks.length !== 1 ? 's' : ''}</span>
-                      </div>
-                      {sevTasks.map((task, i) => (
-                        <div key={task.id} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 1fr auto', gap: '0', padding: '10px 18px', borderBottom: `1px solid ${border}15`, background: i % 2 === 0 ? 'transparent' : `${bg}50`, alignItems: 'start' }}>
-                          <div>
-                            <span style={{ fontSize: '0.72rem', fontWeight: '600', color: SEV_COLOR[sev], fontFamily: FONT }}>{task.task_type}</span>
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                            <span style={{ fontSize: '0.78rem', color: text, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {task.column_name ? `${task.table_fqn}.${task.column_name}` : task.table_fqn}
-                            </span>
-                            <span style={{ fontSize: '0.68rem', color: muted, fontFamily: FONT, textTransform: 'capitalize' }}>{task.asset_type}</span>
-                          </div>
-                          <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT, paddingRight: '12px', lineHeight: 1.45 }}>
-                            {task.reason}
-                          </div>
-                          <button
-                            onClick={() => handleOpenReview(task)}
-                            style={{ padding: '4px 12px', borderRadius: '6px', background: 'transparent', border: `1px solid ${border}`, color: accent, fontSize: '0.73rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}
-                            onMouseEnter={e => e.currentTarget.style.background = accentSoft}
-                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                          >
-                            Open Review →
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        )}
 
         <ColumnProfileExplorer
           C={C}
@@ -1748,7 +1803,115 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
 
     const governanceTab = (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        {s6 === 'locked' && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Governance not available yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Complete the pipeline through Entities before governance rules can be generated.</p></div>)}
+
+        {/* ── Quality Review Tasks (from profiling) ── */}
+        {reviewSummary && (
+          <div style={{ ...card({ padding: '14px 18px' }) }}>
+            <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Quality Review Summary</div>
+            <div style={{ display: 'flex', gap: '28px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              {[
+                { label: 'Open Tasks', value: reviewSummary.open,      color: reviewSummary.open > 0 ? warn : success },
+                { label: 'Critical',   value: reviewSummary.critical,  color: reviewSummary.critical > 0 ? danger : muted },
+                { label: 'High',       value: reviewSummary.high,      color: reviewSummary.high > 0 ? warn : muted },
+                { label: 'Medium',     value: reviewSummary.medium,    color: reviewSummary.medium > 0 ? '#38bdf8' : muted },
+                { label: 'Low',        value: reviewSummary.low,       color: muted },
+                { label: 'Completed',  value: reviewSummary.completed, color: success },
+              ].map(({ label, value, color }) => (
+                <div key={label}>
+                  <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '3px' }}>{label}</div>
+                  <div style={{ fontSize: '1.25rem', fontWeight: '700', color, fontFamily: FONT, lineHeight: 1 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {reviewTaskSt.loading && !reviewSummary && (
+          <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}>
+            <Spinner size={12} /> Loading review tasks…
+          </div>
+        )}
+
+        {(reviewTaskSt.data != null) && (
+          <div style={card({ padding: '0' })}>
+            <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Quality Review Tasks</span>
+              {reviewTotal > 0 && (
+                <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>{reviewTotal.toLocaleString()} task{reviewTotal !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+
+            {reviewTasks.length === 0 && (
+              <div style={{ padding: '28px 18px', textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT }}>
+                No review tasks generated.
+              </div>
+            )}
+
+            {reviewTasks.length > 0 && (
+              <div>
+                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(sev => {
+                  const sevTasks = reviewTasks.filter(t => t.severity === sev)
+                  if (sevTasks.length === 0) return null
+                  return (
+                    <div key={sev}>
+                      <div style={{ padding: '6px 18px', background: SEV_BG[sev], borderBottom: `1px solid ${border}20`, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.62rem', fontWeight: '800', color: SEV_COLOR[sev], letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT }}>{sev}</span>
+                        <span style={{ fontSize: '0.65rem', color: muted, fontFamily: FONT }}>{sevTasks.length} task{sevTasks.length !== 1 ? 's' : ''}</span>
+                      </div>
+                      {sevTasks.map((task, i) => (
+                        <div key={task.id} style={{ display: 'grid', gridTemplateColumns: '140px 1fr 1fr auto', gap: '0', padding: '10px 18px', borderBottom: `1px solid ${border}15`, background: i % 2 === 0 ? 'transparent' : `${bg}50`, alignItems: 'start' }}>
+                          <div>
+                            <span style={{ fontSize: '0.72rem', fontWeight: '600', color: SEV_COLOR[sev], fontFamily: FONT }}>{task.task_type}</span>
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                            <span style={{ fontSize: '0.78rem', color: text, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {task.column_name ? `${task.table_fqn}.${task.column_name}` : task.table_fqn}
+                            </span>
+                            <span style={{ fontSize: '0.68rem', color: muted, fontFamily: FONT, textTransform: 'capitalize' }}>{task.asset_type}</span>
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT, paddingRight: '12px', lineHeight: 1.45 }}>
+                            {task.reason}
+                          </div>
+                          <button
+                            onClick={() => handleOpenReview(task)}
+                            style={{ padding: '4px 12px', borderRadius: '6px', background: 'transparent', border: `1px solid ${border}`, color: accent, fontSize: '0.73rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' }}
+                            onMouseEnter={e => e.currentTarget.style.background = accentSoft}
+                            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                          >
+                            Open Review →
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })}
+                {reviewTotal > _REVIEW_PAGE_SIZE && (
+                  <div style={{ padding: '10px 18px', borderTop: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+                    <button
+                      onClick={() => loadReviewTasks(dsSelectedSourceId, reviewCurrentPage - 1)}
+                      disabled={reviewCurrentPage === 0 || reviewTaskSt.loading}
+                      style={{ ...btnGhost({ padding: '5px 14px', fontSize: '0.76rem' }), color: reviewCurrentPage === 0 ? `${muted}50` : textSec, cursor: reviewCurrentPage === 0 ? 'not-allowed' : 'pointer' }}
+                    >
+                      ← Previous
+                    </button>
+                    <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>
+                      {reviewCurrentPage * _REVIEW_PAGE_SIZE + 1}–{Math.min((reviewCurrentPage + 1) * _REVIEW_PAGE_SIZE, reviewTotal)} of {reviewTotal.toLocaleString()}
+                      {reviewTaskSt.loading && <Spinner size={10} style={{ marginLeft: '6px' }} />}
+                    </span>
+                    <button
+                      onClick={() => loadReviewTasks(dsSelectedSourceId, reviewCurrentPage + 1)}
+                      disabled={(reviewCurrentPage + 1) * _REVIEW_PAGE_SIZE >= reviewTotal || reviewTaskSt.loading}
+                      style={{ ...btnGhost({ padding: '5px 14px', fontSize: '0.76rem' }), color: (reviewCurrentPage + 1) * _REVIEW_PAGE_SIZE >= reviewTotal ? `${muted}50` : textSec, cursor: (reviewCurrentPage + 1) * _REVIEW_PAGE_SIZE >= reviewTotal ? 'not-allowed' : 'pointer' }}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {s6 === 'locked' && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Governance rules not available yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Complete the pipeline through Entities before governance rules can be generated.</p></div>)}
         {s6 !== 'locked' && (
           <>
             {govSection({ title: 'Domain Refinements', pendingCount: pendingRefs, loadFn: () => loadRefinements(dsSelectedSourceId), busyFlag: govBusy, analyzeBtn: <button onClick={() => handleAnalyzeRefinements(dsSelectedSourceId)} disabled={govBusy} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: !govBusy ? warn : `${muted}50`, borderColor: !govBusy ? `${warn}55` : `${border}50`, cursor: !govBusy ? 'pointer' : 'not-allowed' }}>{gs.analyzing ? 'Analyzing…' : 'Analyze'}</button>, analyzeResult: gs.analyzeResult, error: gs.error, rules: gs.refinements, approveFn: id => handleApproveRefinement(dsSelectedSourceId, id), rejectFn: id => handleRejectRefinement(dsSelectedSourceId, id), actState: refinementActionState })}
