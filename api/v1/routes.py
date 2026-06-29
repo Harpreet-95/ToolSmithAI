@@ -123,6 +123,13 @@ from data.knowledge_graph_service import (
     trace_business_path,
     knowledge_graph_summary,
 )
+from data.lineage_service import (
+    get_upstream_lineage,
+    get_downstream_lineage,
+    impact_analysis,
+    critical_asset_analysis,
+    lineage_summary,
+)
 from data.dictionary_service import (
     approve_column_dictionary,
     approve_table_dictionary,
@@ -5232,6 +5239,98 @@ def knowledge_assets_route(
     except Exception:
         logger.exception("knowledge_assets_route failed for source_id=%s", source_id)
         return JSONResponse(status_code=500, content=build_error_response("Failed to find business assets."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Business Lineage & Impact Analysis  (/v1/sources/{id}/lineage/...)
+# ---------------------------------------------------------------------------
+
+@router.get("/sources/{source_id}/lineage/summary")
+def lineage_summary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = lineage_summary(source_id, user.user_id)
+    except Exception:
+        logger.exception("lineage_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve lineage summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/lineage/upstream/{table_fqn:path}")
+def lineage_upstream_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_upstream_lineage(source_id, user.user_id, table_fqn)
+    except Exception:
+        logger.exception(
+            "lineage_upstream_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve upstream lineage."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/lineage/downstream/{table_fqn:path}")
+def lineage_downstream_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_downstream_lineage(source_id, user.user_id, table_fqn)
+    except Exception:
+        logger.exception(
+            "lineage_downstream_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve downstream lineage."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/lineage/impact/{table_fqn:path}")
+def lineage_impact_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+    column: str | None = Query(default=None, description="Optional column name to scope the impact analysis"),
+) -> dict:
+    try:
+        result = impact_analysis(source_id, user.user_id, table_fqn, column_name=column)
+    except Exception:
+        logger.exception(
+            "lineage_impact_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to run impact analysis."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/lineage/critical-assets")
+def lineage_critical_assets_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = critical_asset_analysis(source_id, user.user_id)
+    except Exception:
+        logger.exception("lineage_critical_assets_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to analyse critical assets."))
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}
