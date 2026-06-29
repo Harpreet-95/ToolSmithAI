@@ -5252,6 +5252,78 @@ def governance_assignment_summary(
     return {"status": "success", "data": summary}
 
 
+# ---------------------------------------------------------------------------
+# Decision Intelligence — Phase 5
+# ---------------------------------------------------------------------------
+
+@router.get("/governance/explanation")
+def governance_get_explanation(
+    object_type:   str        = Query(..., description="Governed object type id"),
+    source_id:     int | None = Query(None),
+    table_fqn:     str | None = Query(None),
+    column_name:   str | None = Query(None),
+    rule_id:       int | None = Query(None),
+    suggestion_id: int | None = Query(None),
+    tool_id:       str | None = Query(None),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return a structured explanation for one governance decision.
+
+    Answers: why does this need review, why was it auto-approved or
+    blocked, what should the steward do next, and how risky is it.
+
+    Required query parameters vary by object_type (same as /governance/profile):
+      dict.table        — source_id, table_fqn
+      dict.column       — source_id, table_fqn, column_name
+      domain.rule        — rule_id
+      entity.rule        — rule_id
+      domain.refinement  — suggestion_id
+      tool.engine        — tool_id
+      pii.confirmation   — source_id, table_fqn, column_name
+    """
+    if object_type not in _VALID_GOVERNED_TYPES:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Unknown object_type '{object_type}'. "
+                f"Valid types: {', '.join(sorted(_VALID_GOVERNED_TYPES))}"
+            ),
+        )
+    from data.governance_service import get_governance_explanation
+    explanation = get_governance_explanation(
+        object_type   = object_type,
+        source_id     = source_id,
+        table_fqn     = table_fqn,
+        column_name   = column_name,
+        rule_id       = rule_id,
+        suggestion_id = suggestion_id,
+        tool_id       = tool_id,
+    )
+    if explanation is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Governed object not found."),
+        )
+    return {"status": "success", "data": explanation.to_dict()}
+
+
+@router.get("/governance/readiness")
+def governance_get_readiness(
+    source_id: int | None = Query(None, description="Scope open-assignment count to one source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return overall governance health.
+
+    Includes: governance_score (0-100), objects ready/pending/blocked/escalated,
+    high_risk_pct, auto_approval_pct, avg_confidence, open_assignments.
+    """
+    from data.governance_service import governance_readiness_summary
+    summary = governance_readiness_summary(source_id=source_id)
+    return {"status": "success", "data": summary}
+
+
 _VALID_DICT_STATUSES = {"approved", "generated", "none"}
 
 

@@ -2536,3 +2536,555 @@ def assignment_summary(
             for k, v in sorted(steward_map.items(), key=lambda x: -x[1]["open"])
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Decision Intelligence — Phase 5
+# ---------------------------------------------------------------------------
+
+class NextAction(str, Enum):
+    """
+    Recommended next action for a governed object.
+    Computed purely from the GovernanceProfile — no DB calls.
+    """
+    APPROVE             = "APPROVE"
+    REJECT              = "REJECT"
+    REVIEW_PII          = "REVIEW_PII"
+    REVIEW_DICTIONARY   = "REVIEW_DICTIONARY"
+    REVIEW_DOMAIN       = "REVIEW_DOMAIN"
+    REVIEW_ENTITY       = "REVIEW_ENTITY"
+    ESCALATE            = "ESCALATE"
+    ASSIGN_TO_STEWARD   = "ASSIGN_TO_STEWARD"
+    NEEDS_MORE_METADATA = "NEEDS_MORE_METADATA"
+    NO_ACTION           = "NO_ACTION"
+
+
+@dataclass
+class GovernanceExplanation:
+    """
+    Structured explanation for every governance decision.
+
+    Built from an existing GovernanceProfile — no additional DB reads.
+    Combines risk scoring, action recommendation, and human-readable
+    narratives so stewards understand exactly what to do and why.
+    """
+    object_type_id:           str
+    object_id:                str
+    decision:                 str          # Human-readable decision sentence
+    decision_type:            str          # AUTO_APPROVED | HUMAN_APPROVED | BLOCKED | PENDING_REVIEW | …
+    risk_score:               int          # 0–100
+    confidence_score:         float | None
+    matched_policies:         list[str]
+    blocking_policies:        list[str]
+    evidence:                 list[dict]
+    recommended_action:       str          # NextAction value
+    recommended_steward:      str | None
+    estimated_review_minutes: int
+    priority_reason:          str
+    risk_factors:             list[str]    # Human-readable risk narrative bullets
+    can_ai_use:               bool
+    ai_warning:               str | None
+
+    def to_dict(self) -> dict:
+        return {
+            "object_type_id":           self.object_type_id,
+            "object_id":                self.object_id,
+            "decision":                 self.decision,
+            "decision_type":            self.decision_type,
+            "risk_score":               self.risk_score,
+            "confidence_score":         self.confidence_score,
+            "matched_policies":         self.matched_policies,
+            "blocking_policies":        self.blocking_policies,
+            "evidence":                 self.evidence,
+            "recommended_action":       self.recommended_action,
+            "recommended_steward":      self.recommended_steward,
+            "estimated_review_minutes": self.estimated_review_minutes,
+            "priority_reason":          self.priority_reason,
+            "risk_factors":             self.risk_factors,
+            "can_ai_use":               self.can_ai_use,
+            "ai_warning":               self.ai_warning,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Intelligence helpers — pure functions, no DB calls
+# ---------------------------------------------------------------------------
+
+_STATE_RISK_BASE: dict[GovernanceState, int] = {
+    GovernanceState.GENERATED:       60,  # unreviewed, unknown quality
+    GovernanceState.SUGGESTED:       35,  # in queue, awaiting decision
+    GovernanceState.NEEDS_REVIEW:    70,  # explicitly flagged as problematic
+    GovernanceState.VALIDATED:       20,  # passed threshold, not yet approved
+    GovernanceState.AUTO_APPROVED:    5,  # policy-approved, low risk
+    GovernanceState.HUMAN_APPROVED:   5,  # reviewed by a human, very low risk
+    GovernanceState.REJECTED:        30,  # was reviewed, found unacceptable
+    GovernanceState.DEPRECATED:      25,  # no longer current
+    GovernanceState.ARCHIVED:        20,  # closed, audit-preserved
+}
+
+
+def calculate_risk_score(profile: GovernanceProfile) -> int:
+    """
+    Compute a 0–100 risk score from the governance profile.
+
+    Higher = riskier = more urgently needs attention.
+    Uses only information already present in the GovernanceProfile;
+    makes no DB calls.
+    """
+    score = _STATE_RISK_BASE.get(profile.approval_state, 40)
+
+    # PII risk — highest weight (regulatory / legal exposure)
+    if profile.pii_risk:
+        score += 30
+    if profile.blocking_policy == _HARD_POLICY_PII:
+        score += 20
+
+    # High-risk domain (Finance, Regulatory, Legal …)
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        score += 20
+
+    # Other governance policy blocking
+    if profile.blocking_policy and profile.blocking_policy not in (
+        _HARD_POLICY_PII, _HARD_POLICY_HIGH_RISK, _HARD_POLICY_IRREVERSIBLE,
+    ):
+        score += 10
+
+    # Confidence adjustments
+    c = profile.confidence_score
+    if c is None:
+        score += 5                        # unknown quality
+    elif c < 0.60:
+        score += 20                       # low accuracy
+    elif c < 0.80:
+        score += 10                       # medium accuracy
+    elif c >= 0.95:
+        score -= 10                       # very high accuracy → lower risk
+
+    # Auto-approval eligible → policy cleared it → lower risk
+    if profile.auto_approval_eligible:
+        score -= 20
+
+    # No evidence → unsubstantiated classification
+    if not profile.evidence and profile.approval_state not in (
+        GovernanceState.HUMAN_APPROVED,
+        GovernanceState.AUTO_APPROVED,
+    ):
+        score += 5
+
+    return max(0, min(100, score))
+
+
+def recommend_next_action(profile: GovernanceProfile) -> str:
+    """
+    Determine the single most important action for a steward.
+    Pure function — no DB calls.
+    """
+    state = profile.approval_state
+
+    # Terminal states — nothing to do
+    if state in (
+        GovernanceState.HUMAN_APPROVED,
+        GovernanceState.AUTO_APPROVED,
+        GovernanceState.REJECTED,
+        GovernanceState.DEPRECATED,
+        GovernanceState.ARCHIVED,
+    ):
+        return NextAction.NO_ACTION
+
+    # PII takes absolute precedence
+    if profile.pii_risk or profile.blocking_policy == _HARD_POLICY_PII:
+        return NextAction.REVIEW_PII
+
+    # High-risk domain → escalate (e.g., to Domain Owner)
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        return NextAction.ESCALATE
+
+    # Explicitly flagged for review → escalate
+    if state == GovernanceState.NEEDS_REVIEW:
+        return NextAction.ESCALATE
+
+    # Policy cleared it → approve
+    if profile.auto_approval_eligible:
+        return NextAction.APPROVE
+
+    # Not yet surfaced → generate metadata first
+    if state == GovernanceState.GENERATED:
+        return NextAction.NEEDS_MORE_METADATA
+
+    # For SUGGESTED / VALIDATED: recommend type-specific action
+    ot = profile.object_type_id
+    if ot == GovernedObjectType.PII_CONFIRMATION:
+        return NextAction.REVIEW_PII
+    if ot in (GovernedObjectType.DICT_TABLE, GovernedObjectType.DICT_COLUMN):
+        return NextAction.REVIEW_DICTIONARY
+    if ot in (GovernedObjectType.DOMAIN_RULE, GovernedObjectType.DOMAIN_REFINEMENT):
+        return NextAction.REVIEW_DOMAIN
+    if ot == GovernedObjectType.ENTITY_RULE:
+        return NextAction.REVIEW_ENTITY
+    if ot == GovernedObjectType.ENGINE_TOOL:
+        return NextAction.ASSIGN_TO_STEWARD
+
+    # DB policy blocking (non-hard) → assign to a steward
+    if profile.blocking_policy:
+        return NextAction.ASSIGN_TO_STEWARD
+
+    return NextAction.REVIEW_DICTIONARY   # safe default
+
+
+def _build_decision_text(profile: GovernanceProfile) -> tuple[str, str]:
+    """Return (decision_sentence, decision_type_key)."""
+    state = profile.approval_state
+
+    if state == GovernanceState.HUMAN_APPROVED:
+        reviewer = profile.reviewed_by or "a reviewer"
+        when = (profile.reviewed_at or "")[:10] or "unknown date"
+        return (f"Approved by {reviewer} on {when}.", "HUMAN_APPROVED")
+
+    if state == GovernanceState.AUTO_APPROVED:
+        policy = profile.matched_policy or "governance policy"
+        return (f"Auto-approved by policy: {policy}.", "AUTO_APPROVED")
+
+    if state == GovernanceState.REJECTED:
+        return ("This item has been rejected and is inactive.", "REJECTED")
+
+    if state == GovernanceState.DEPRECATED:
+        return ("This item has been deprecated and superseded.", "DEPRECATED")
+
+    if state == GovernanceState.ARCHIVED:
+        return ("This item has been archived for audit purposes.", "ARCHIVED")
+
+    if state == GovernanceState.NEEDS_REVIEW:
+        return (
+            "Flagged for mandatory human review — escalation required.",
+            "ESCALATED",
+        )
+
+    if state == GovernanceState.VALIDATED:
+        return (
+            "Meets confidence threshold — eligible for auto-approval.",
+            "PENDING_AUTO_APPROVE",
+        )
+
+    # SUGGESTED or GENERATED
+    if profile.blocking_policy:
+        reason = profile.review_reason or f"blocked by '{profile.blocking_policy}'"
+        return (f"Blocked from auto-approval: {reason}", "BLOCKED")
+
+    if state == GovernanceState.GENERATED:
+        return (
+            "Generated by AI/rules — not yet surfaced for review.",
+            "GENERATED",
+        )
+
+    conf_str = ""
+    if profile.confidence_score is not None:
+        conf_str = f" Confidence: {profile.confidence_score:.0%}."
+    return (f"Awaiting human review.{conf_str}", "PENDING_REVIEW")
+
+
+def _build_risk_factors(profile: GovernanceProfile) -> list[str]:
+    """Build an ordered list of human-readable risk narrative bullets."""
+    factors: list[str] = []
+
+    if profile.pii_risk:
+        factors.append(
+            "PII risk signals detected — confirmation required before AI use."
+        )
+    if profile.blocking_policy == _HARD_POLICY_PII:
+        factors.append(
+            "Unconfirmed PII data — hard safety policy requires a named human reviewer."
+        )
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        domain = profile.domain_context or "high-risk"
+        factors.append(
+            f"High-risk domain '{domain}' — financial or regulatory sensitivity."
+        )
+    if profile.approval_state == GovernanceState.NEEDS_REVIEW:
+        factors.append(
+            "Item has been explicitly flagged for mandatory review."
+        )
+
+    c = profile.confidence_score
+    if c is not None and c < 0.60:
+        factors.append(
+            f"Low confidence: {c:.0%} — AI classification accuracy below acceptable threshold."
+        )
+    elif c is not None and c < 0.80:
+        factors.append(
+            f"Medium confidence: {c:.0%} — validation recommended before relying on this classification."
+        )
+    elif c is None:
+        factors.append(
+            "No confidence score — rule-based or human classification without AI scoring."
+        )
+
+    if profile.approval_state == GovernanceState.GENERATED:
+        factors.append(
+            "Not yet surfaced for review — metadata may lack business context."
+        )
+
+    if not profile.evidence and profile.approval_state not in (
+        GovernanceState.HUMAN_APPROVED, GovernanceState.AUTO_APPROVED,
+    ):
+        factors.append(
+            "No supporting evidence signals available for this classification."
+        )
+
+    if profile.blocking_policy and profile.blocking_policy not in (
+        _HARD_POLICY_PII, _HARD_POLICY_HIGH_RISK, _HARD_POLICY_IRREVERSIBLE,
+    ):
+        factors.append(
+            f"Governance policy '{profile.blocking_policy}' requires human review."
+        )
+
+    return factors
+
+
+def _build_priority_reason(profile: GovernanceProfile) -> str:
+    """Single-sentence explanation of why this priority was assigned."""
+    if profile.pii_risk or profile.blocking_policy == _HARD_POLICY_PII:
+        return "PII risk detected — CRITICAL priority for immediate human review."
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        domain = profile.domain_context or "high-risk"
+        return f"High-risk domain ({domain}) — HIGH priority for compliance review."
+    if profile.approval_state == GovernanceState.NEEDS_REVIEW:
+        return "Explicitly flagged for mandatory review — HIGH priority."
+    c = profile.confidence_score
+    if c is not None and c < 0.60:
+        return (
+            f"Low confidence ({c:.0%}) — HIGH priority; "
+            "classification reliability below threshold."
+        )
+    if profile.auto_approval_eligible:
+        return "Auto-approval eligible — LOW priority; policy has cleared this item."
+    if c is not None and c < 0.80:
+        return (
+            f"Medium confidence ({c:.0%}) — MEDIUM priority; "
+            "human validation recommended."
+        )
+    if c is not None and c >= 0.80:
+        return f"High confidence ({c:.0%}) — LOW priority; classification is reliable."
+    return "Standard review item — MEDIUM priority."
+
+
+def _recommend_steward(profile: GovernanceProfile) -> str | None:
+    """Suggest the most appropriate steward role for this object."""
+    ot = profile.object_type_id
+
+    if ot == GovernedObjectType.PII_CONFIRMATION or profile.pii_risk:
+        return "PII Officer"
+
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        domain = profile.domain_context or "Business"
+        return f"{domain} Domain Owner"
+
+    if ot in (GovernedObjectType.DOMAIN_RULE, GovernedObjectType.DOMAIN_REFINEMENT):
+        domain = profile.domain_context or "Business"
+        return f"{domain} Domain Steward"
+
+    if ot == GovernedObjectType.ENTITY_RULE:
+        entity = profile.domain_context or "Business"
+        return f"{entity} Entity Steward"
+
+    if ot in (GovernedObjectType.DICT_TABLE, GovernedObjectType.DICT_COLUMN):
+        return "Business Analyst"
+
+    if ot == GovernedObjectType.ENGINE_TOOL:
+        return "Governance Admin"
+
+    return "Data Steward"
+
+
+def _estimate_review_minutes(profile: GovernanceProfile) -> int:
+    """Estimate how long a human reviewer will spend on this item (minutes)."""
+    if profile.approval_state in (
+        GovernanceState.HUMAN_APPROVED,
+        GovernanceState.AUTO_APPROVED,
+        GovernanceState.REJECTED,
+        GovernanceState.ARCHIVED,
+    ):
+        return 0
+
+    _BASE: dict[str, int] = {
+        GovernedObjectType.PII_CONFIRMATION:  10,
+        GovernedObjectType.DICT_TABLE:         5,
+        GovernedObjectType.DICT_COLUMN:        3,
+        GovernedObjectType.DOMAIN_RULE:        2,
+        GovernedObjectType.ENTITY_RULE:        2,
+        GovernedObjectType.DOMAIN_REFINEMENT:  2,
+        GovernedObjectType.ENGINE_TOOL:       15,
+    }
+    minutes = _BASE.get(profile.object_type_id, 5)
+
+    if profile.pii_risk:
+        minutes += 5
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        minutes += 5
+    if profile.confidence_score is not None and profile.confidence_score < 0.60:
+        minutes += 3
+
+    return minutes
+
+
+# ---------------------------------------------------------------------------
+# Public — Decision Intelligence
+# ---------------------------------------------------------------------------
+
+def get_governance_explanation(
+    *,
+    object_type: str,
+    source_id: int | None = None,
+    table_fqn: str | None = None,
+    column_name: str | None = None,
+    rule_id: int | None = None,
+    suggestion_id: int | None = None,
+    tool_id: str | None = None,
+) -> GovernanceExplanation | None:
+    """
+    Return a structured explanation for every governance decision.
+
+    Calls get_governance_profile() (Phase 1 + Phase 2 enrichment), then
+    derives risk score, next-action recommendation, steward suggestion,
+    and human-readable narratives from the profile.
+
+    Makes no additional DB writes.  Returns None if the object does not exist.
+    """
+    profile = get_governance_profile(
+        object_type   = object_type,
+        source_id     = source_id,
+        table_fqn     = table_fqn,
+        column_name   = column_name,
+        rule_id       = rule_id,
+        suggestion_id = suggestion_id,
+        tool_id       = tool_id,
+    )
+    if profile is None:
+        return None
+
+    risk_score   = calculate_risk_score(profile)
+    action       = recommend_next_action(profile)
+    decision, dt = _build_decision_text(profile)
+
+    return GovernanceExplanation(
+        object_type_id           = profile.object_type_id,
+        object_id                = profile.object_id,
+        decision                 = decision,
+        decision_type            = dt,
+        risk_score               = risk_score,
+        confidence_score         = profile.confidence_score,
+        matched_policies         = [profile.matched_policy] if profile.matched_policy else [],
+        blocking_policies        = [profile.blocking_policy] if profile.blocking_policy else [],
+        evidence                 = profile.evidence,
+        recommended_action       = action,
+        recommended_steward      = _recommend_steward(profile),
+        estimated_review_minutes = _estimate_review_minutes(profile),
+        priority_reason          = _build_priority_reason(profile),
+        risk_factors             = _build_risk_factors(profile),
+        can_ai_use               = profile.can_ai_use,
+        ai_warning               = profile.ai_warning,
+    )
+
+
+def governance_readiness_summary(
+    *,
+    source_id: int | None = None,
+) -> dict:
+    """
+    Compute overall governance health from governance_state_map.
+
+    governance_state_map contains every governed object that has been
+    explicitly evaluated (Phase 1 upsert on every approval/rejection).
+
+    Parameters
+    ----------
+    source_id : Scope open-assignment count to one data source; all other
+                metrics are global (state_map has no source_id column).
+
+    Returns
+    -------
+    {
+        governance_score  : int    (0–100)
+        total_governed    : int
+        objects_ready     : int
+        objects_pending   : int
+        objects_blocked   : int
+        objects_escalated : int
+        high_risk_pct     : float
+        auto_approval_pct : float
+        avg_confidence    : float | None
+        open_assignments  : int
+    }
+    """
+    conn = get_connection()
+    try:
+        state_rows = conn.execute(
+            """SELECT approval_state,
+                      COUNT(*)                                         AS cnt,
+                      AVG(confidence_score)                           AS avg_conf,
+                      SUM(CASE WHEN confidence_tier = 'LOW' THEN 1 ELSE 0 END) AS low_conf_cnt
+               FROM governance_state_map
+               GROUP BY approval_state"""
+        ).fetchall()
+
+        assign_sql    = "SELECT COUNT(*) FROM governance_assignments WHERE status = 'OPEN'"
+        assign_params: list = []
+        if source_id is not None:
+            assign_sql += " AND source_id = ?"
+            assign_params.append(source_id)
+        open_assignments = conn.execute(assign_sql, assign_params).fetchone()[0]
+    finally:
+        conn.close()
+
+    # Aggregate
+    state_counts:    dict[str, int]   = {}
+    low_conf_totals: dict[str, int]   = {}
+    conf_wsum       = 0.0
+    conf_wn         = 0
+
+    for row in state_rows:
+        d    = dict(row)
+        s    = d["approval_state"]
+        cnt  = d["cnt"] or 0
+        state_counts[s]    = cnt
+        low_conf_totals[s] = d["low_conf_cnt"] or 0
+        if d["avg_conf"] is not None:
+            conf_wsum += float(d["avg_conf"]) * cnt
+            conf_wn   += cnt
+
+    total     = sum(state_counts.values())
+    ready     = (state_counts.get("HUMAN_APPROVED", 0) +
+                 state_counts.get("AUTO_APPROVED",  0))
+    pending   = (state_counts.get("SUGGESTED",  0) +
+                 state_counts.get("GENERATED",   0) +
+                 state_counts.get("VALIDATED",   0))
+    blocked   = (state_counts.get("REJECTED",   0) +
+                 state_counts.get("DEPRECATED",  0) +
+                 state_counts.get("ARCHIVED",    0))
+    escalated = state_counts.get("NEEDS_REVIEW", 0)
+    auto_app  = state_counts.get("AUTO_APPROVED", 0)
+
+    high_risk_cnt = sum(low_conf_totals.values()) + escalated
+    high_risk_pct = round(high_risk_cnt / total * 100, 1) if total > 0 else 0.0
+    auto_pct      = round(auto_app / ready * 100, 1) if ready > 0 else 0.0
+    avg_conf      = round(conf_wsum / conf_wn, 3) if conf_wn > 0 else None
+
+    # Governance score: readiness ratio penalised for escalations/blocks
+    if total == 0:
+        gov_score = 0
+    else:
+        readiness_ratio = ready / total
+        risk_penalty    = (escalated * 2 + blocked) / total * 0.3
+        gov_score       = max(0, min(100, round((readiness_ratio - risk_penalty) * 100)))
+
+    return {
+        "governance_score":  gov_score,
+        "total_governed":    total,
+        "objects_ready":     ready,
+        "objects_pending":   pending,
+        "objects_blocked":   blocked,
+        "objects_escalated": escalated,
+        "high_risk_pct":     high_risk_pct,
+        "auto_approval_pct": auto_pct,
+        "avg_confidence":    avg_conf,
+        "open_assignments":  open_assignments,
+    }
