@@ -1262,3 +1262,656 @@ def toggle_governance_policy(
         conn.close()
 
     return dict(updated) if updated else None
+
+
+# ---------------------------------------------------------------------------
+# Bulk Operations — Phase 3
+# ---------------------------------------------------------------------------
+
+# States that are never eligible for bulk approval or rejection
+_BULK_APPROVE_BLOCKED_STATES: frozenset[GovernanceState] = frozenset({
+    GovernanceState.HUMAN_APPROVED,
+    GovernanceState.AUTO_APPROVED,
+    GovernanceState.REJECTED,
+    GovernanceState.DEPRECATED,
+    GovernanceState.ARCHIVED,
+})
+
+_BULK_REJECT_BLOCKED_STATES: frozenset[GovernanceState] = frozenset({
+    GovernanceState.HUMAN_APPROVED,
+    GovernanceState.AUTO_APPROVED,
+    GovernanceState.REJECTED,
+    GovernanceState.DEPRECATED,
+    GovernanceState.ARCHIVED,
+})
+
+# Maximum candidates returned by a single bulk query (prevents runaway ops)
+_BULK_QUERY_LIMIT = 1000
+
+
+@dataclass
+class BulkFilter:
+    """
+    Filter criteria for bulk governance operations.
+
+    All fields are optional and additive (AND logic).
+    exclude_pii defaults to True — PII columns are never bulk-approved
+    unless explicitly overridden by a PII Officer (Phase 4).
+    """
+    object_type:    str               # Required — GovernedObjectType value
+    source_id:      int | None = None
+    confidence_min: float | None = None
+    confidence_max: float | None = None
+    approval_state: str | None = None  # None = all reviewable states
+    domain:         str | None = None  # domain / suggested_domain / entity filter
+    entity:         str | None = None  # entity filter (entity.rule only)
+    schema_name:    str | None = None  # table schema prefix filter
+    exclude_pii:    bool = True        # Safety default: True
+
+    def to_dict(self) -> dict:
+        return {
+            "object_type":    self.object_type,
+            "source_id":      self.source_id,
+            "confidence_min": self.confidence_min,
+            "confidence_max": self.confidence_max,
+            "approval_state": self.approval_state,
+            "domain":         self.domain,
+            "entity":         self.entity,
+            "schema_name":    self.schema_name,
+            "exclude_pii":    self.exclude_pii,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BulkFilter":
+        return cls(
+            object_type    = d["object_type"],
+            source_id      = d.get("source_id"),
+            confidence_min = d.get("confidence_min"),
+            confidence_max = d.get("confidence_max"),
+            approval_state = d.get("approval_state"),
+            domain         = d.get("domain"),
+            entity         = d.get("entity"),
+            schema_name    = d.get("schema_name"),
+            exclude_pii    = bool(d.get("exclude_pii", True)),
+        )
+
+
+@dataclass
+class BulkOpResult:
+    """Result of a bulk governance operation (approve, reject, or dry-run)."""
+    action:           str
+    dry_run:          bool
+    object_type:      str
+    total_candidates: int
+    affected_count:   int
+    blocked_count:    int
+    blocked_items:    list[dict]   # [{object_id, object_type_id, blocking_policy, reason}]
+    executed_at:      str
+    bulk_op_id:       int | None = None  # None for dry_run; set after DB write
+
+    def to_dict(self) -> dict:
+        return {
+            "action":           self.action,
+            "dry_run":          self.dry_run,
+            "object_type":      self.object_type,
+            "total_candidates": self.total_candidates,
+            "affected_count":   self.affected_count,
+            "blocked_count":    self.blocked_count,
+            "blocked_items":    self.blocked_items,
+            "executed_at":      self.executed_at,
+            "bulk_op_id":       self.bulk_op_id,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Bulk helpers — internal
+# ---------------------------------------------------------------------------
+
+def _load_enabled_db_policies(conn) -> list[dict]:
+    """
+    Load all enabled governance policies in priority order.
+    Called once per bulk operation; results are passed to _check_policies_with_cache
+    to avoid one DB round-trip per candidate item.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT policy_name, object_types_json, condition_json, action
+               FROM governance_policies
+               WHERE enabled = 1
+               ORDER BY priority ASC, id ASC""",
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        logger.warning("governance_policies query failed in bulk op; skipping DB policies",
+                       exc_info=True)
+        return []
+
+
+def _check_policies_with_cache(
+    profile: GovernanceProfile,
+    cached_policies: list[dict],
+) -> PolicyEvaluationResult:
+    """
+    Evaluate policies for a single profile using pre-loaded policy list.
+    Identical semantics to evaluate_policies() but avoids a DB query per item.
+    """
+    # 1. Hard safety policies (always first, cannot be disabled)
+    hard = _check_hard_safety_policies(profile)
+    if hard is not None:
+        return hard
+
+    # 2. Object is not in a state that needs evaluation
+    if profile.approval_state not in _EVALUABLE_STATES:
+        return PolicyEvaluationResult(
+            auto_approval_eligible = False,
+            blocking_policy        = None,
+            matched_policy         = None,
+            review_required        = profile.approval_state == GovernanceState.NEEDS_REVIEW,
+            review_reason          = None,
+        )
+
+    # 3. Evaluate cached DB policies
+    for p in cached_policies:
+        try:
+            obj_types: list[str] = json.loads(p.get("object_types_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            obj_types = []
+        if obj_types and profile.object_type_id not in obj_types:
+            continue
+        try:
+            condition: dict = json.loads(p.get("condition_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            condition = {}
+        if not _matches_condition(profile, condition):
+            continue
+        action      = p["action"]
+        policy_name = p["policy_name"]
+        if action == PolicyAction.AUTO_APPROVE:
+            return PolicyEvaluationResult(
+                auto_approval_eligible = True,
+                blocking_policy        = None,
+                matched_policy         = policy_name,
+                review_required        = False,
+                review_reason          = None,
+            )
+        if action in (PolicyAction.REQUIRE_HUMAN, PolicyAction.ESCALATE):
+            return PolicyEvaluationResult(
+                auto_approval_eligible = False,
+                blocking_policy        = policy_name,
+                matched_policy         = policy_name,
+                review_required        = True,
+                review_reason          = f"Policy '{policy_name}' requires human review.",
+            )
+        # NO_ACTION: fall through to next policy
+
+    # 4. Default: no policy matched
+    review_required = profile.approval_state in (
+        GovernanceState.SUGGESTED, GovernanceState.NEEDS_REVIEW,
+    )
+    return PolicyEvaluationResult(
+        auto_approval_eligible = False,
+        blocking_policy        = None,
+        matched_policy         = None,
+        review_required        = review_required,
+        review_reason          = profile.review_reason if review_required else None,
+    )
+
+
+def _build_profile_from_bulk_row(object_type: str, row: dict) -> GovernanceProfile | None:
+    """Build a GovernanceProfile from a bulk-query result row."""
+    try:
+        ot = GovernedObjectType(object_type)
+    except ValueError:
+        return None
+
+    if ot == GovernedObjectType.DICT_TABLE:
+        return _build_dict_table_profile(row)
+    if ot == GovernedObjectType.DICT_COLUMN:
+        return _build_dict_column_profile(row)
+    if ot in (GovernedObjectType.DOMAIN_RULE, GovernedObjectType.ENTITY_RULE):
+        return _build_rule_profile(row, ot)
+    if ot == GovernedObjectType.DOMAIN_REFINEMENT:
+        return _build_refinement_profile(row)
+    return None
+
+
+def _apply_single_approval(object_type: str, row: dict, actor_id: str) -> bool:
+    """
+    Call the authoritative approval function for one item.
+
+    Reuses the existing per-type approval functions so all their side-effects
+    (ownership checks, governance event logging, state-map updates) fire normally.
+    Returns True on success, False on any failure.
+    """
+    try:
+        ot = GovernedObjectType(object_type)
+
+        if ot == GovernedObjectType.DICT_TABLE:
+            from data.dictionary_service import approve_table_dictionary
+            r = approve_table_dictionary(
+                source_id=int(row["source_id"]),
+                user_id=actor_id,
+                table_fqn=row["table_fqn"],
+            )
+            return r is not None
+
+        if ot == GovernedObjectType.DICT_COLUMN:
+            from data.dictionary_service import approve_column_dictionary
+            r = approve_column_dictionary(
+                source_id=int(row["source_id"]),
+                user_id=actor_id,
+                table_fqn=row["table_fqn"],
+                column_name=row["column_name"],
+            )
+            return r is not None
+
+        if ot == GovernedObjectType.DOMAIN_RULE:
+            from data.domain_learning_service import approve_domain_rule
+            r = approve_domain_rule(rule_id=int(row["id"]), user_id=actor_id)
+            return r is not None
+
+        if ot == GovernedObjectType.ENTITY_RULE:
+            from data.entity_learning_service import approve_entity_rule
+            r = approve_entity_rule(rule_id=int(row["id"]), user_id=actor_id)
+            return r is not None
+
+        if ot == GovernedObjectType.DOMAIN_REFINEMENT:
+            from data.domain_refinement_service import approve_refinement_suggestion
+            r = approve_refinement_suggestion(
+                suggestion_id=int(row["id"]), user_id=actor_id
+            )
+            return r is not None
+
+    except Exception:
+        logger.warning(
+            "bulk approval failed for %s id=%s", object_type, row.get("id"),
+            exc_info=True,
+        )
+    return False
+
+
+def _apply_single_rejection(object_type: str, row: dict, actor_id: str) -> bool:
+    """
+    Call the authoritative rejection function for one item.
+
+    For types that have a dedicated reject function (domain.rule, entity.rule,
+    domain.refinement) the existing function is called so all side-effects fire.
+
+    For dict.table and dict.column (which have no source-level rejection), the
+    governance audit log and state map are updated to record the governance-layer
+    rejection without changing the source table.
+    """
+    try:
+        ot = GovernedObjectType(object_type)
+
+        if ot == GovernedObjectType.DOMAIN_RULE:
+            from data.domain_learning_service import reject_domain_rule
+            r = reject_domain_rule(rule_id=int(row["id"]), user_id=actor_id)
+            return r is not None
+
+        if ot == GovernedObjectType.ENTITY_RULE:
+            from data.entity_learning_service import reject_entity_rule
+            r = reject_entity_rule(rule_id=int(row["id"]), user_id=actor_id)
+            return r is not None
+
+        if ot == GovernedObjectType.DOMAIN_REFINEMENT:
+            from data.domain_refinement_service import reject_refinement_suggestion
+            r = reject_refinement_suggestion(
+                suggestion_id=int(row["id"]), user_id=actor_id
+            )
+            return r is not None
+
+        # dict.table and dict.column: governance-layer rejection only
+        if ot == GovernedObjectType.DICT_TABLE:
+            obj_id = f"{row['source_id']}:{row['table_fqn']}"
+        elif ot == GovernedObjectType.DICT_COLUMN:
+            obj_id = f"{row['source_id']}:{row['table_fqn']}:{row['column_name']}"
+        else:
+            return False
+
+        now = _now()
+        log_governance_event(
+            object_type_id = object_type,
+            object_id      = obj_id,
+            event_type     = "REJECTED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.REJECTED,
+            actor_id       = actor_id,
+            source_service = "governance_service.bulk_reject",
+        )
+        upsert_governance_state(
+            object_type_id = object_type,
+            object_id      = obj_id,
+            approval_state = GovernanceState.REJECTED,
+            reviewer_id    = actor_id,
+            reviewed_at    = now,
+        )
+        return True
+
+    except Exception:
+        logger.warning(
+            "bulk rejection failed for %s id=%s", object_type, row.get("id"),
+            exc_info=True,
+        )
+    return False
+
+
+def _query_bulk_candidates(
+    f: BulkFilter,
+    conn,
+    limit: int = _BULK_QUERY_LIMIT,
+) -> list[dict]:
+    """
+    Build a type-specific SQL query and return candidate rows.
+    All filter fields are optional; only provided values narrow the results.
+    """
+    try:
+        ot = GovernedObjectType(f.object_type)
+    except ValueError:
+        return []
+
+    sql: str
+    params: list = []
+
+    if ot == GovernedObjectType.DICT_TABLE:
+        sql = (
+            "SELECT source_id, table_fqn, table_name, schema_name, "
+            "business_name, domain, is_approved, generation_method "
+            "FROM data_dictionary_tables "
+            "WHERE is_approved = 0 AND business_name IS NOT NULL"
+        )
+        if f.source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(f.source_id)
+        if f.schema_name:
+            sql += " AND schema_name = ?"
+            params.append(f.schema_name)
+        if f.domain:
+            sql += " AND domain = ?"
+            params.append(f.domain)
+
+    elif ot == GovernedObjectType.DICT_COLUMN:
+        sql = (
+            "SELECT source_id, table_fqn, column_name, business_label, "
+            "pii_risk, is_approved, generation_method "
+            "FROM data_dictionary_columns "
+            "WHERE is_approved = 0 AND business_label IS NOT NULL"
+        )
+        if f.exclude_pii:
+            sql += " AND pii_risk = 0"
+        if f.source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(f.source_id)
+        if f.schema_name:
+            # table_fqn format is schema.table_name
+            sql += " AND table_fqn LIKE ?"
+            params.append(f.schema_name + ".%")
+
+    elif ot == GovernedObjectType.DOMAIN_RULE:
+        sql = (
+            "SELECT id, source_id, pattern_type, pattern_value, "
+            "domain, confidence, approval_status, created_by, created_at "
+            "FROM domain_learning_rules WHERE approval_status = 'PENDING'"
+        )
+        if f.source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(f.source_id)
+        if f.confidence_min is not None:
+            sql += " AND confidence >= ?"
+            params.append(f.confidence_min)
+        if f.confidence_max is not None:
+            sql += " AND confidence <= ?"
+            params.append(f.confidence_max)
+        if f.domain:
+            sql += " AND domain = ?"
+            params.append(f.domain)
+
+    elif ot == GovernedObjectType.ENTITY_RULE:
+        sql = (
+            "SELECT id, source_id, pattern_type, pattern_value, "
+            "entity, confidence, approval_status, created_by, created_at "
+            "FROM entity_learning_rules WHERE approval_status = 'PENDING'"
+        )
+        if f.source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(f.source_id)
+        if f.confidence_min is not None:
+            sql += " AND confidence >= ?"
+            params.append(f.confidence_min)
+        if f.confidence_max is not None:
+            sql += " AND confidence <= ?"
+            params.append(f.confidence_max)
+        if f.entity:
+            sql += " AND entity = ?"
+            params.append(f.entity)
+
+    elif ot == GovernedObjectType.DOMAIN_REFINEMENT:
+        sql = (
+            "SELECT id, source_id, pattern_type, pattern_value, "
+            "suggested_domain, confidence, approval_status, support_count, created_at "
+            "FROM domain_rule_refinement_suggestions WHERE approval_status = 'PENDING'"
+        )
+        if f.source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(f.source_id)
+        if f.confidence_min is not None:
+            sql += " AND confidence >= ?"
+            params.append(f.confidence_min)
+        if f.confidence_max is not None:
+            sql += " AND confidence <= ?"
+            params.append(f.confidence_max)
+        if f.domain:
+            sql += " AND suggested_domain = ?"
+            params.append(f.domain)
+
+    else:
+        return []
+
+    sql += f" LIMIT {limit}"
+
+    try:
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        logger.warning(
+            "bulk candidate query failed for %s", f.object_type, exc_info=True
+        )
+        return []
+
+
+def _record_bulk_op(
+    action: str,
+    f: BulkFilter,
+    result: BulkOpResult,
+    actor_id: str,
+) -> int | None:
+    """Write a governance_bulk_ops row and return its id. Best-effort; never raises."""
+    try:
+        conn = get_connection()
+        try:
+            cursor = conn.execute(
+                """INSERT INTO governance_bulk_ops
+                       (actor_id, action, filter_json,
+                        affected_count, blocked_count,
+                        blocked_items_json, status, executed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', ?)""",
+                (
+                    actor_id,
+                    action,
+                    json.dumps(f.to_dict()),
+                    result.affected_count,
+                    result.blocked_count,
+                    json.dumps(result.blocked_items[:500]),  # cap JSON size
+                    result.executed_at,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning("failed to record bulk op", exc_info=True)
+        return None
+
+
+def _run_bulk_operation(
+    f: BulkFilter,
+    action: str,
+    actor_id: str,
+    dry_run: bool = False,
+) -> BulkOpResult:
+    """
+    Core bulk operation engine.
+
+    1. Query candidate objects using the filter.
+    2. Load DB policies once for the entire batch.
+    3. For each candidate, evaluate policies (hard safety + cached DB policies).
+    4. If not dry_run and not blocked: call the existing per-type approval/rejection
+       function (preserving all their side-effects).
+    5. Write a governance_bulk_ops record (unless dry_run).
+    6. Return BulkOpResult with full breakdown.
+    """
+    conn = get_connection()
+    try:
+        candidates = _query_bulk_candidates(f, conn)
+        cached_policies = _load_enabled_db_policies(conn)
+    finally:
+        conn.close()
+
+    affected: list[dict] = []
+    blocked:  list[dict] = []
+
+    for row in candidates:
+        profile = _build_profile_from_bulk_row(f.object_type, row)
+        if profile is None:
+            continue
+
+        obj_id = profile.object_id
+
+        # ── Safety evaluation ──────────────────────────────────────────────
+        if action == "approve":
+            # Block if object is already approved / in irreversible state
+            if profile.approval_state in _BULK_APPROVE_BLOCKED_STATES:
+                blocked.append({
+                    "object_id":       obj_id,
+                    "object_type_id":  profile.object_type_id,
+                    "blocking_policy": _HARD_POLICY_IRREVERSIBLE,
+                    "reason":          (
+                        f"State '{profile.approval_state.value}' cannot be bulk-approved."
+                    ),
+                })
+                continue
+
+            # Policy evaluation (hard safety + DB policies)
+            policy_result = _check_policies_with_cache(profile, cached_policies)
+            if policy_result.blocking_policy:
+                blocked.append({
+                    "object_id":       obj_id,
+                    "object_type_id":  profile.object_type_id,
+                    "blocking_policy": policy_result.blocking_policy,
+                    "reason":          (
+                        policy_result.review_reason or "Blocked by governance policy."
+                    ),
+                })
+                continue
+
+            # Safe to approve
+            if not dry_run:
+                success = _apply_single_approval(f.object_type, row, actor_id)
+                if not success:
+                    blocked.append({
+                        "object_id":       obj_id,
+                        "object_type_id":  profile.object_type_id,
+                        "blocking_policy": None,
+                        "reason":          (
+                            "Approval failed — possible ownership mismatch "
+                            "or the item was already processed."
+                        ),
+                    })
+                    continue
+            affected.append({"object_id": obj_id, "object_type_id": profile.object_type_id})
+
+        elif action == "reject":
+            # Block if object is in a state that cannot be rejected
+            if profile.approval_state in _BULK_REJECT_BLOCKED_STATES:
+                blocked.append({
+                    "object_id":       obj_id,
+                    "object_type_id":  profile.object_type_id,
+                    "blocking_policy": _HARD_POLICY_IRREVERSIBLE,
+                    "reason":          (
+                        f"State '{profile.approval_state.value}' cannot be bulk-rejected."
+                    ),
+                })
+                continue
+
+            if not dry_run:
+                success = _apply_single_rejection(f.object_type, row, actor_id)
+                if not success:
+                    blocked.append({
+                        "object_id":       obj_id,
+                        "object_type_id":  profile.object_type_id,
+                        "blocking_policy": None,
+                        "reason":          "Rejection failed — ownership mismatch.",
+                    })
+                    continue
+            affected.append({"object_id": obj_id, "object_type_id": profile.object_type_id})
+
+    now = _now()
+    result = BulkOpResult(
+        action           = action,
+        dry_run          = dry_run,
+        object_type      = f.object_type,
+        total_candidates = len(candidates),
+        affected_count   = len(affected),
+        blocked_count    = len(blocked),
+        blocked_items    = blocked,
+        executed_at      = now,
+    )
+
+    if not dry_run:
+        op_id = _record_bulk_op(action, f, result, actor_id)
+        result.bulk_op_id = op_id
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public — Bulk Operations
+# ---------------------------------------------------------------------------
+
+def bulk_dry_run(f: BulkFilter, actor_id: str) -> BulkOpResult:
+    """
+    Simulate a bulk approval and return the count of items that would be
+    approved vs blocked — without writing any changes.
+
+    Use this before bulk_approve() to preview impact.
+    """
+    return _run_bulk_operation(f, action="approve", actor_id=actor_id, dry_run=True)
+
+
+def bulk_approve(f: BulkFilter, actor_id: str) -> BulkOpResult:
+    """
+    Bulk-approve all matching governed objects that pass policy evaluation.
+
+    Calls the per-type approval function for each eligible item so all
+    existing approval side-effects (ownership checks, governance events,
+    state-map updates) fire normally.
+
+    Returns a BulkOpResult with affected/blocked counts and the bulk_op_id
+    written to governance_bulk_ops.
+    """
+    return _run_bulk_operation(f, action="approve", actor_id=actor_id, dry_run=False)
+
+
+def bulk_reject(f: BulkFilter, actor_id: str) -> BulkOpResult:
+    """
+    Bulk-reject all matching governed objects in reviewable states.
+
+    Types with existing rejection functions (domain.rule, entity.rule,
+    domain.refinement) call those functions directly.  Dictionary entries
+    receive governance-layer rejection (audit event + state-map update)
+    since their source tables have no rejection state.
+
+    Returns a BulkOpResult with affected/blocked counts.
+    """
+    return _run_bulk_operation(f, action="reject", actor_id=actor_id, dry_run=False)

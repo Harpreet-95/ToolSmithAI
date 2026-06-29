@@ -4961,6 +4961,131 @@ def governance_confirm_pii(
     }
 
 
+# ---------------------------------------------------------------------------
+# Bulk Governance Operations — Phase 3
+# ---------------------------------------------------------------------------
+
+class _BulkFilterRequest(BaseModel):
+    """
+    Filter for bulk governance operations.
+
+    object_type is required.  All other fields are optional and additive (AND).
+    exclude_pii defaults to True — PII columns are never bulk-approved
+    without an explicit override (future PII Officer role in Phase 4).
+    """
+    object_type:    str
+    source_id:      int | None   = None
+    confidence_min: float | None = None
+    confidence_max: float | None = None
+    approval_state: str | None   = None
+    domain:         str | None   = None
+    entity:         str | None   = None
+    schema_name:    str | None   = None
+    exclude_pii:    bool         = True
+
+
+_BULK_SUPPORTED_TYPES = {
+    "dict.table", "dict.column",
+    "domain.rule", "entity.rule",
+    "domain.refinement",
+}
+
+
+def _build_bulk_filter(body: _BulkFilterRequest):
+    """Convert API request to BulkFilter; return None if object_type unsupported."""
+    from data.governance_service import BulkFilter
+    if body.object_type not in _BULK_SUPPORTED_TYPES:
+        return None
+    return BulkFilter(
+        object_type    = body.object_type,
+        source_id      = body.source_id,
+        confidence_min = body.confidence_min,
+        confidence_max = body.confidence_max,
+        approval_state = body.approval_state,
+        domain         = body.domain,
+        entity         = body.entity,
+        schema_name    = body.schema_name,
+        exclude_pii    = body.exclude_pii,
+    )
+
+
+@router.post("/governance/bulk/dry-run")
+def governance_bulk_dry_run(
+    body: _BulkFilterRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Simulate a bulk approval and return affected/blocked counts without
+    writing any changes.  Use before bulk/approve to preview impact.
+
+    Supported object_type values:
+        dict.table, dict.column, domain.rule, entity.rule, domain.refinement
+    """
+    f = _build_bulk_filter(body)
+    if f is None:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Unsupported object_type '{body.object_type}'. "
+                f"Must be one of: {', '.join(sorted(_BULK_SUPPORTED_TYPES))}"
+            ),
+        )
+    from data.governance_service import bulk_dry_run
+    result = bulk_dry_run(f, actor_id=user.user_id)
+    return {"status": "success", "data": result.to_dict()}
+
+
+@router.post("/governance/bulk/approve")
+def governance_bulk_approve(
+    body: _BulkFilterRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Bulk-approve all matching governed objects that pass policy evaluation.
+
+    Hard safety policies (PII, high-risk domains, irreversible states) and
+    DB policies with action=REQUIRE_HUMAN automatically block individual items
+    — they appear in blocked_items in the response.
+
+    A governance_bulk_ops audit record is written for every execution.
+    """
+    f = _build_bulk_filter(body)
+    if f is None:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Unsupported object_type '{body.object_type}'."
+            ),
+        )
+    from data.governance_service import bulk_approve
+    result = bulk_approve(f, actor_id=user.user_id)
+    return {"status": "success", "data": result.to_dict()}
+
+
+@router.post("/governance/bulk/reject")
+def governance_bulk_reject(
+    body: _BulkFilterRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Bulk-reject all matching governed objects in reviewable states.
+
+    Objects in HUMAN_APPROVED, AUTO_APPROVED, REJECTED, DEPRECATED, or
+    ARCHIVED states are automatically skipped (appear in blocked_items).
+    """
+    f = _build_bulk_filter(body)
+    if f is None:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Unsupported object_type '{body.object_type}'."
+            ),
+        )
+    from data.governance_service import bulk_reject
+    result = bulk_reject(f, actor_id=user.user_id)
+    return {"status": "success", "data": result.to_dict()}
+
+
 _VALID_DICT_STATUSES = {"approved", "generated", "none"}
 
 
