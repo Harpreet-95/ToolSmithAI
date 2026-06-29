@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getTableProfileDetail } from '../api/client'
+import { getTableProfileDetail, getTableBusinessContext, getColumnBusinessContext } from '../api/client'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
@@ -189,7 +189,7 @@ function SortArrow({ field, sort }) {
 
 // ── Column Detail Drawer ───────────────────────────────────────────────────────
 
-function ColumnDetailDrawer({ col, onClose, C }) {
+function ColumnDetailDrawer({ col, colBkg, onClose, C }) {
   const bg      = C.bg      ?? '#07091a'
   const surface = C.surface ?? '#0d1128'
   const border  = C.border  ?? '#1e2b52'
@@ -261,6 +261,42 @@ function ColumnDetailDrawer({ col, onClose, C }) {
 
         {/* Body */}
         <div style={{ padding: '12px 20px', display: 'flex', flexDirection: 'column', gap: 0 }}>
+
+          {/* ── Business Context (from Knowledge Service) ── */}
+          {colBkg && (colBkg.dictionary || colBkg.table_context?.domain) && (
+            <>
+              <div style={{ fontSize: '0.64rem', color: accent, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '6px', marginTop: '4px' }}>Business Context</div>
+              {colBkg.dictionary?.business_label && row('Business Label', colBkg.dictionary.business_label, { mono: false })}
+              {colBkg.dictionary?.meaning        && row('Meaning',        colBkg.dictionary.meaning)}
+              {colBkg.dictionary?.is_approved    && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 0', borderBottom: `1px solid ${border}18` }}>
+                  <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, minWidth: '130px', flexShrink: 0 }}>Approved</span>
+                  <span style={{ fontSize: '0.72rem', color: success, fontWeight: '700' }}>✓ Human approved</span>
+                </div>
+              )}
+              {colBkg.table_context?.domain && colBkg.table_context.domain !== 'Unknown' &&
+                row('Domain', colBkg.table_context.domain)}
+              {colBkg.table_context?.entity && colBkg.table_context.entity !== 'Unknown' &&
+                row('Entity', colBkg.table_context.entity)}
+              {colBkg.confidence != null && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 0', borderBottom: `1px solid ${border}18` }}>
+                  <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, minWidth: '130px', flexShrink: 0 }}>Confidence</span>
+                  <ConfChip v={colBkg.confidence} success={success} warn={warn} danger={danger} />
+                </div>
+              )}
+              {Array.isArray(colBkg.evidence) && colBkg.evidence.length > 0 && (
+                <div style={{ padding: '6px 0', borderBottom: `1px solid ${border}18` }}>
+                  <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, marginBottom: '4px' }}>Evidence</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    {colBkg.evidence.map((e, i) => (
+                      <span key={i} style={{ fontSize: '0.72rem', color: textSec, fontFamily: FONT, paddingLeft: '8px', borderLeft: `2px solid ${accent}30` }}>{e}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ height: '10px' }} />
+            </>
+          )}
 
           {/* Schema */}
           <div style={{ fontSize: '0.64rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '6px', marginTop: '4px' }}>Schema</div>
@@ -350,6 +386,204 @@ function ColumnDetailDrawer({ col, onClose, C }) {
         </div>
       </div>
     </>
+  )
+}
+
+// ── BusinessContextPanel ───────────────────────────────────────────────────────
+
+function BusinessContextPanel({ bkg, loading, C }) {
+  const surface = C.surface   ?? '#0d1128'
+  const border  = C.border    ?? '#1e2b52'
+  const text    = C.text      ?? '#eef0ff'
+  const textSec = C.textSec   ?? '#dde1ff'
+  const muted   = C.textMuted ?? '#7880a8'
+  const accent  = C.accent    ?? '#6366f1'
+  const success = C.success   ?? '#10b981'
+  const danger  = C.danger    ?? '#f87171'
+  const warn    = C.warn      ?? '#f59e0b'
+
+  if (loading) {
+    return (
+      <div style={{ background: surface, border: `1px solid ${accent}25`, borderLeft: `3px solid ${accent}50`, borderRadius: '10px', padding: '12px 18px', marginBottom: '0' }}>
+        <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>Loading business context…</span>
+      </div>
+    )
+  }
+
+  if (!bkg) return null
+
+  const { dictionary, domain, entity, profiling, relationships, governance, overall_confidence, metadata_completeness } = bkg
+
+  const hasDictionary = !!(dictionary?.business_name || dictionary?.description)
+  const hasDomain     = !!(domain?.domain && domain.domain !== 'Unknown')
+  const hasEntity     = !!(entity?.entity && entity.entity !== 'Unknown')
+
+  if (!hasDictionary && !hasDomain && !hasEntity) return null
+
+  const lbl = (t) => (
+    <div style={{ fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '2px' }}>{t}</div>
+  )
+  const val = (v, extra = {}) => (
+    <div style={{ fontSize: '0.8rem', color: text, fontFamily: FONT, ...extra }}>{v}</div>
+  )
+
+  const outbound = relationships?.outbound ?? []
+  const inbound  = relationships?.inbound  ?? []
+
+  const govBadge = (label, ok) => ok ? (
+    <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '1px 7px', borderRadius: '5px', fontSize: '0.6rem', fontWeight: '700', background: `${success}12`, color: success, border: `1px solid ${success}30`, fontFamily: FONT }}>
+      ✓ {label}
+    </span>
+  ) : (
+    <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '1px 7px', borderRadius: '5px', fontSize: '0.6rem', fontWeight: '700', background: `${muted}10`, color: muted, border: `1px solid ${muted}20`, fontFamily: FONT }}>
+      — {label}
+    </span>
+  )
+
+  const piiPending = governance?.pii_columns_pending_review ?? 0
+
+  return (
+    <div style={{ background: surface, border: `1px solid ${accent}25`, borderLeft: `3px solid ${accent}60`, borderRadius: '10px', padding: '14px 18px' }}>
+
+      {/* Panel header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+        <span style={{ fontSize: '0.62rem', fontWeight: '700', color: accent, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT }}>
+          Business Context
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {overall_confidence != null && (
+            <ConfChip v={overall_confidence} success={success} warn={warn} danger={danger} />
+          )}
+          {metadata_completeness?.completeness_score != null && (
+            <span style={{ fontSize: '0.62rem', color: muted, fontFamily: FONT }}>
+              {Math.round(metadata_completeness.completeness_score * 100)}% complete
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Business facts grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 24px', marginBottom: hasDictionary && dictionary.description ? '10px' : '0' }}>
+        {hasDictionary && dictionary.business_name && (
+          <div>
+            {lbl('Business Name')}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              {val(dictionary.business_name, { fontWeight: '600' })}
+              {dictionary.is_approved && (
+                <span style={{ fontSize: '0.6rem', color: success, fontWeight: '700' }}>✓</span>
+              )}
+            </div>
+          </div>
+        )}
+        {hasDomain && (
+          <div>
+            {lbl('Domain')}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              {val(domain.domain)}
+              {domain.confidence != null && (
+                <span style={{ fontSize: '0.62rem', color: muted, fontFamily: MONO }}>{Math.round(domain.confidence * 100)}%</span>
+              )}
+            </div>
+          </div>
+        )}
+        {hasEntity && (
+          <div>
+            {lbl('Business Entity')}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              {val(entity.entity)}
+              {entity.confidence != null && (
+                <span style={{ fontSize: '0.62rem', color: muted, fontFamily: MONO }}>{Math.round(entity.confidence * 100)}%</span>
+              )}
+            </div>
+          </div>
+        )}
+        {dictionary?.grain && (
+          <div>
+            {lbl('Grain')}
+            {val(dictionary.grain)}
+          </div>
+        )}
+        {profiling?.table_class && (
+          <div>
+            {lbl('Classification')}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <ClassChip cls={profiling.table_class} />
+              {profiling.classification_confidence != null && (
+                <span style={{ fontSize: '0.62rem', color: muted, fontFamily: MONO }}>{Math.round(profiling.classification_confidence * 100)}%</span>
+              )}
+            </div>
+          </div>
+        )}
+        {(profiling?.pii_column_count > 0) && (
+          <div>
+            {lbl('PII Summary')}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: '600', color: danger, fontFamily: FONT }}>{profiling.pii_column_count} flagged</span>
+              {profiling.confirmed_pii_count > 0 && (
+                <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>/ {profiling.confirmed_pii_count} confirmed</span>
+              )}
+              {piiPending > 0 && (
+                <span style={{ fontSize: '0.6rem', color: warn, fontFamily: FONT }}>({piiPending} pending review)</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Description (full width) */}
+      {hasDictionary && dictionary.description && (
+        <div style={{ padding: '8px 10px', borderRadius: '6px', background: `${accent}07`, marginBottom: '10px' }}>
+          {lbl('Description')}
+          <div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT, lineHeight: '1.5', marginTop: '2px' }}>{dictionary.description}</div>
+        </div>
+      )}
+
+      {/* Governance badges */}
+      <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: (outbound.length + inbound.length > 0) ? '10px' : '0' }}>
+        {govBadge('Dict', governance?.dictionary_approved)}
+        {govBadge('Domain', governance?.domain_assigned)}
+        {govBadge('Entity', governance?.entity_assigned)}
+        {piiPending > 0 && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '1px 7px', borderRadius: '5px', fontSize: '0.6rem', fontWeight: '700', background: `${warn}12`, color: warn, border: `1px solid ${warn}30`, fontFamily: FONT }}>
+            ⚠ {piiPending} PII pending
+          </span>
+        )}
+      </div>
+
+      {/* Relationships */}
+      {(outbound.length > 0 || inbound.length > 0) && (
+        <div>
+          <div style={{ fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '5px' }}>
+            Relationships · {outbound.length} outbound · {inbound.length} inbound
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+            {outbound.slice(0, 3).map((r, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.72rem', fontFamily: MONO, color: textSec }}>
+                <span style={{ color: accent, fontSize: '0.62rem' }}>→</span>
+                <span style={{ color: muted }}>{r.from_column}</span>
+                <span style={{ color: `${muted}50`, fontSize: '0.62rem' }}>→</span>
+                <span>{r.to_table_fqn}.{r.to_column}</span>
+                {r.relationship_name && <span style={{ fontSize: '0.62rem', color: muted }}>({r.relationship_name})</span>}
+              </div>
+            ))}
+            {inbound.slice(0, 2).map((r, i) => (
+              <div key={`in-${i}`} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.72rem', fontFamily: MONO, color: textSec }}>
+                <span style={{ color: `${success}90`, fontSize: '0.62rem' }}>←</span>
+                <span>{r.from_table_fqn}.{r.from_column}</span>
+                <span style={{ color: `${muted}50`, fontSize: '0.62rem' }}>→</span>
+                <span style={{ color: muted }}>{r.to_column}</span>
+              </div>
+            ))}
+            {(outbound.length > 3 || inbound.length > 2) && (
+              <span style={{ fontSize: '0.68rem', color: muted, fontFamily: FONT }}>
+                +{Math.max(0, outbound.length - 3) + Math.max(0, inbound.length - 2)} more
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+    </div>
   )
 }
 
@@ -468,7 +702,7 @@ function ColumnGrid({ columns, sort, onSort, onSelectCol, C }) {
   )
 
   const cell = (value, opts = {}) => (
-    <div style={{
+    <div key={opts.key} style={{
       width: opts.w, minWidth: opts.w, maxWidth: opts.w,
       fontSize: opts.sm ? '0.68rem' : '0.74rem',
       color: opts.color ?? textSec, fontFamily: opts.mono ? MONO : FONT,
@@ -484,24 +718,24 @@ function ColumnGrid({ columns, sort, onSort, onSelectCol, C }) {
       const v = col[field]
       if (field === 'column_name') return cell(
         <span title={v} style={{ fontFamily: MONO, fontSize: '0.74rem', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>,
-        { w, mono: true }
+        { w, mono: true, key: field }
       )
-      if (field === 'data_type')  return cell(<span style={{ fontSize: '0.7rem', color: muted }}>{v ?? '—'}</span>, { w })
-      if (field === 'raw_type')   return cell(<span title={v} style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>{v ?? '—'}</span>, { w })
-      if (field === 'semantic_type')       return cell(<SemChip type={v} />, { w })
-      if (field === 'semantic_confidence') return cell(<ConfChip v={v} success={success} warn={warn} danger={danger} />, { w })
-      if (field === 'is_nullable')         return cell(<BoolIcon v={v} success={success} muted={muted} />, { w })
-      if (field === 'is_primary_key')      return cell(<BoolIcon v={v} success={success} muted={muted} />, { w })
-      if (field === 'is_identity')         return cell(<BoolIcon v={v} success={success} muted={muted} />, { w })
-      if (field === 'pii_name_heuristic')  return cell(bool(v) ? <PiiBadge v={v} danger={danger} /> : <span style={{ color: muted, fontSize: '0.68rem' }}>—</span>, { w })
-      if (field === 'null_percentage')     return cell(<span style={{ color: v != null && v > 30 ? warn : (v != null && v > 10 ? `${warn}aa` : muted), fontFamily: MONO, fontSize: '0.72rem' }}>{fmtPct(v) ?? '—'}</span>, { w })
-      if (field === 'distinct_percentage') return cell(<span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{fmtPct(v) ?? '—'}</span>, { w })
-      if (field === 'uniqueness_score')    return cell(<span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{v != null ? fmtScore(v) : '—'}</span>, { w })
-      if (field === 'cardinality_tier')    return cell(<span style={{ fontSize: '0.65rem', color: muted }}>{v ?? '—'}</span>, { w })
-      if (field === 'avg_length')          return cell(<span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{v != null ? Number(v).toFixed(1) : '—'}</span>, { w })
-      if (field === 'dominant_pattern')    return cell(<span title={v} style={{ fontFamily: MONO, fontSize: '0.68rem', color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v ?? '—'}</span>, { w })
-      if (field === 'profiling_status')    return cell(<span style={{ fontSize: '0.66rem', color: v === 'COMPLETE' ? success : warn }}>{v ?? '—'}</span>, { w })
-      return cell(<span style={{ color: muted, fontSize: '0.72rem' }}>{v != null ? String(v) : '—'}</span>, { w })
+      if (field === 'data_type')  return cell(<span style={{ fontSize: '0.7rem', color: muted }}>{v ?? '—'}</span>, { w, key: field })
+      if (field === 'raw_type')   return cell(<span title={v} style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>{v ?? '—'}</span>, { w, key: field })
+      if (field === 'semantic_type')       return cell(<SemChip type={v} />, { w, key: field })
+      if (field === 'semantic_confidence') return cell(<ConfChip v={v} success={success} warn={warn} danger={danger} />, { w, key: field })
+      if (field === 'is_nullable')         return cell(<BoolIcon v={v} success={success} muted={muted} />, { w, key: field })
+      if (field === 'is_primary_key')      return cell(<BoolIcon v={v} success={success} muted={muted} />, { w, key: field })
+      if (field === 'is_identity')         return cell(<BoolIcon v={v} success={success} muted={muted} />, { w, key: field })
+      if (field === 'pii_name_heuristic')  return cell(bool(v) ? <PiiBadge v={v} danger={danger} /> : <span style={{ color: muted, fontSize: '0.68rem' }}>—</span>, { w, key: field })
+      if (field === 'null_percentage')     return cell(<span style={{ color: v != null && v > 30 ? warn : (v != null && v > 10 ? `${warn}aa` : muted), fontFamily: MONO, fontSize: '0.72rem' }}>{fmtPct(v) ?? '—'}</span>, { w, key: field })
+      if (field === 'distinct_percentage') return cell(<span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{fmtPct(v) ?? '—'}</span>, { w, key: field })
+      if (field === 'uniqueness_score')    return cell(<span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{v != null ? fmtScore(v) : '—'}</span>, { w, key: field })
+      if (field === 'cardinality_tier')    return cell(<span style={{ fontSize: '0.65rem', color: muted }}>{v ?? '—'}</span>, { w, key: field })
+      if (field === 'avg_length')          return cell(<span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{v != null ? Number(v).toFixed(1) : '—'}</span>, { w, key: field })
+      if (field === 'dominant_pattern')    return cell(<span title={v} style={{ fontFamily: MONO, fontSize: '0.68rem', color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v ?? '—'}</span>, { w, key: field })
+      if (field === 'profiling_status')    return cell(<span style={{ fontSize: '0.66rem', color: v === 'COMPLETE' ? success : warn }}>{v ?? '—'}</span>, { w, key: field })
+      return cell(<span style={{ color: muted, fontSize: '0.72rem' }}>{v != null ? String(v) : '—'}</span>, { w, key: field })
     })
   )
 
@@ -579,17 +813,44 @@ export default function ColumnProfileExplorer({
   const [tblSort,       setTblSort]       = useState({ field: 'table_name', dir: 'asc' })
   const [colSort,       setColSort]       = useState({ field: null, dir: 'asc' })
 
+  // Business Knowledge Graph state
+  const [bkgData,    setBkgData]    = useState(null)
+  const [bkgLoading, setBkgLoading] = useState(false)
+  const [colBkgData, setColBkgData] = useState(null)
+
+  // Fetch profiling detail + business context when a table is selected
   useEffect(() => {
-    if (!selectedFqn) { setTableDetail(null); setSelectedCol(null); return }
+    if (!selectedFqn) {
+      setTableDetail(null); setSelectedCol(null)
+      setBkgData(null); setColBkgData(null)
+      return
+    }
     setDetailLoading(true)
     setDetailError(null)
     setTableDetail(null)
     setSelectedCol(null)
+    setBkgData(null)
+    setBkgLoading(true)
+
     getTableProfileDetail(sourceId, selectedFqn, token)
       .then(resp => setTableDetail(resp?.data ?? null))
       .catch(e => setDetailError(e?.message ?? 'Failed to load table profile.'))
       .finally(() => setDetailLoading(false))
+
+    // Business context is enrichment — fails silently so profiling still works
+    getTableBusinessContext(sourceId, selectedFqn, token)
+      .then(resp => setBkgData(resp?.data ?? null))
+      .catch(() => setBkgData(null))
+      .finally(() => setBkgLoading(false))
   }, [selectedFqn, sourceId, token])
+
+  // Fetch column business context when a column drawer opens
+  useEffect(() => {
+    if (!selectedCol || !selectedFqn) { setColBkgData(null); return }
+    getColumnBusinessContext(sourceId, selectedFqn, selectedCol.column_name, token)
+      .then(resp => setColBkgData(resp?.data ?? null))
+      .catch(() => setColBkgData(null))
+  }, [selectedCol, selectedFqn, sourceId, token])
 
   const tables = profileData?.tables ?? []
   const snapshot = profileData?.snapshot
@@ -802,6 +1063,7 @@ export default function ColumnProfileExplorer({
 
           {selectedFqn && tableDetail?.table && (
             <>
+              <BusinessContextPanel bkg={bkgData} loading={bkgLoading && !bkgData} C={C} />
               <TableProfileHeader table={tableDetail.table} C={C} />
 
               {sortedColumns.length > 0 && (
@@ -834,7 +1096,7 @@ export default function ColumnProfileExplorer({
 
       {/* ── Column Detail Drawer ───────────────────────────────────────────── */}
       {selectedCol && (
-        <ColumnDetailDrawer col={selectedCol} onClose={() => setSelectedCol(null)} C={C} />
+        <ColumnDetailDrawer col={selectedCol} colBkg={colBkgData} onClose={() => setSelectedCol(null)} C={C} />
       )}
     </div>
   )

@@ -976,3 +976,23 @@ export async function getSearchSuggestions(q, token, limit = 8) {
   const res = await fetch(`/v1/search/suggestions?${qs}`, { headers: AUTH_HEADERS(token) })
   return parseResponse(res)
 }
+
+// ---------------------------------------------------------------------------
+// Business Knowledge Graph
+// ---------------------------------------------------------------------------
+
+export async function getTableBusinessContext(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/business-context/table/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getColumnBusinessContext(sourceId, tableFqn, columnName, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/business-context/column/${tableFqn}/${encodeURIComponent(columnName)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
