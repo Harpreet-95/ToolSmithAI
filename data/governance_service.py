@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
 from data.db import get_connection
@@ -1915,3 +1915,624 @@ def bulk_reject(f: BulkFilter, actor_id: str) -> BulkOpResult:
     Returns a BulkOpResult with affected/blocked counts.
     """
     return _run_bulk_operation(f, action="reject", actor_id=actor_id, dry_run=False)
+
+
+# ---------------------------------------------------------------------------
+# Stewardship & Work Management — Phase 4
+# ---------------------------------------------------------------------------
+
+class AssignmentPriority(str, Enum):
+    """Enterprise priority levels for governance assignments."""
+    CRITICAL = "CRITICAL"
+    HIGH     = "HIGH"
+    MEDIUM   = "MEDIUM"
+    LOW      = "LOW"
+
+
+class AssignmentStatus(str, Enum):
+    """Lifecycle status of a stewardship assignment."""
+    OPEN      = "OPEN"
+    COMPLETED = "COMPLETED"
+
+
+# SLA thresholds (calendar days) per priority.
+# Used to auto-calculate due_date when not explicitly provided.
+_SLA_DAYS_BY_PRIORITY: dict[str, int] = {
+    AssignmentPriority.CRITICAL: 1,
+    AssignmentPriority.HIGH:     3,
+    AssignmentPriority.MEDIUM:   7,
+    AssignmentPriority.LOW:      14,
+}
+
+# Sort weight for priority ordering in SQL ORDER BY expressions
+_PRIORITY_SQL_ORDER = (
+    "CASE priority "
+    "WHEN 'CRITICAL' THEN 0 "
+    "WHEN 'HIGH'     THEN 1 "
+    "WHEN 'MEDIUM'   THEN 2 "
+    "ELSE                 3 "
+    "END"
+)
+
+
+# ---------------------------------------------------------------------------
+# Priority calculation (pure — no DB calls)
+# ---------------------------------------------------------------------------
+
+def calculate_priority_for_profile(profile: GovernanceProfile) -> str:
+    """
+    Determine assignment priority from governance profile signals.
+
+    Evaluation order (highest priority wins):
+    1. PII risk present                   → CRITICAL
+    2. Hard PII safety policy blocked     → CRITICAL
+    3. Hard high-risk domain policy       → HIGH
+    4. NEEDS_REVIEW state                 → HIGH
+    5. Confidence < 0.60                  → HIGH
+    6. Auto-approval eligible             → LOW  (policy cleared it)
+    7. Confidence 0.60–0.79               → MEDIUM
+    8. Confidence ≥ 0.80 / default        → LOW
+    """
+    if profile.pii_risk:
+        return AssignmentPriority.CRITICAL
+
+    if profile.blocking_policy == _HARD_POLICY_PII:
+        return AssignmentPriority.CRITICAL
+
+    if profile.blocking_policy == _HARD_POLICY_HIGH_RISK:
+        return AssignmentPriority.HIGH
+
+    if profile.approval_state == GovernanceState.NEEDS_REVIEW:
+        return AssignmentPriority.HIGH
+
+    score = profile.confidence_score
+    if score is not None and score < 0.60:
+        return AssignmentPriority.HIGH
+
+    if profile.auto_approval_eligible:
+        return AssignmentPriority.LOW
+
+    if score is None or (0.60 <= score < 0.80):
+        return AssignmentPriority.MEDIUM
+
+    return AssignmentPriority.LOW
+
+
+# ---------------------------------------------------------------------------
+# SLA calculation (pure — no DB calls)
+# ---------------------------------------------------------------------------
+
+def calculate_sla(
+    assignment: dict,
+    reference_date: str | None = None,
+) -> dict:
+    """
+    Calculate SLA status for an assignment.
+
+    Pure calculation — no DB access.  Pass reference_date in tests to get
+    deterministic results without depending on wall-clock time.
+
+    Parameters
+    ----------
+    assignment     : Row dict from governance_assignments.
+    reference_date : ISO datetime string to use as "now".  Defaults to UTC now.
+
+    Returns
+    -------
+    dict with keys:
+        days_open            : int
+        days_overdue         : int    (0 if not overdue)
+        sla_status           : str    ON_TRACK | AT_RISK | OVERDUE | COMPLETED
+        risk_level           : str    LOW | MEDIUM | HIGH | CRITICAL
+        escalation_required  : bool
+        sla_due_date         : str    YYYY-MM-DD
+    """
+    # Resolve reference time
+    if reference_date:
+        ref = datetime.fromisoformat(reference_date)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+    else:
+        ref = datetime.now(timezone.utc)
+
+    # Resolve created_at
+    try:
+        created = datetime.fromisoformat(assignment.get("created_at", ""))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        created = ref
+
+    days_open = max(0, (ref - created).days)
+
+    # Resolve SLA threshold
+    priority  = assignment.get("priority", AssignmentPriority.MEDIUM)
+    sla_days  = _SLA_DAYS_BY_PRIORITY.get(priority, 7)
+
+    # Resolve due datetime
+    due_str = assignment.get("due_date")
+    if due_str:
+        try:
+            if len(due_str) == 10:  # date-only YYYY-MM-DD → treat as end of that day
+                due = datetime.combine(
+                    date.fromisoformat(due_str),
+                    datetime.max.time(),
+                ).replace(tzinfo=timezone.utc)
+            else:
+                due = datetime.fromisoformat(due_str)
+                if due.tzinfo is None:
+                    due = due.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            due = created + timedelta(days=sla_days)
+    else:
+        due = created + timedelta(days=sla_days)
+
+    sla_due_date = due.date().isoformat()
+
+    # COMPLETED path
+    if assignment.get("status") == AssignmentStatus.COMPLETED:
+        return {
+            "days_open":           days_open,
+            "days_overdue":        0,
+            "sla_status":          "COMPLETED",
+            "risk_level":          "LOW",
+            "escalation_required": False,
+            "sla_due_date":        sla_due_date,
+        }
+
+    # OPEN path
+    days_overdue   = max(0, (ref - due).days)
+    days_until_due = max(0, (due - ref).days)
+
+    if days_overdue > 0:
+        sla_status = "OVERDUE"
+    elif days_until_due <= 1:
+        sla_status = "AT_RISK"
+    else:
+        sla_status = "ON_TRACK"
+
+    if days_overdue > sla_days:
+        risk_level = "CRITICAL"
+    elif days_overdue > 0:
+        risk_level = "HIGH"
+    elif days_until_due <= 1:
+        risk_level = "MEDIUM"
+    else:
+        risk_level = "LOW"
+
+    return {
+        "days_open":           days_open,
+        "days_overdue":        days_overdue,
+        "sla_status":          sla_status,
+        "risk_level":          risk_level,
+        "escalation_required": days_overdue > 0,
+        "sla_due_date":        sla_due_date,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stewardship helpers (internal)
+# ---------------------------------------------------------------------------
+
+def _parse_object_id_kwargs(object_type: str, object_id: str) -> dict:
+    """
+    Reverse-parse a composite object_id string back into keyword arguments
+    for get_governance_profile().  Returns {} on any parse failure.
+    """
+    try:
+        ot = GovernedObjectType(object_type)
+    except ValueError:
+        return {}
+
+    try:
+        if ot == GovernedObjectType.DICT_TABLE:
+            src, fqn = object_id.split(":", 1)
+            return {"source_id": int(src), "table_fqn": fqn}
+
+        if ot == GovernedObjectType.DICT_COLUMN:
+            src, fqn, col = object_id.split(":", 2)
+            return {"source_id": int(src), "table_fqn": fqn, "column_name": col}
+
+        if ot in (GovernedObjectType.DOMAIN_RULE, GovernedObjectType.ENTITY_RULE):
+            return {"rule_id": int(object_id)}
+
+        if ot == GovernedObjectType.DOMAIN_REFINEMENT:
+            return {"suggestion_id": int(object_id)}
+
+        if ot == GovernedObjectType.ENGINE_TOOL:
+            return {"tool_id": object_id}
+
+        if ot == GovernedObjectType.PII_CONFIRMATION:
+            src, fqn, col = object_id.split(":", 2)
+            return {"source_id": int(src), "table_fqn": fqn, "column_name": col}
+
+    except (ValueError, TypeError):
+        pass
+
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Public — Stewardship Operations
+# ---------------------------------------------------------------------------
+
+def assign_governance_item(
+    *,
+    object_type: str,
+    object_id: str,
+    assigned_to: str,
+    assigned_by: str,
+    source_id: int | None = None,
+    assignment_group: str | None = None,
+    priority: str | None = None,
+    due_date: str | None = None,
+) -> dict:
+    """
+    Create a stewardship assignment for a governed object.
+
+    Auto-calculates priority from the object's governance profile (PII risk,
+    domain risk, confidence, policy evaluation) when not explicitly provided.
+    Auto-calculates due_date from the SLA threshold for the resolved priority.
+
+    Writes an ASSIGNED event to governance_approval_events.
+
+    Returns the new assignment row as a dict.
+    """
+    # ── Resolve priority ──────────────────────────────────────────────────
+    if priority is None:
+        kwargs = _parse_object_id_kwargs(object_type, object_id)
+        profile: GovernanceProfile | None = None
+        if kwargs:
+            try:
+                profile = get_governance_profile(object_type=object_type, **kwargs)
+            except Exception:
+                pass
+        priority = (
+            calculate_priority_for_profile(profile)
+            if profile else AssignmentPriority.MEDIUM
+        )
+    else:
+        try:
+            priority = AssignmentPriority(priority).value
+        except ValueError:
+            priority = AssignmentPriority.MEDIUM
+
+    # ── Resolve due_date ─────────────────────────────────────────────────
+    if due_date is None:
+        sla_days = _SLA_DAYS_BY_PRIORITY.get(priority, 7)
+        due_date = (
+            datetime.now(timezone.utc).date() + timedelta(days=sla_days)
+        ).isoformat()
+
+    now = _now()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """INSERT INTO governance_assignments
+                   (object_type, object_id, source_id,
+                    assigned_to, assigned_by, assignment_group,
+                    priority, status, due_date, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""",
+            (object_type, object_id, source_id,
+             assigned_to, assigned_by, assignment_group,
+             priority, due_date, now, now),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM governance_assignments WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    log_governance_event(
+        object_type_id = object_type,
+        object_id      = object_id,
+        event_type     = "ASSIGNED",
+        from_state     = None,
+        to_state       = "ASSIGNED",
+        actor_id       = assigned_by,
+        notes          = f"Assigned to '{assigned_to}' | priority: {priority}",
+        source_service = "governance_service.assign",
+    )
+
+    return dict(row) if row else {}
+
+
+def reassign_governance_item(
+    *,
+    assignment_id: int,
+    new_assignee: str,
+    reassigned_by: str,
+    reason: str | None = None,
+) -> dict | None:
+    """
+    Transfer an OPEN assignment to a different steward.
+
+    Returns the updated assignment dict, or None if the assignment does not
+    exist or is already COMPLETED.
+    """
+    now = _now()
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM governance_assignments WHERE id = ?",
+            (assignment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        d = dict(row)
+        if d["status"] != AssignmentStatus.OPEN:
+            return None  # cannot reassign completed assignments
+
+        prev_assignee = d["assigned_to"]
+        conn.execute(
+            "UPDATE governance_assignments SET assigned_to = ?, updated_at = ? WHERE id = ?",
+            (new_assignee, now, assignment_id),
+        )
+        conn.commit()
+        updated = conn.execute(
+            "SELECT * FROM governance_assignments WHERE id = ?",
+            (assignment_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    note = f"Reassigned from '{prev_assignee}' to '{new_assignee}'."
+    if reason:
+        note += f" Reason: {reason}"
+
+    log_governance_event(
+        object_type_id = d["object_type"],
+        object_id      = d["object_id"],
+        event_type     = "REASSIGNED",
+        from_state     = "ASSIGNED",
+        to_state       = "ASSIGNED",
+        actor_id       = reassigned_by,
+        notes          = note,
+        source_service = "governance_service.reassign",
+    )
+
+    return dict(updated) if updated else None
+
+
+def complete_assignment(
+    *,
+    assignment_id: int,
+    completed_by: str,
+) -> dict | None:
+    """
+    Mark a governance assignment as COMPLETED.
+
+    Returns the updated assignment dict, or None if not found or already
+    COMPLETED.
+    """
+    now = _now()
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM governance_assignments WHERE id = ?",
+            (assignment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        d = dict(row)
+        if d["status"] != AssignmentStatus.OPEN:
+            return None
+
+        conn.execute(
+            """UPDATE governance_assignments
+                  SET status = 'COMPLETED', completed_at = ?, updated_at = ?
+                WHERE id = ?""",
+            (now, now, assignment_id),
+        )
+        conn.commit()
+        updated = conn.execute(
+            "SELECT * FROM governance_assignments WHERE id = ?",
+            (assignment_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    log_governance_event(
+        object_type_id = d["object_type"],
+        object_id      = d["object_id"],
+        event_type     = "ASSIGNMENT_COMPLETED",
+        from_state     = "ASSIGNED",
+        to_state       = "COMPLETED",
+        actor_id       = completed_by,
+        source_service = "governance_service.complete",
+    )
+
+    return dict(updated) if updated else None
+
+
+def list_assignments(
+    *,
+    assigned_to: str | None = None,
+    assignment_group: str | None = None,
+    source_id: int | None = None,
+    priority: str | None = None,
+    object_type: str | None = None,
+    status: str | None = None,
+    overdue_only: bool = False,
+    reference_date: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
+    """
+    Return governance assignments matching the given filters.
+
+    SLA data is attached to every row under the "sla" key.
+    Results are sorted CRITICAL → HIGH → MEDIUM → LOW, then by created_at ASC.
+
+    Parameters
+    ----------
+    overdue_only     : When True, only items whose SLA status is OVERDUE are returned.
+    reference_date   : ISO datetime for SLA calculations (defaults to UTC now).
+    """
+    sql = f"SELECT * FROM governance_assignments WHERE 1=1"
+    params: list = []
+
+    if assigned_to:
+        sql += " AND assigned_to = ?"
+        params.append(assigned_to)
+    if assignment_group:
+        sql += " AND assignment_group = ?"
+        params.append(assignment_group)
+    if source_id is not None:
+        sql += " AND source_id = ?"
+        params.append(source_id)
+    if priority:
+        sql += " AND priority = ?"
+        params.append(priority)
+    if object_type:
+        sql += " AND object_type = ?"
+        params.append(object_type)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+
+    sql += f" ORDER BY {_PRIORITY_SQL_ORDER}, created_at ASC"
+    sql += f" LIMIT {limit} OFFSET {offset}"
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["sla"] = calculate_sla(d, reference_date)
+        if overdue_only and d["sla"]["sla_status"] != "OVERDUE":
+            continue
+        result.append(d)
+
+    return result
+
+
+def assignment_summary(
+    *,
+    assigned_to: str | None = None,
+    source_id: int | None = None,
+    reference_date: str | None = None,
+) -> dict:
+    """
+    Return governance work metrics.
+
+    Parameters
+    ----------
+    assigned_to    : Scope to one steward's queue.
+    source_id      : Scope to one data source.
+    reference_date : ISO datetime for SLA / "today" calculations.
+
+    Returns
+    -------
+    {
+        open:                int,
+        completed_today:     int,
+        overdue:             int,
+        overdue_pct:         float,
+        critical_backlog:    int,
+        avg_resolution_days: float | None,
+        by_priority:         {CRITICAL, HIGH, MEDIUM, LOW: int},
+        by_object_type:      {object_type: int, ...},
+        by_steward:          [{assigned_to, open, overdue}, ...],
+    }
+    """
+    conn = get_connection()
+    try:
+        sql = "SELECT * FROM governance_assignments WHERE 1=1"
+        params: list = []
+        if assigned_to:
+            sql += " AND assigned_to = ?"
+            params.append(assigned_to)
+        if source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(source_id)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    all_items = [dict(r) for r in rows]
+
+    # Resolve "today" for completed_today metric
+    if reference_date:
+        ref = datetime.fromisoformat(reference_date)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+    else:
+        ref = datetime.now(timezone.utc)
+    today_str = ref.date().isoformat()
+
+    open_count      = 0
+    overdue_count   = 0
+    completed_today = 0
+    resolution_secs: list[float] = []
+    by_priority     = {p.value: 0 for p in AssignmentPriority}
+    by_object_type: dict[str, int] = {}
+    steward_map:    dict[str, dict[str, int]] = {}
+
+    for item in all_items:
+        sla = calculate_sla(item, reference_date)
+        p   = item.get("priority", AssignmentPriority.MEDIUM)
+        st  = item.get("status", AssignmentStatus.OPEN)
+        ot  = item.get("object_type", "unknown")
+
+        if st == AssignmentStatus.OPEN:
+            open_count += 1
+            by_priority[p] = by_priority.get(p, 0) + 1
+            by_object_type[ot] = by_object_type.get(ot, 0) + 1
+
+            steward = item.get("assigned_to", "")
+            if steward not in steward_map:
+                steward_map[steward] = {"open": 0, "overdue": 0}
+            steward_map[steward]["open"] += 1
+
+            if sla["days_overdue"] > 0:
+                overdue_count += 1
+                steward_map[steward]["overdue"] += 1
+
+        elif st == AssignmentStatus.COMPLETED:
+            comp_at = item.get("completed_at") or ""
+            if comp_at[:10] == today_str:
+                completed_today += 1
+            try:
+                created   = datetime.fromisoformat(item["created_at"])
+                completed = datetime.fromisoformat(comp_at)
+                resolution_secs.append(
+                    abs((completed - created).total_seconds())
+                )
+            except (ValueError, TypeError):
+                pass
+
+    overdue_pct = (
+        round(overdue_count / open_count * 100, 1) if open_count > 0 else 0.0
+    )
+    avg_resolution_days = (
+        round(sum(resolution_secs) / len(resolution_secs) / 86400, 1)
+        if resolution_secs else None
+    )
+
+    return {
+        "open":                open_count,
+        "completed_today":     completed_today,
+        "overdue":             overdue_count,
+        "overdue_pct":         overdue_pct,
+        "critical_backlog":    by_priority.get(AssignmentPriority.CRITICAL, 0),
+        "avg_resolution_days": avg_resolution_days,
+        "by_priority":         by_priority,
+        "by_object_type":      by_object_type,
+        "by_steward": [
+            {
+                "assigned_to": k,
+                "open":        v["open"],
+                "overdue":     v["overdue"],
+            }
+            for k, v in sorted(steward_map.items(), key=lambda x: -x[1]["open"])
+        ],
+    }

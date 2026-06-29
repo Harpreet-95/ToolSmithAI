@@ -1201,4 +1201,42 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # governance_assignments: stewardship work items — one row per governed object
+    # assignment.  Multiple assignments can exist for the same object (e.g., assigned
+    # to different stewards at different times).
+    # status:  OPEN | COMPLETED
+    # priority: CRITICAL | HIGH | MEDIUM | LOW  (auto-calculated from governance profile)
+    # due_date: ISO date (YYYY-MM-DD), computed from SLA threshold if not provided.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS governance_assignments (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            object_type      TEXT    NOT NULL,
+            object_id        TEXT    NOT NULL,
+            source_id        INTEGER,
+            assigned_to      TEXT    NOT NULL,
+            assigned_by      TEXT    NOT NULL,
+            assignment_group TEXT,
+            priority         TEXT    NOT NULL DEFAULT 'MEDIUM',
+            status           TEXT    NOT NULL DEFAULT 'OPEN',
+            due_date         TEXT,
+            created_at       TEXT    NOT NULL,
+            updated_at       TEXT    NOT NULL,
+            completed_at     TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ga_assigned_to
+            ON governance_assignments (assigned_to);
+        CREATE INDEX IF NOT EXISTS idx_ga_status
+            ON governance_assignments (status);
+        CREATE INDEX IF NOT EXISTS idx_ga_priority
+            ON governance_assignments (priority);
+        CREATE INDEX IF NOT EXISTS idx_ga_source_id
+            ON governance_assignments (source_id);
+        CREATE INDEX IF NOT EXISTS idx_ga_assigned_to_status
+            ON governance_assignments (assigned_to, status);
+        CREATE INDEX IF NOT EXISTS idx_ga_object
+            ON governance_assignments (object_type, object_id);
+    """)
+    conn.commit()
+
     conn.close()

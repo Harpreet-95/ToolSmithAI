@@ -130,6 +130,13 @@ from data.lineage_service import (
     critical_asset_analysis,
     lineage_summary,
 )
+from data.semantic_layer_service import (
+    discover_business_joins,
+    discover_join_paths,
+    detect_join_ambiguity,
+    semantic_table_profile,
+    semantic_summary,
+)
 from data.dictionary_service import (
     approve_column_dictionary,
     approve_table_dictionary,
@@ -5093,6 +5100,158 @@ def governance_bulk_reject(
     return {"status": "success", "data": result.to_dict()}
 
 
+# ---------------------------------------------------------------------------
+# Stewardship & Work Management — Phase 4
+# ---------------------------------------------------------------------------
+
+class _AssignRequest(BaseModel):
+    object_type:      str
+    object_id:        str
+    assigned_to:      str
+    source_id:        int | None   = None
+    assignment_group: str | None   = None
+    priority:         str | None   = None  # auto-calculated if omitted
+    due_date:         str | None   = None  # auto-calculated from SLA if omitted
+
+
+class _ReassignRequest(BaseModel):
+    assignment_id: int
+    new_assignee:  str
+    reason:        str | None = None
+
+
+class _CompleteRequest(BaseModel):
+    assignment_id: int
+
+
+@router.get("/governance/assignments")
+def governance_list_assignments(
+    assigned_to:      str | None = Query(None, description="Filter by steward user_id"),
+    assignment_group: str | None = Query(None, description="Filter by team/group"),
+    source_id:        int | None = Query(None),
+    priority:         str | None = Query(None, description="CRITICAL|HIGH|MEDIUM|LOW"),
+    object_type:      str | None = Query(None),
+    status:           str | None = Query(None, description="OPEN|COMPLETED"),
+    overdue_only:     bool       = Query(False),
+    limit:            int        = Query(200, ge=1, le=500),
+    offset:           int        = Query(0, ge=0),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return governance assignments matching the given filters.
+
+    Each result includes an 'sla' object with days_open, days_overdue,
+    sla_status (ON_TRACK | AT_RISK | OVERDUE | COMPLETED), risk_level,
+    and escalation_required.
+    """
+    from data.governance_service import list_assignments
+    items = list_assignments(
+        assigned_to      = assigned_to,
+        assignment_group = assignment_group,
+        source_id        = source_id,
+        priority         = priority,
+        object_type      = object_type,
+        status           = status,
+        overdue_only     = overdue_only,
+        limit            = limit,
+        offset           = offset,
+    )
+    return {"status": "success", "data": items, "count": len(items)}
+
+
+@router.post("/governance/assign")
+def governance_assign(
+    body: _AssignRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Create a stewardship assignment.
+
+    priority and due_date are auto-calculated from the object's governance
+    profile if not provided.  Writes an ASSIGNED governance event.
+    """
+    from data.governance_service import assign_governance_item
+    assignment = assign_governance_item(
+        object_type      = body.object_type,
+        object_id        = body.object_id,
+        assigned_to      = body.assigned_to,
+        assigned_by      = user.user_id,
+        source_id        = body.source_id,
+        assignment_group = body.assignment_group,
+        priority         = body.priority,
+        due_date         = body.due_date,
+    )
+    return {"status": "success", "data": assignment}
+
+
+@router.post("/governance/reassign")
+def governance_reassign(
+    body: _ReassignRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Transfer an OPEN assignment to a different steward.
+    Writes a REASSIGNED governance event.
+    """
+    from data.governance_service import reassign_governance_item
+    result = reassign_governance_item(
+        assignment_id = body.assignment_id,
+        new_assignee  = body.new_assignee,
+        reassigned_by = user.user_id,
+        reason        = body.reason,
+    )
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response(
+                f"Assignment {body.assignment_id} not found or already completed."
+            ),
+        )
+    return {"status": "success", "data": result}
+
+
+@router.post("/governance/complete")
+def governance_complete(
+    body: _CompleteRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Mark a governance assignment as COMPLETED.
+    Writes an ASSIGNMENT_COMPLETED governance event.
+    """
+    from data.governance_service import complete_assignment
+    result = complete_assignment(
+        assignment_id = body.assignment_id,
+        completed_by  = user.user_id,
+    )
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response(
+                f"Assignment {body.assignment_id} not found or already completed."
+            ),
+        )
+    return {"status": "success", "data": result}
+
+
+@router.get("/governance/assignment-summary")
+def governance_assignment_summary(
+    assigned_to: str | None = Query(None, description="Scope to one steward"),
+    source_id:   int | None = Query(None, description="Scope to one data source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return governance work metrics.
+
+    Includes: open count, completed_today, overdue count, overdue %,
+    critical backlog, avg resolution days, breakdown by priority /
+    object_type / steward.
+    """
+    from data.governance_service import assignment_summary
+    summary = assignment_summary(assigned_to=assigned_to, source_id=source_id)
+    return {"status": "success", "data": summary}
+
+
 _VALID_DICT_STATUSES = {"approved", "generated", "none"}
 
 
@@ -5331,6 +5490,105 @@ def lineage_critical_assets_route(
     except Exception:
         logger.exception("lineage_critical_assets_route failed for source_id=%s", source_id)
         return JSONResponse(status_code=500, content=build_error_response("Failed to analyse critical assets."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Semantic Layer & Join Intelligence  (/v1/sources/{id}/semantic/...)
+# ---------------------------------------------------------------------------
+
+@router.get("/sources/{source_id}/semantic/summary")
+def semantic_summary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = semantic_summary(source_id, user.user_id)
+    except Exception:
+        logger.exception("semantic_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve semantic summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/semantic/join")
+def semantic_join_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+    table_a: str = Query(..., description="First table FQN (e.g. dbo.orders)"),
+    table_b: str = Query(..., description="Second table FQN (e.g. dbo.customers)"),
+) -> dict:
+    try:
+        result = discover_business_joins(source_id, user.user_id, table_a, table_b)
+    except Exception:
+        logger.exception(
+            "semantic_join_route failed for source_id=%s table_a=%s table_b=%s",
+            source_id, table_a, table_b,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to discover business joins."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/semantic/join-paths")
+def semantic_join_paths_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+    from_table: str = Query(..., alias="from", description="Start table FQN"),
+    to_table:   str = Query(..., alias="to",   description="Target table FQN"),
+    max_depth:  int = Query(default=5, ge=1, le=8, description="Maximum join hops"),
+) -> dict:
+    try:
+        result = discover_join_paths(source_id, user.user_id, from_table, to_table, max_depth)
+    except Exception:
+        logger.exception(
+            "semantic_join_paths_route failed for source_id=%s from=%s to=%s",
+            source_id, from_table, to_table,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to discover join paths."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/semantic/ambiguity")
+def semantic_ambiguity_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+    table_a: str = Query(..., description="Primary table FQN"),
+    table_b: str | None = Query(default=None, description="Optional second table FQN for pair analysis"),
+) -> dict:
+    try:
+        result = detect_join_ambiguity(source_id, user.user_id, table_a, table_b)
+    except Exception:
+        logger.exception(
+            "semantic_ambiguity_route failed for source_id=%s table_a=%s table_b=%s",
+            source_id, table_a, table_b,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to detect join ambiguity."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/semantic/table/{table_fqn:path}")
+def semantic_table_profile_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = semantic_table_profile(source_id, user.user_id, table_fqn)
+    except Exception:
+        logger.exception(
+            "semantic_table_profile_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve semantic table profile."))
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}
