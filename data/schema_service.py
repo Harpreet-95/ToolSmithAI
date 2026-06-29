@@ -8,6 +8,7 @@ from core.connectors.base import DataSourceConfig
 from core.connectors.schema import SchemaSnapshot
 from core.secrets.manager import get_secret_manager
 from data.db import get_connection
+import data.relationship_service as _rel_svc
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,14 @@ def run_discovery(source_id: int, user_id: str) -> dict | None:
     )
 
     saved = _save_snapshot(source_id, snapshot)
+
+    try:
+        _rel_svc.extract_and_persist_relationships(saved["snapshot_id"], source_id)
+    except Exception:
+        logger.warning(
+            "Relationship extraction failed for snapshot_id=%s; discovery result unaffected",
+            saved["snapshot_id"],
+        )
 
     now = _now()
     conn = get_connection()

@@ -247,6 +247,34 @@ def approve_table_dictionary(source_id: int, user_id: str, table_fqn: str) -> di
 
     if cursor.rowcount == 0:
         return None  # no matching entry
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType,
+            log_governance_event, upsert_governance_state,
+        )
+        _obj_id = f"{source_id}:{table_fqn}"
+        log_governance_event(
+            object_type_id = GovernedObjectType.DICT_TABLE,
+            object_id      = _obj_id,
+            event_type     = "APPROVED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.HUMAN_APPROVED,
+            actor_id       = user_id,
+            source_service = "dictionary_service",
+        )
+        upsert_governance_state(
+            object_type_id = GovernedObjectType.DICT_TABLE,
+            object_id      = _obj_id,
+            approval_state = GovernanceState.HUMAN_APPROVED,
+            reviewer_id    = user_id,
+            reviewed_at    = now,
+        )
+    except Exception:
+        logger.warning(
+            "governance logging failed for dict.table %s:%s", source_id, table_fqn
+        )
+
     return {"approved": True, "coverage": _coverage(source_id)}
 
 
@@ -275,6 +303,35 @@ def approve_column_dictionary(
 
     if cursor.rowcount == 0:
         return None  # no matching entry
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType,
+            log_governance_event, upsert_governance_state,
+        )
+        _obj_id = f"{source_id}:{table_fqn}:{column_name}"
+        log_governance_event(
+            object_type_id = GovernedObjectType.DICT_COLUMN,
+            object_id      = _obj_id,
+            event_type     = "APPROVED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.HUMAN_APPROVED,
+            actor_id       = user_id,
+            source_service = "dictionary_service",
+        )
+        upsert_governance_state(
+            object_type_id = GovernedObjectType.DICT_COLUMN,
+            object_id      = _obj_id,
+            approval_state = GovernanceState.HUMAN_APPROVED,
+            reviewer_id    = user_id,
+            reviewed_at    = now,
+        )
+    except Exception:
+        logger.warning(
+            "governance logging failed for dict.column %s:%s:%s",
+            source_id, table_fqn, column_name,
+        )
+
     return {"approved": True, "coverage": _coverage(source_id)}
 
 

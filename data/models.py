@@ -1000,4 +1000,205 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # table_relationships — first-class FK rows extracted from schema_snapshots.
+    # Makes join paths, lineage, and impact analysis queryable without parsing JSON.
+    # INSERT OR IGNORE + unique index provides idempotent re-extraction per snapshot.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS table_relationships (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id         INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            snapshot_id       INTEGER NOT NULL REFERENCES schema_snapshots(id) ON DELETE CASCADE,
+            from_schema       TEXT    NOT NULL,
+            from_table        TEXT    NOT NULL,
+            from_table_fqn    TEXT    NOT NULL,
+            from_column       TEXT    NOT NULL,
+            to_schema         TEXT    NOT NULL,
+            to_table          TEXT    NOT NULL,
+            to_table_fqn      TEXT    NOT NULL,
+            to_column         TEXT    NOT NULL,
+            relationship_name TEXT,
+            relationship_type TEXT    NOT NULL DEFAULT 'FOREIGN_KEY',
+            confidence        REAL    NOT NULL DEFAULT 1.0,
+            evidence_json     TEXT,
+            created_at        TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tr_snapshot_uniq
+            ON table_relationships (snapshot_id, from_table_fqn, from_column, to_table_fqn, to_column);
+
+        CREATE INDEX IF NOT EXISTS idx_tr_source_id
+            ON table_relationships (source_id);
+
+        CREATE INDEX IF NOT EXISTS idx_tr_from_table
+            ON table_relationships (source_id, from_table_fqn);
+
+        CREATE INDEX IF NOT EXISTS idx_tr_to_table
+            ON table_relationships (source_id, to_table_fqn);
+    """)
+    conn.commit()
+
+    # -------------------------------------------------------------------------
+    # Unified Governance Engine — Phase 1 Foundation
+    # -------------------------------------------------------------------------
+
+    # governance_approval_events: append-only audit trail for all governed objects.
+    # Mirrors the engine_approval_events pattern but covers every governed type:
+    #   dict.table, dict.column, domain.rule, domain.refinement,
+    #   entity.rule, tool.engine, pii.confirmation
+    # Rows are never updated or deleted.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS governance_approval_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            object_type_id TEXT    NOT NULL,
+            object_id      TEXT    NOT NULL,
+            event_type     TEXT    NOT NULL,
+            from_state     TEXT,
+            to_state       TEXT    NOT NULL,
+            actor_id       TEXT    NOT NULL,
+            notes          TEXT,
+            source_service TEXT,
+            created_at     TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gov_events_type_id
+            ON governance_approval_events (object_type_id, object_id);
+        CREATE INDEX IF NOT EXISTS idx_gov_events_actor
+            ON governance_approval_events (actor_id);
+        CREATE INDEX IF NOT EXISTS idx_gov_events_created_at
+            ON governance_approval_events (created_at);
+    """)
+    conn.commit()
+
+    # governance_state_map: current unified state projection for any governed object.
+    # The source table is always authoritative; this projection enables fast
+    # cross-type dashboard queries and review-queue aggregations without joining
+    # seven domain-specific tables.
+    # Upserted on every state transition by governance_service.upsert_governance_state().
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS governance_state_map (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            object_type_id   TEXT    NOT NULL,
+            object_id        TEXT    NOT NULL,
+            approval_state   TEXT    NOT NULL DEFAULT 'GENERATED',
+            confidence_score REAL,
+            confidence_tier  TEXT,
+            reviewer_id      TEXT,
+            reviewed_at      TEXT,
+            created_at       TEXT    NOT NULL,
+            updated_at       TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_gov_state_type_id
+            ON governance_state_map (object_type_id, object_id);
+        CREATE INDEX IF NOT EXISTS idx_gov_state_approval
+            ON governance_state_map (approval_state);
+        CREATE INDEX IF NOT EXISTS idx_gov_state_type_state
+            ON governance_state_map (object_type_id, approval_state);
+    """)
+    conn.commit()
+
+    # governance_policies: user-configurable auto-approval and escalation policies.
+    # Evaluated in ascending priority order (lower number = evaluated first).
+    # Hard-coded safety policies in governance_service.py always take precedence.
+    # object_types_json: JSON array of GovernedObjectType ids; [] means all types.
+    # condition_json: JSON object with matching criteria (confidence_min, domains, etc.).
+    # action: REQUIRE_HUMAN | AUTO_APPROVE | ESCALATE | NO_ACTION
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS governance_policies (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            policy_name       TEXT    NOT NULL UNIQUE,
+            enabled           INTEGER NOT NULL DEFAULT 1,
+            priority          INTEGER NOT NULL DEFAULT 100,
+            object_types_json TEXT    NOT NULL DEFAULT '[]',
+            condition_json    TEXT    NOT NULL DEFAULT '{}',
+            action            TEXT    NOT NULL,
+            created_by        TEXT    NOT NULL DEFAULT 'system',
+            created_at        TEXT    NOT NULL,
+            updated_at        TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gov_policies_enabled_priority
+            ON governance_policies (enabled, priority);
+    """)
+    conn.commit()
+
+    # Seed sensible enterprise default policies.
+    # INSERT OR IGNORE ensures idempotency on repeated init_db() calls.
+    _now_str = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc
+    ).isoformat()
+    _policy_seeds = [
+        # Domain / entity rules with ≥ 99% confidence are safe to auto-approve.
+        (
+            "POLICY_AUTO_APPROVE_VERY_HIGH_CONFIDENCE",
+            1, 10,
+            '["domain.rule","entity.rule","domain.refinement"]',
+            '{"confidence_min": 0.99}',
+            "AUTO_APPROVE",
+        ),
+        # Domain / entity rules with ≥ 95% confidence are auto-approve eligible.
+        (
+            "POLICY_AUTO_APPROVE_HIGH_CONFIDENCE_RULES",
+            1, 20,
+            '["domain.rule","entity.rule"]',
+            '{"confidence_min": 0.95}',
+            "AUTO_APPROVE",
+        ),
+        # Dictionary entries (business names, labels) always require a human
+        # since they carry direct business meaning that needs domain expert sign-off.
+        (
+            "POLICY_REQUIRE_HUMAN_DICT_ENTRIES",
+            1, 50,
+            '["dict.table","dict.column"]',
+            '{}',
+            "REQUIRE_HUMAN",
+        ),
+        # Engine tools always require explicit human approval before execution.
+        (
+            "POLICY_REQUIRE_HUMAN_ENGINE_TOOLS",
+            1, 50,
+            '["tool.engine"]',
+            '{}',
+            "REQUIRE_HUMAN",
+        ),
+    ]
+    for _seed in _policy_seeds:
+        cursor.execute(
+            """INSERT OR IGNORE INTO governance_policies
+                   (policy_name, enabled, priority,
+                    object_types_json, condition_json, action,
+                    created_by, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'system', ?, ?)""",
+            (*_seed, _now_str, _now_str),
+        )
+    conn.commit()
+
+    # governance_bulk_ops: immutable record of every bulk approve / reject run.
+    # blocked_items_json: JSON array of {object_id, object_type_id, blocking_policy, reason}.
+    # status:  COMPLETED | UNDONE
+    # undone_at / undone_by: set if the operation was reversed (Phase 4).
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS governance_bulk_ops (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id           TEXT    NOT NULL,
+            action             TEXT    NOT NULL,
+            filter_json        TEXT    NOT NULL,
+            affected_count     INTEGER NOT NULL DEFAULT 0,
+            blocked_count      INTEGER NOT NULL DEFAULT 0,
+            blocked_items_json TEXT    NOT NULL DEFAULT '[]',
+            status             TEXT    NOT NULL DEFAULT 'COMPLETED',
+            executed_at        TEXT    NOT NULL,
+            undone_at          TEXT,
+            undone_by          TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gov_bulk_actor
+            ON governance_bulk_ops (actor_id);
+        CREATE INDEX IF NOT EXISTS idx_gov_bulk_executed_at
+            ON governance_bulk_ops (executed_at);
+        CREATE INDEX IF NOT EXISTS idx_gov_bulk_action
+            ON governance_bulk_ops (action);
+    """)
+    conn.commit()
+
     conn.close()

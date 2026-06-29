@@ -437,6 +437,35 @@ def approve_refinement_suggestion(suggestion_id: int, user_id: str) -> dict | No
         ).fetchone()
     finally:
         conn.close()
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType,
+            log_governance_event, upsert_governance_state,
+        )
+        _confidence = float(dict(updated).get("confidence") or 0.0)
+        log_governance_event(
+            object_type_id = GovernedObjectType.DOMAIN_REFINEMENT,
+            object_id      = str(suggestion_id),
+            event_type     = "APPROVED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.HUMAN_APPROVED,
+            actor_id       = user_id,
+            source_service = "domain_refinement_service",
+        )
+        upsert_governance_state(
+            object_type_id   = GovernedObjectType.DOMAIN_REFINEMENT,
+            object_id        = str(suggestion_id),
+            approval_state   = GovernanceState.HUMAN_APPROVED,
+            confidence_score = _confidence,
+            reviewer_id      = user_id,
+            reviewed_at      = now,
+        )
+    except Exception:
+        logger.warning(
+            "governance logging failed for domain.refinement id=%s", suggestion_id
+        )
+
     return dict(updated)
 
 
@@ -489,6 +518,33 @@ def reject_refinement_suggestion(suggestion_id: int, user_id: str) -> dict | Non
         ).fetchone()
     finally:
         conn.close()
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType,
+            log_governance_event, upsert_governance_state,
+        )
+        log_governance_event(
+            object_type_id = GovernedObjectType.DOMAIN_REFINEMENT,
+            object_id      = str(suggestion_id),
+            event_type     = "REJECTED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.REJECTED,
+            actor_id       = user_id,
+            source_service = "domain_refinement_service",
+        )
+        upsert_governance_state(
+            object_type_id = GovernedObjectType.DOMAIN_REFINEMENT,
+            object_id      = str(suggestion_id),
+            approval_state = GovernanceState.REJECTED,
+            reviewer_id    = user_id,
+            reviewed_at    = now,
+        )
+    except Exception:
+        logger.warning(
+            "governance logging failed for domain.refinement id=%s", suggestion_id
+        )
+
     return dict(updated)
 
 
