@@ -106,6 +106,23 @@ from data.schema_service import (
     get_latest_snapshot,
     run_discovery,
 )
+from data.relationship_service import (
+    get_relationships_for_source,
+    get_relationships_for_table,
+    get_relationship_summary,
+)
+from data.business_knowledge_service import (
+    get_table_business_context,
+    get_column_business_context,
+    get_business_summary,
+)
+from data.knowledge_graph_service import (
+    get_related_tables,
+    find_business_assets,
+    explain_table,
+    trace_business_path,
+    knowledge_graph_summary,
+)
 from data.dictionary_service import (
     approve_column_dictionary,
     approve_table_dictionary,
@@ -4545,6 +4562,64 @@ def approve_domain_refinement_route(
     return {"status": "success", "data": result}
 
 
+# ---------------------------------------------------------------------------
+# Business Knowledge Graph — Relationships  (/v1/sources/{id}/relationships/...)
+# ---------------------------------------------------------------------------
+
+@router.get("/sources/{source_id}/relationships")
+def list_relationships_route(
+    source_id: int,
+    snapshot_id: int | None = Query(default=None, description="Specific snapshot to query (defaults to latest)"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_relationships_for_source(source_id, user.user_id, snapshot_id=snapshot_id)
+    except Exception:
+        logger.exception("list_relationships_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve relationships."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/relationships/summary")
+def get_relationships_summary_route(
+    source_id: int,
+    snapshot_id: int | None = Query(default=None, description="Specific snapshot to query (defaults to latest)"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_relationship_summary(source_id, user.user_id, snapshot_id=snapshot_id)
+    except Exception:
+        logger.exception("get_relationships_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve relationship summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/relationships/table/{table_fqn:path}")
+def get_table_relationships_route(
+    source_id: int,
+    table_fqn: str,
+    snapshot_id: int | None = Query(default=None, description="Specific snapshot to query (defaults to latest)"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_relationships_for_table(
+            source_id, user.user_id, table_fqn, snapshot_id=snapshot_id
+        )
+    except Exception:
+        logger.exception(
+            "get_table_relationships_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve table relationships."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
 @router.post("/domain-refinements/{suggestion_id}/reject")
 def reject_domain_refinement_route(
     suggestion_id: int,
@@ -4559,6 +4634,64 @@ def reject_domain_refinement_route(
         return JSONResponse(status_code=500, content=build_error_response("Refinement suggestion rejection failed."))
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Refinement suggestion not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Business Knowledge Graph  (/v1/sources/{id}/business-context/...)
+# ---------------------------------------------------------------------------
+
+@router.get("/sources/{source_id}/business-context/summary")
+def get_business_summary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_business_summary(source_id, user.user_id)
+    except Exception:
+        logger.exception("get_business_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve business summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/business-context/table/{table_fqn:path}")
+def get_table_business_context_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_table_business_context(source_id, user.user_id, table_fqn)
+    except Exception:
+        logger.exception(
+            "get_table_business_context_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve table business context."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/business-context/column/{table_fqn:path}/{column_name}")
+def get_column_business_context_route(
+    source_id: int,
+    table_fqn: str,
+    column_name: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_column_business_context(source_id, user.user_id, table_fqn, column_name)
+    except Exception:
+        logger.exception(
+            "get_column_business_context_route failed for source_id=%s table_fqn=%s col=%s",
+            source_id, table_fqn, column_name,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve column business context."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}
 
 
@@ -4627,6 +4760,207 @@ def search_suggestions_route(
     return {"status": "success", "data": get_search_suggestions(q, limit)}
 
 
+# ---------------------------------------------------------------------------
+# Governance Engine — Phase 1
+# ---------------------------------------------------------------------------
+
+class _PiiConfirmRequest(BaseModel):
+    source_id:   int
+    table_fqn:   str
+    column_name: str
+
+
+_VALID_GOVERNED_TYPES = {
+    "dict.table", "dict.column",
+    "domain.rule", "domain.refinement",
+    "entity.rule", "tool.engine",
+    "pii.confirmation",
+}
+
+
+@router.get("/governance/types")
+def governance_list_types(user: AuthenticatedUser = Depends(require_jwt)) -> dict:
+    """Return metadata for every registered governed object type."""
+    from data.governance_service import list_governed_object_types
+    return {"status": "success", "data": list_governed_object_types()}
+
+
+@router.get("/governance/profile")
+def governance_get_profile(
+    object_type:   str       = Query(..., description="Governed object type id"),
+    source_id:     int | None = Query(None),
+    table_fqn:     str | None = Query(None),
+    column_name:   str | None = Query(None),
+    rule_id:       int | None = Query(None),
+    suggestion_id: int | None = Query(None),
+    tool_id:       str | None = Query(None),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return the unified governance profile for one governed object.
+
+    Required query parameters vary by object_type:
+      dict.table        — source_id, table_fqn
+      dict.column       — source_id, table_fqn, column_name
+      domain.rule       — rule_id
+      entity.rule       — rule_id
+      domain.refinement — suggestion_id
+      tool.engine       — tool_id
+      pii.confirmation  — source_id, table_fqn, column_name
+    """
+    if object_type not in _VALID_GOVERNED_TYPES:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(
+                f"Unknown object_type '{object_type}'. "
+                f"Valid types: {', '.join(sorted(_VALID_GOVERNED_TYPES))}"
+            ),
+        )
+    from data.governance_service import get_governance_profile
+    profile = get_governance_profile(
+        object_type   = object_type,
+        source_id     = source_id,
+        table_fqn     = table_fqn,
+        column_name   = column_name,
+        rule_id       = rule_id,
+        suggestion_id = suggestion_id,
+        tool_id       = tool_id,
+    )
+    if profile is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Governed object not found."),
+        )
+    return {"status": "success", "data": profile.to_dict()}
+
+
+@router.get("/governance/events")
+def governance_list_events(
+    object_type_id: str = Query(..., description="Governed object type id"),
+    object_id:      str = Query(..., description="Object id within the type"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return the full audit trail for one governed object, oldest first."""
+    from data.governance_service import list_governance_events
+    return {
+        "status": "success",
+        "data":   list_governance_events(
+            object_type_id = object_type_id,
+            object_id      = object_id,
+        ),
+    }
+
+
+@router.get("/governance/policies")
+def governance_list_policies(
+    enabled_only: bool = Query(False, description="Return only enabled policies"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Return all governance policies ordered by priority."""
+    from data.governance_service import get_governance_policies
+    return {"status": "success", "data": get_governance_policies(enabled_only=enabled_only)}
+
+
+class _CreatePolicyRequest(BaseModel):
+    policy_name:  str
+    action:       str
+    priority:     int                  = 100
+    object_types: list[str]            = []
+    condition:    dict                 = {}
+    enabled:      bool                 = True
+
+
+@router.post("/governance/policies")
+def governance_create_policy(
+    body: _CreatePolicyRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Create a user-configurable governance policy.
+
+    action must be one of: REQUIRE_HUMAN, AUTO_APPROVE, ESCALATE, NO_ACTION.
+    Hard-coded safety policies (HARD_PII_*, HARD_HIGH_RISK_*, HARD_IRREVERSIBLE_*)
+    cannot be created or overridden via this endpoint.
+    """
+    from data.governance_service import create_governance_policy
+    try:
+        policy = create_governance_policy(
+            policy_name  = body.policy_name,
+            action       = body.action,
+            priority     = body.priority,
+            object_types = body.object_types or None,
+            condition    = body.condition or None,
+            created_by   = user.user_id,
+            enabled      = body.enabled,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response(str(exc)),
+        )
+    return {"status": "success", "data": policy}
+
+
+class _TogglePolicyRequest(BaseModel):
+    enabled: bool
+
+
+@router.patch("/governance/policies/{policy_id}")
+def governance_toggle_policy(
+    policy_id: int,
+    body: _TogglePolicyRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """Enable or disable a DB-stored governance policy."""
+    from data.governance_service import toggle_governance_policy
+    result = toggle_governance_policy(
+        policy_id   = policy_id,
+        enabled     = body.enabled,
+        updated_by  = user.user_id,
+    )
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response(f"Policy {policy_id} not found."),
+        )
+    return {"status": "success", "data": result}
+
+
+@router.post("/governance/pii/confirm")
+def governance_confirm_pii(
+    body: _PiiConfirmRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Confirm that a column contains PII.
+
+    Sets pii_confirmed=1 on the column's latest profiling snapshot row,
+    resolving the CRITICAL 'Review PII Classification' governance task and
+    recording a HUMAN_APPROVED event in the unified audit log.
+    """
+    from data.governance_service import confirm_pii_column
+    result = confirm_pii_column(
+        source_id   = body.source_id,
+        user_id     = user.user_id,
+        table_fqn   = body.table_fqn,
+        column_name = body.column_name,
+    )
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response(
+                "Column not found, no PII heuristic detected, "
+                "or source does not belong to this user."
+            ),
+        )
+    return {
+        "status":      "success",
+        "confirmed":   True,
+        "table_fqn":   body.table_fqn,
+        "column_name": body.column_name,
+    }
+
+
 _VALID_DICT_STATUSES = {"approved", "generated", "none"}
 
 
@@ -4677,4 +5011,102 @@ def search_metadata_route(
         classification=classification,
         profile_status=profile_status,
     )
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph Reasoning Engine  (/v1/sources/{id}/knowledge/...)
+# ---------------------------------------------------------------------------
+
+@router.get("/sources/{source_id}/knowledge/summary")
+def knowledge_summary_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = knowledge_graph_summary(source_id, user.user_id)
+    except Exception:
+        logger.exception("knowledge_summary_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve knowledge graph summary."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/knowledge/related/{table_fqn:path}")
+def knowledge_related_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = get_related_tables(source_id, user.user_id, table_fqn)
+    except Exception:
+        logger.exception(
+            "knowledge_related_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve related tables."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/knowledge/explain/{table_fqn:path}")
+def knowledge_explain_route(
+    source_id: int,
+    table_fqn: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = explain_table(source_id, user.user_id, table_fqn)
+    except Exception:
+        logger.exception(
+            "knowledge_explain_route failed for source_id=%s table_fqn=%s",
+            source_id, table_fqn,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to explain table."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/knowledge/path")
+def knowledge_path_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+    from_table: str = Query(..., alias="from", description="Starting table FQN (e.g. dbo.orders)"),
+    to_table:   str = Query(..., alias="to",   description="Target table FQN (e.g. dbo.customers)"),
+) -> dict:
+    try:
+        result = trace_business_path(source_id, user.user_id, from_table, to_table)
+    except Exception:
+        logger.exception(
+            "knowledge_path_route failed for source_id=%s from=%s to=%s",
+            source_id, from_table, to_table,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to trace business path."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/knowledge/assets")
+def knowledge_assets_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+    domain: str | None = Query(default=None, description="Filter by business domain"),
+    entity: str | None = Query(default=None, description="Filter by business entity"),
+    term:   str | None = Query(default=None, description="Free-text search across business names and descriptions"),
+) -> dict:
+    try:
+        result = find_business_assets(
+            source_id, user.user_id,
+            domain=domain, entity=entity, term=term,
+        )
+    except Exception:
+        logger.exception("knowledge_assets_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Failed to find business assets."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}
