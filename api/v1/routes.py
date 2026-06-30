@@ -728,6 +728,14 @@ class ComposeIntentRequest(BaseModel):
     save_workspace: bool = False
 
 
+class QueryPlanRequest(BaseModel):
+    question: str
+    concepts:   list[str] = []
+    measures:   list[str] = []
+    dimensions: list[str] = []
+    filters:    list[dict] = []
+
+
 @router.post("/interpret")
 def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
     if not request.input.strip():
@@ -4713,6 +4721,39 @@ def reject_relationship_route(
         return JSONResponse(status_code=500, content=build_error_response("Relationship rejection failed."))
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Relationship not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# Business Query Planning Engine  (/v1/sources/{id}/query-plan)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/query-plan")
+def plan_business_query_route(
+    source_id: int,
+    request: QueryPlanRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    if not request.question or not request.question.strip():
+        return JSONResponse(status_code=400, content=build_error_response("question must not be empty."))
+    try:
+        from data.query_planning_service import plan_business_query
+        result = plan_business_query(
+            source_id,
+            user.user_id,
+            {
+                "question":   request.question.strip(),
+                "concepts":   request.concepts,
+                "measures":   request.measures,
+                "dimensions": request.dimensions,
+                "filters":    request.filters,
+            },
+        )
+    except Exception:
+        logger.exception("plan_business_query_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("Query plan generation failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}
 
 
