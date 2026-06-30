@@ -140,7 +140,8 @@ _SCHEMA = """
         relationship_type TEXT NOT NULL DEFAULT 'FOREIGN_KEY',
         confidence REAL NOT NULL DEFAULT 1.0,
         evidence_json TEXT,
-        created_at TEXT NOT NULL DEFAULT '2026-01-01'
+        created_at TEXT NOT NULL DEFAULT '2026-01-01',
+        relationship_status TEXT NOT NULL DEFAULT 'AUTO'
     );
 """
 

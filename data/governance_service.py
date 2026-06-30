@@ -99,23 +99,25 @@ class GovernedObjectType(str, Enum):
     Add new types here as new features are built.
     Never create a separate approval engine for a new type.
     """
-    DICT_TABLE        = "dict.table"
-    DICT_COLUMN       = "dict.column"
-    DOMAIN_RULE       = "domain.rule"
-    DOMAIN_REFINEMENT = "domain.refinement"
-    ENTITY_RULE       = "entity.rule"
-    ENGINE_TOOL       = "tool.engine"
-    PII_CONFIRMATION  = "pii.confirmation"
+    DICT_TABLE            = "dict.table"
+    DICT_COLUMN           = "dict.column"
+    DOMAIN_RULE           = "domain.rule"
+    DOMAIN_REFINEMENT     = "domain.refinement"
+    ENTITY_RULE           = "entity.rule"
+    ENGINE_TOOL           = "tool.engine"
+    PII_CONFIRMATION      = "pii.confirmation"
+    RELATIONSHIP_SUGGESTION = "relationship.suggestion"
 
 
 _TYPE_META: dict[str, dict] = {
-    "dict.table":        {"display_name": "Dictionary Table",             "source_table": "data_dictionary_tables"},
-    "dict.column":       {"display_name": "Dictionary Column",            "source_table": "data_dictionary_columns"},
-    "domain.rule":       {"display_name": "Domain Learning Rule",         "source_table": "domain_learning_rules"},
-    "domain.refinement": {"display_name": "Domain Refinement Suggestion", "source_table": "domain_rule_refinement_suggestions"},
-    "entity.rule":       {"display_name": "Entity Learning Rule",         "source_table": "entity_learning_rules"},
-    "tool.engine":       {"display_name": "Engine Tool",                  "source_table": "engine_tools"},
-    "pii.confirmation":  {"display_name": "PII Confirmation",             "source_table": "profiling_column_profiles"},
+    "dict.table":             {"display_name": "Dictionary Table",             "source_table": "data_dictionary_tables"},
+    "dict.column":            {"display_name": "Dictionary Column",            "source_table": "data_dictionary_columns"},
+    "domain.rule":            {"display_name": "Domain Learning Rule",         "source_table": "domain_learning_rules"},
+    "domain.refinement":      {"display_name": "Domain Refinement Suggestion", "source_table": "domain_rule_refinement_suggestions"},
+    "entity.rule":            {"display_name": "Entity Learning Rule",         "source_table": "entity_learning_rules"},
+    "tool.engine":            {"display_name": "Engine Tool",                  "source_table": "engine_tools"},
+    "pii.confirmation":       {"display_name": "PII Confirmation",             "source_table": "profiling_column_profiles"},
+    "relationship.suggestion": {"display_name": "Relationship Suggestion",     "source_table": "table_relationships"},
 }
 
 
@@ -273,6 +275,20 @@ def _rule_status_to_state(approval_status: str) -> GovernanceState:
         "APPROVED": GovernanceState.HUMAN_APPROVED,
         "REJECTED": GovernanceState.REJECTED,
     }.get(approval_status, GovernanceState.GENERATED)
+
+
+def _relationship_status_to_state(relationship_status: str) -> GovernanceState:
+    """
+    table_relationships.relationship_status has one extra value rule tables
+    don't need — AUTO, for declared-FK rows that are trusted without any
+    human review because the source database itself declared them.
+    """
+    return {
+        "AUTO":     GovernanceState.AUTO_APPROVED,
+        "PENDING":  GovernanceState.SUGGESTED,
+        "APPROVED": GovernanceState.HUMAN_APPROVED,
+        "REJECTED": GovernanceState.REJECTED,
+    }.get(relationship_status, GovernanceState.GENERATED)
 
 
 _ENGINE_TOOL_STATUS_MAP: dict[str, GovernanceState] = {
@@ -534,6 +550,73 @@ def _build_pii_profile(row: dict) -> GovernanceProfile:
         can_ai_use        = can_ai,
         ai_warning        = warn,
         pii_risk          = pii_heuristic,
+    )
+
+
+def _parse_relationship_evidence(raw: str | None) -> list[dict]:
+    """
+    table_relationships.evidence_json is shaped differently per row origin:
+    inferred candidates store {"evidence": [...], "weaknesses": [...]};
+    declared-FK rows store a flat {"source", "snapshot_id", "fk_name"} dict
+    with no "evidence" key. Both are handled; unknown shapes return [].
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(parsed, dict):
+        return parsed.get("evidence") or []
+    if isinstance(parsed, list):
+        return parsed
+    return []
+
+
+def _build_relationship_profile(row: dict) -> GovernanceProfile:
+    obj_id = str(row["id"])
+    state = _relationship_status_to_state(row.get("relationship_status") or "AUTO")
+    relationship_confidence = row.get("relationship_confidence")
+    confidence = (
+        float(relationship_confidence) / 100.0
+        if relationship_confidence is not None else None
+    )
+    inference_method = row.get("inference_method") or "declared_fk"
+    review_required = state == GovernanceState.SUGGESTED
+
+    if review_required and confidence is not None:
+        review_reason: str | None = (
+            f"Relationship '{row['from_table_fqn']}.{row['from_column']}' -> "
+            f"'{row['to_table_fqn']}.{row['to_column']}' inferred via "
+            f"{inference_method} with {confidence:.0%} confidence; awaiting human approval."
+        )
+    elif review_required:
+        review_reason = (
+            f"Relationship '{row['from_table_fqn']}.{row['from_column']}' -> "
+            f"'{row['to_table_fqn']}.{row['to_column']}' inferred via "
+            f"{inference_method}; awaiting human approval."
+        )
+    else:
+        review_reason = None
+
+    can_ai, warn = _compute_ai_trust(state, confidence)
+    return GovernanceProfile(
+        object_type_id    = GovernedObjectType.RELATIONSHIP_SUGGESTION,
+        object_id         = obj_id,
+        approval_state    = state,
+        confidence_score  = confidence,
+        confidence_tier   = _confidence_tier(confidence),
+        confidence_source = "relationship_inference_engine",
+        review_required   = review_required,
+        review_reason     = review_reason,
+        reviewed_by       = row.get("approved_by"),
+        reviewed_at       = row.get("approved_at"),
+        created_by        = None,
+        created_at        = row.get("created_at"),
+        updated_at        = row.get("approved_at") or row.get("created_at"),
+        evidence          = _parse_relationship_evidence(row.get("evidence_json")),
+        can_ai_use        = can_ai,
+        ai_warning        = warn,
     )
 
 
@@ -913,6 +996,7 @@ def get_governance_profile(
     rule_id: int | None = None,
     suggestion_id: int | None = None,
     tool_id: str | None = None,
+    relationship_id: int | None = None,
 ) -> GovernanceProfile | None:
     """
     Return the unified governance profile for one governed object.
@@ -1005,6 +1089,15 @@ def get_governance_profile(
                 (source_id, table_fqn, column_name),
             ).fetchone()
             profile = _build_pii_profile(dict(row)) if row else None
+
+        elif obj_type == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+            if relationship_id is None:
+                return None
+            row = conn.execute(
+                "SELECT * FROM table_relationships WHERE id = ?",
+                (relationship_id,),
+            ).fetchone()
+            profile = _build_relationship_profile(dict(row)) if row else None
 
         if profile is None:
             return None
@@ -1472,6 +1565,8 @@ def _build_profile_from_bulk_row(object_type: str, row: dict) -> GovernanceProfi
         return _build_rule_profile(row, ot)
     if ot == GovernedObjectType.DOMAIN_REFINEMENT:
         return _build_refinement_profile(row)
+    if ot == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+        return _build_relationship_profile(row)
     return None
 
 
@@ -1522,6 +1617,11 @@ def _apply_single_approval(object_type: str, row: dict, actor_id: str) -> bool:
             )
             return r is not None
 
+        if ot == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+            from data.relationship_service import approve_relationship
+            r = approve_relationship(relationship_id=int(row["id"]), user_id=actor_id)
+            return r is not None
+
     except Exception:
         logger.warning(
             "bulk approval failed for %s id=%s", object_type, row.get("id"),
@@ -1559,6 +1659,11 @@ def _apply_single_rejection(object_type: str, row: dict, actor_id: str) -> bool:
             r = reject_refinement_suggestion(
                 suggestion_id=int(row["id"]), user_id=actor_id
             )
+            return r is not None
+
+        if ot == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+            from data.relationship_service import reject_relationship
+            r = reject_relationship(relationship_id=int(row["id"]), user_id=actor_id)
             return r is not None
 
         # dict.table and dict.column: governance-layer rejection only
@@ -1703,6 +1808,23 @@ def _query_bulk_candidates(
         if f.domain:
             sql += " AND suggested_domain = ?"
             params.append(f.domain)
+
+    elif ot == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+        sql = (
+            "SELECT id, source_id, from_table_fqn, from_column, "
+            "to_table_fqn, to_column, relationship_type, inference_method, "
+            "relationship_confidence, relationship_status, cardinality, created_at "
+            "FROM table_relationships WHERE relationship_status = 'PENDING'"
+        )
+        if f.source_id is not None:
+            sql += " AND source_id = ?"
+            params.append(f.source_id)
+        if f.confidence_min is not None:
+            sql += " AND (relationship_confidence / 100.0) >= ?"
+            params.append(f.confidence_min)
+        if f.confidence_max is not None:
+            sql += " AND (relationship_confidence / 100.0) <= ?"
+            params.append(f.confidence_max)
 
     else:
         return []

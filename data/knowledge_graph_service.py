@@ -103,7 +103,8 @@ def _build_fk_graph(conn, source_id: int, schema_snap_id: int) -> dict[str, list
         """SELECT from_table_fqn, to_table_fqn,
                   from_column, to_column, relationship_name, confidence
            FROM table_relationships
-           WHERE source_id = ? AND snapshot_id = ?""",
+           WHERE source_id = ? AND snapshot_id = ?
+             AND relationship_status IN ('AUTO', 'APPROVED')""",
         (source_id, schema_snap_id),
     ).fetchall()
 
@@ -177,14 +178,16 @@ def get_related_tables(
                 """SELECT to_table_fqn, from_column, to_column,
                           relationship_name, confidence
                    FROM table_relationships
-                   WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ?""",
+                   WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ?
+                     AND relationship_status IN ('AUTO', 'APPROVED')""",
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
             fk_inbound = conn.execute(
                 """SELECT from_table_fqn, from_column, to_column,
                           relationship_name, confidence
                    FROM table_relationships
-                   WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ?""",
+                   WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ?
+                     AND relationship_status IN ('AUTO', 'APPROVED')""",
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
 
@@ -407,7 +410,8 @@ def find_business_assets(
                            relationship_name, relationship_type, confidence
                     FROM table_relationships
                     WHERE source_id = ? AND snapshot_id = ?
-                      AND (from_table_fqn IN ({ph}) OR to_table_fqn IN ({ph}))""",
+                      AND (from_table_fqn IN ({ph}) OR to_table_fqn IN ({ph}))
+                      AND relationship_status IN ('AUTO', 'APPROVED')""",
                 (source_id, schema_snap_id, *fqn_list, *fqn_list),
             ).fetchall()
             relationships = [dict(r) for r in rel_rows]
@@ -525,13 +529,15 @@ def explain_table(
             outbound_rels = conn.execute(
                 "SELECT to_table_fqn, from_column, to_column, relationship_name "
                 "FROM table_relationships "
-                "WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ?",
+                "WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ? "
+                "AND relationship_status IN ('AUTO', 'APPROVED')",
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
             inbound_rels = conn.execute(
                 "SELECT from_table_fqn, from_column, to_column, relationship_name "
                 "FROM table_relationships "
-                "WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ?",
+                "WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ? "
+                "AND relationship_status IN ('AUTO', 'APPROVED')",
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
 
@@ -808,7 +814,9 @@ def knowledge_graph_summary(source_id: int, user_id: str) -> dict | None:
         rel_row = conn.execute(
             """SELECT COUNT(*) AS cnt,
                       COUNT(DISTINCT from_table_fqn) AS froms
-               FROM table_relationships WHERE source_id = ? AND snapshot_id = ?""",
+               FROM table_relationships
+               WHERE source_id = ? AND snapshot_id = ?
+                 AND relationship_status IN ('AUTO', 'APPROVED')""",
             (source_id, schema_snap_id),
         ).fetchone() if schema_snap_id else None
 

@@ -1037,6 +1037,32 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # table_relationships — Relationship Intelligence extension (Program 3 Phase 1).
+    # Existing declared-FK rows backfill via column DEFAULT, so persist_relationships()
+    # (which does not list these columns in its INSERT) needs no changes.
+    _tr_existing_cols = {
+        row["name"]
+        for row in cursor.execute("PRAGMA table_info(table_relationships)").fetchall()
+    }
+    _tr_migrations = [
+        ("relationship_confidence", "ALTER TABLE table_relationships ADD COLUMN relationship_confidence INTEGER NOT NULL DEFAULT 100"),
+        ("inference_method",        "ALTER TABLE table_relationships ADD COLUMN inference_method TEXT NOT NULL DEFAULT 'declared_fk'"),
+        ("relationship_status",     "ALTER TABLE table_relationships ADD COLUMN relationship_status TEXT NOT NULL DEFAULT 'AUTO'"),
+        ("cardinality",             "ALTER TABLE table_relationships ADD COLUMN cardinality TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+        ("approved_by",             "ALTER TABLE table_relationships ADD COLUMN approved_by TEXT"),
+        ("approved_at",             "ALTER TABLE table_relationships ADD COLUMN approved_at TEXT"),
+    ]
+    for _col_name, _ddl in _tr_migrations:
+        if _col_name not in _tr_existing_cols:
+            cursor.execute(_ddl)
+    conn.commit()
+
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tr_source_status "
+        "ON table_relationships (source_id, relationship_status)"
+    )
+    conn.commit()
+
     # -------------------------------------------------------------------------
     # Unified Governance Engine — Phase 1 Foundation
     # -------------------------------------------------------------------------

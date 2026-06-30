@@ -1209,14 +1209,14 @@ class TestConfirmPiiColumn:
 # ---------------------------------------------------------------------------
 
 class TestListGovernedObjectTypes:
-    def test_returns_all_seven_types(self):
+    def test_returns_all_eight_types(self):
         types = list_governed_object_types()
         ids = {t["id"] for t in types}
         expected = {
             "dict.table", "dict.column",
             "domain.rule", "domain.refinement",
             "entity.rule", "tool.engine",
-            "pii.confirmation",
+            "pii.confirmation", "relationship.suggestion",
         }
         assert expected == ids
 

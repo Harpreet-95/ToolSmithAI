@@ -110,6 +110,10 @@ from data.relationship_service import (
     get_relationships_for_source,
     get_relationships_for_table,
     get_relationship_summary,
+    discover_relationship_candidates,
+    explain_relationship,
+    approve_relationship,
+    reject_relationship,
 )
 from data.business_knowledge_service import (
     get_table_business_context,
@@ -4631,6 +4635,84 @@ def get_table_relationships_route(
         return JSONResponse(status_code=500, content=build_error_response("Failed to retrieve table relationships."))
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/relationships/discover-candidates")
+def discover_relationship_candidates_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = discover_relationship_candidates(source_id, user.user_id)
+    except Exception:
+        logger.exception(
+            "discover_relationship_candidates_route failed for source_id=%s", source_id
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Relationship candidate discovery failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result}
+
+
+@router.get("/sources/{source_id}/relationships/{relationship_id}/explain")
+def explain_relationship_route(
+    source_id: int,
+    relationship_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = explain_relationship(source_id, user.user_id, relationship_id)
+    except Exception:
+        logger.exception(
+            "explain_relationship_route failed for source_id=%s relationship_id=%s",
+            source_id, relationship_id,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Failed to explain relationship."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Relationship not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/relationships/{relationship_id}/approve")
+def approve_relationship_route(
+    source_id: int,
+    relationship_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = approve_relationship(relationship_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception(
+            "approve_relationship_route failed for source_id=%s relationship_id=%s",
+            source_id, relationship_id,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Relationship approval failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Relationship not found."))
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/relationships/{relationship_id}/reject")
+def reject_relationship_route(
+    source_id: int,
+    relationship_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    try:
+        result = reject_relationship(relationship_id, user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
+    except Exception:
+        logger.exception(
+            "reject_relationship_route failed for source_id=%s relationship_id=%s",
+            source_id, relationship_id,
+        )
+        return JSONResponse(status_code=500, content=build_error_response("Relationship rejection failed."))
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Relationship not found."))
     return {"status": "success", "data": result}
 
 

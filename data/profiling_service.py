@@ -486,6 +486,51 @@ def get_column_profiles(
     }
 
 
+def get_key_candidate_columns(conn, source_id: int, profiling_snapshot_id: int) -> list[dict]:
+    """
+    Return profiled columns that look key-like — used by relationship_service's
+    inference engine to pre-filter candidates before any pairwise comparison.
+
+    A column qualifies via EITHER a structural signal (primary key, identity,
+    high uniqueness, GUID-shaped values, id-flavoured semantic_type) OR a
+    naming-convention signal (column_name ends in _id/_key/_code/_guid/_uuid/_fk).
+    The naming signal matters because foreign-key (child/"many") columns are
+    rarely unique themselves — only the primary-key ("one") side is — so
+    structural signals alone would miss legitimate FK-side candidates.
+
+    Takes an open connection (caller manages it) so a multi-step inference run
+    can batch all reads on one connection instead of opening one per call.
+    Returns [] when nothing qualifies; never raises on missing data.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, table_fqn, column_name, data_type, distinct_count,
+               uniqueness_score, cardinality_tier, is_primary_key, is_identity,
+               guid_match_rate, semantic_type, semantic_confidence
+        FROM profiling_column_profiles
+        WHERE source_id = ? AND profiling_snapshot_id = ?
+          AND (
+                is_primary_key = 1
+             OR is_identity = 1
+             OR uniqueness_score >= 0.5
+             OR guid_match_rate >= 0.5
+             OR semantic_type LIKE '%id%'
+             OR column_name LIKE '%\\_id'   ESCAPE '\\'
+             OR column_name LIKE '%Id'
+             OR column_name LIKE '%ID'
+             OR column_name LIKE '%\\_key'  ESCAPE '\\'
+             OR column_name LIKE '%\\_code' ESCAPE '\\'
+             OR column_name LIKE '%\\_guid' ESCAPE '\\'
+             OR column_name LIKE '%\\_uuid' ESCAPE '\\'
+             OR column_name LIKE '%\\_fk'   ESCAPE '\\'
+              )
+        ORDER BY table_fqn, column_name
+        """,
+        (source_id, profiling_snapshot_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_table_profile_detail(
     source_id: int,
     user_id: str,

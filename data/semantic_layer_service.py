@@ -59,11 +59,13 @@ def _latest_profiling_snap_id(conn, source_id: int) -> int | None:
 
 
 def _load_edges(conn, source_id: int, snap_id: int) -> list[dict]:
+    """Trusted edges only — relationship_status IN ('AUTO', 'APPROVED')."""
     rows = conn.execute(
         """SELECT from_table_fqn, to_table_fqn,
                   from_column, to_column, relationship_name, confidence
            FROM table_relationships
-           WHERE source_id = ? AND snapshot_id = ?""",
+           WHERE source_id = ? AND snapshot_id = ?
+             AND relationship_status IN ('AUTO', 'APPROVED')""",
         (source_id, snap_id),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -744,6 +746,7 @@ def semantic_table_profile(
                 "SELECT to_table_fqn, from_column, to_column, relationship_name, confidence "
                 "FROM table_relationships "
                 "WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ? "
+                "AND relationship_status IN ('AUTO', 'APPROVED') "
                 "ORDER BY confidence DESC LIMIT 10",
                 (source_id, snap_id, table_fqn),
             ).fetchall()
@@ -753,6 +756,7 @@ def semantic_table_profile(
                 "SELECT from_table_fqn, from_column, to_column, relationship_name, confidence "
                 "FROM table_relationships "
                 "WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ? "
+                "AND relationship_status IN ('AUTO', 'APPROVED') "
                 "ORDER BY confidence DESC LIMIT 10",
                 (source_id, snap_id, table_fqn),
             ).fetchall()
@@ -876,7 +880,8 @@ def semantic_summary(source_id: int, user_id: str) -> dict | None:
                       AVG(confidence) AS avg_conf,
                       COUNT(DISTINCT from_table_fqn) AS tables_with_fks
                FROM table_relationships
-               WHERE source_id = ? AND snapshot_id = ?""",
+               WHERE source_id = ? AND snapshot_id = ?
+                 AND relationship_status IN ('AUTO', 'APPROVED')""",
             (source_id, snap_id),
         ).fetchone() if snap_id else None
 

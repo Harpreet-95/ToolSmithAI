@@ -222,6 +222,7 @@ def get_table_business_context(
                           to_column, relationship_name, relationship_type, confidence
                    FROM table_relationships
                    WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ?
+                     AND relationship_status IN ('AUTO', 'APPROVED')
                    ORDER BY from_column""",
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
@@ -231,6 +232,7 @@ def get_table_business_context(
                           to_column, relationship_name, relationship_type, confidence
                    FROM table_relationships
                    WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ?
+                     AND relationship_status IN ('AUTO', 'APPROVED')
                    ORDER BY from_table_fqn, from_column""",
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
@@ -623,7 +625,8 @@ def get_business_summary(source_id: int, user_id: str) -> dict | None:
                           COUNT(DISTINCT from_table_fqn) AS tables_with_fks,
                           COUNT(DISTINCT to_table_fqn) AS tables_referenced
                    FROM table_relationships
-                   WHERE source_id = ? AND snapshot_id = ?""",
+                   WHERE source_id = ? AND snapshot_id = ?
+                     AND relationship_status IN ('AUTO', 'APPROVED')""",
                 (source_id, schema_snap_id),
             ).fetchone()
 

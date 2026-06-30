@@ -58,12 +58,19 @@ def _latest_profiling_snap_id(conn, source_id: int) -> int | None:
 
 
 def _load_fk_edges(conn, source_id: int, schema_snap_id: int) -> list[dict]:
-    """Return all FK edges for the latest schema snapshot."""
+    """
+    Return trusted relationship edges for the latest schema snapshot.
+
+    Trusted = relationship_status IN ('AUTO', 'APPROVED') — declared FKs and
+    steward-approved inferred relationships. PENDING/REJECTED candidates are
+    never auto-trusted into lineage reasoning.
+    """
     rows = conn.execute(
         """SELECT from_table_fqn, to_table_fqn,
                   from_column, to_column, relationship_name, confidence
            FROM table_relationships
-           WHERE source_id = ? AND snapshot_id = ?""",
+           WHERE source_id = ? AND snapshot_id = ?
+             AND relationship_status IN ('AUTO', 'APPROVED')""",
         (source_id, schema_snap_id),
     ).fetchall()
     return [dict(r) for r in rows]
