@@ -996,3 +996,146 @@ export async function getColumnBusinessContext(sourceId, tableFqn, columnName, t
   )
   return parseResponse(res)
 }
+
+export async function getKnowledgeGraphSummary(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/knowledge/summary`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getRelatedTables(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/knowledge/related/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function explainTable(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/knowledge/explain/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getUpstreamLineage(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/lineage/upstream/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getDownstreamLineage(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/lineage/downstream/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getImpactAnalysis(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/lineage/impact/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getSemanticTableProfile(sourceId, tableFqn, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/semantic/table/${encodeURIComponent(tableFqn)}`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getSemanticSummary(sourceId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/semantic/summary`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+// ── Governance Command Center ────────────────────────────────────────────────
+
+export async function getGovernanceDashboard(sourceId, token) {
+  const qs = sourceId != null ? `?source_id=${sourceId}` : ''
+  const res = await fetch(`/v1/governance/dashboard${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getGovernanceRecommendations(sourceId, token) {
+  const qs = sourceId != null ? `?source_id=${sourceId}` : ''
+  const res = await fetch(`/v1/governance/recommendations${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getGovernanceBottlenecks(sourceId, token) {
+  const qs = sourceId != null ? `?source_id=${sourceId}` : ''
+  const res = await fetch(`/v1/governance/bottlenecks${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getGovernanceAssignments(sourceId, token, params = {}) {
+  const qs = new URLSearchParams()
+  if (sourceId != null) qs.set('source_id', sourceId)
+  if (params.assigned_to)      qs.set('assigned_to', params.assigned_to)
+  if (params.priority)         qs.set('priority', params.priority)
+  if (params.status)           qs.set('status', params.status)
+  if (params.overdue_only)     qs.set('overdue_only', 'true')
+  if (params.limit  != null)   qs.set('limit', params.limit)
+  if (params.offset != null)   qs.set('offset', params.offset)
+  const res = await fetch(`/v1/governance/assignments?${qs.toString()}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getGovernanceAssignmentSummary(sourceId, token) {
+  const qs = sourceId != null ? `?source_id=${sourceId}` : ''
+  const res = await fetch(`/v1/governance/assignment-summary${qs}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getGovernancePolicies(token) {
+  const res = await fetch('/v1/governance/policies', { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+export async function getGovernanceExplanation(params, token) {
+  const qs = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => { if (v != null && v !== '') qs.set(k, v) })
+  const res = await fetch(`/v1/governance/explanation?${qs.toString()}`, { headers: AUTH_HEADERS(token) })
+  return parseResponse(res)
+}
+
+function _bulkFilterBody(filter) {
+  const body = { object_type: filter.object_type }
+  if (filter.source_id      != null && filter.source_id      !== '') body.source_id      = filter.source_id
+  if (filter.confidence_min != null && filter.confidence_min !== '') body.confidence_min = filter.confidence_min
+  if (filter.confidence_max != null && filter.confidence_max !== '') body.confidence_max = filter.confidence_max
+  if (filter.approval_state)                                          body.approval_state = filter.approval_state
+  if (filter.domain)                                                  body.domain         = filter.domain
+  if (filter.entity)                                                  body.entity         = filter.entity
+  if (filter.schema_name)                                             body.schema_name    = filter.schema_name
+  if (filter.exclude_pii != null)                                     body.exclude_pii    = filter.exclude_pii
+  return body
+}
+
+export async function bulkGovernanceDryRun(filter, token) {
+  const res = await fetch('/v1/governance/bulk/dry-run', {
+    method: 'POST', headers: AUTH_HEADERS(token), body: JSON.stringify(_bulkFilterBody(filter)),
+  })
+  return parseResponse(res)
+}
+
+export async function bulkGovernanceApprove(filter, token) {
+  const res = await fetch('/v1/governance/bulk/approve', {
+    method: 'POST', headers: AUTH_HEADERS(token), body: JSON.stringify(_bulkFilterBody(filter)),
+  })
+  return parseResponse(res)
+}
+
+export async function bulkGovernanceReject(filter, token) {
+  const res = await fetch('/v1/governance/bulk/reject', {
+    method: 'POST', headers: AUTH_HEADERS(token), body: JSON.stringify(_bulkFilterBody(filter)),
+  })
+  return parseResponse(res)
+}
