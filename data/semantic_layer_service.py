@@ -20,12 +20,19 @@ import logging
 from collections import deque
 
 from data.db import get_connection
+from data.governance_service import _confidence_tier
+from data.profiling_service import get_column_profile_by_name
+from data.relationship_service import _infer_cardinality, pk_quality_score
 
 logger = logging.getLogger(__name__)
 
 _MAX_PATH_DEPTH  = 5   # max hops in join path search
 _MAX_PATHS       = 8   # max distinct paths returned
 _LOW_CONF_THRESH = 0.7  # confidence below this triggers ambiguity warning
+
+# Join Intelligence (Program 3 Phase 2) — fan-out escalates to HIGH when the
+# "many" side has at least this many rows per "one" side row.
+_FANOUT_RATIO_HIGH_THRESHOLD = 10
 
 
 # ---------------------------------------------------------------------------
@@ -112,21 +119,24 @@ def _enrich_pair(conn, source_id: int, fqn_a: str, fqn_b: str, prof_snap_id: int
             result["business_name"] = d["business_name"]
             result["dict_approved"] = bool(d["is_approved"])
         da = conn.execute(
-            "SELECT domain FROM domain_assignments WHERE source_id = ? AND table_fqn = ?",
+            "SELECT domain, confidence FROM domain_assignments WHERE source_id = ? AND table_fqn = ?",
             (source_id, fqn),
         ).fetchone()
         if da:
             result["domain"] = da["domain"]
+            result["domain_confidence"] = da["confidence"]
         ea = conn.execute(
-            "SELECT entity FROM entity_assignments WHERE source_id = ? AND table_fqn = ?",
+            "SELECT entity, confidence FROM entity_assignments WHERE source_id = ? AND table_fqn = ?",
             (source_id, fqn),
         ).fetchone()
         if ea:
             result["entity"] = ea["entity"]
+            result["entity_confidence"] = ea["confidence"]
         if prof_snap_id:
             p = conn.execute(
                 "SELECT table_class, classification_confidence, fk_count, "
-                "referenced_by_count, pii_column_count, is_junction_table "
+                "referenced_by_count, pii_column_count, is_junction_table, "
+                "profiling_status, estimated_row_count, exact_row_count "
                 "FROM profiling_table_profiles "
                 "WHERE profiling_snapshot_id = ? AND source_id = ? AND table_fqn = ?",
                 (prof_snap_id, source_id, fqn),
@@ -139,6 +149,9 @@ def _enrich_pair(conn, source_id: int, fqn_a: str, fqn_b: str, prof_snap_id: int
                     "referenced_by_count":       p["referenced_by_count"] or 0,
                     "pii_column_count":          p["pii_column_count"] or 0,
                     "is_junction_table":         bool(p["is_junction_table"]),
+                    "profiling_status":          p["profiling_status"],
+                    "estimated_row_count":       p["estimated_row_count"],
+                    "exact_row_count":           p["exact_row_count"],
                 })
         return result
     return _fetch(fqn_a), _fetch(fqn_b)
@@ -195,6 +208,323 @@ def _recommended_join_direction(edge: dict, enrich_from: dict, enrich_to: dict) 
         return edge["to_table_fqn"]
     # Default: the child (referencing) table is the starting point
     return edge["from_table_fqn"]
+
+
+# ---------------------------------------------------------------------------
+# Join Intelligence (Program 3 Phase 2) — cardinality, fan-out, join quality.
+#
+# Every signal here is read from already-profiled/governed data — confidence
+# scores, PK/uniqueness flags, row counts, dictionary/domain/entity metadata.
+# Nothing is invented when data is missing; UNKNOWN/MEDIUM/0-point fallbacks
+# are used instead, and always explained in the returned evidence/weaknesses.
+# ---------------------------------------------------------------------------
+
+def _compute_cardinality(from_profile: dict | None, to_profile: dict | None) -> str:
+    """
+    Thin wrapper around relationship_service._infer_cardinality (no
+    reimplementation). Returns UNKNOWN directly, without invoking the
+    heuristic, when either column was never profiled — _infer_cardinality
+    has no concept of "missing data" and would otherwise misread two empty
+    profiles as both-sides-non-unique (MANY_TO_MANY).
+    """
+    if from_profile is None or to_profile is None:
+        return "UNKNOWN"
+    return _infer_cardinality(from_profile, to_profile)
+
+
+def _row_count_ratio(conn, source_id: int, prof_snap_id: int, from_fqn: str, to_fqn: str) -> float | None:
+    """to-side row count / from-side row count, from already-profiled table
+    row counts. Returns None when either table's row count isn't profiled."""
+    def _row_count(fqn: str) -> int | None:
+        row = conn.execute(
+            "SELECT exact_row_count, estimated_row_count FROM profiling_table_profiles "
+            "WHERE profiling_snapshot_id = ? AND source_id = ? AND table_fqn = ?",
+            (prof_snap_id, source_id, fqn),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["exact_row_count"] if row["exact_row_count"] is not None else row["estimated_row_count"]
+
+    from_count = _row_count(from_fqn)
+    to_count   = _row_count(to_fqn)
+    if not from_count or not to_count:
+        return None
+    return to_count / from_count
+
+
+def _assess_fanout_risk(
+    conn, source_id: int, prof_snap_id: int | None,
+    cardinality: str, from_table_fqn: str, to_table_fqn: str,
+) -> dict:
+    """
+    Step 3. Whether joining FROM from_table_fqn TO to_table_fqn (following
+    the relationship in its declared direction) risks duplicating rows.
+
+    LOW    — each from-side row matches at most one to-side row (1:1, M:1).
+    MEDIUM — a to-side row may match several from-side rows (1:M) but the
+             average multiplicity isn't confirmed from profiled row counts,
+             or cardinality itself is UNKNOWN.
+    HIGH   — MANY_TO_MANY, or a confirmed large multiplicity (>= 10x) on a
+             ONE_TO_MANY join.
+    """
+    if cardinality in ("ONE_TO_ONE", "MANY_TO_ONE"):
+        return {
+            "fanout_risk": "LOW",
+            "explanation": (
+                f"Cardinality is {cardinality}: each row in {from_table_fqn} "
+                f"matches at most one row in {to_table_fqn} — joining does not "
+                "duplicate rows."
+            ),
+        }
+
+    if cardinality == "MANY_TO_MANY":
+        return {
+            "fanout_risk": "HIGH",
+            "explanation": (
+                f"Cardinality is MANY_TO_MANY between {from_table_fqn} and "
+                f"{to_table_fqn} — this join can duplicate rows on both sides."
+            ),
+        }
+
+    if cardinality == "ONE_TO_MANY":
+        ratio = _row_count_ratio(conn, source_id, prof_snap_id, from_table_fqn, to_table_fqn) if prof_snap_id else None
+        if ratio is not None and ratio >= _FANOUT_RATIO_HIGH_THRESHOLD:
+            return {
+                "fanout_risk": "HIGH",
+                "explanation": (
+                    f"Cardinality is ONE_TO_MANY and {to_table_fqn} has roughly "
+                    f"{ratio:.0f}x the row count of {from_table_fqn} — each "
+                    f"{from_table_fqn} row may match many {to_table_fqn} rows."
+                ),
+            }
+        return {
+            "fanout_risk": "MEDIUM",
+            "explanation": (
+                f"Cardinality is ONE_TO_MANY: each row in {from_table_fqn} may "
+                f"match multiple rows in {to_table_fqn}, which can duplicate "
+                f"{from_table_fqn} data when joined."
+            ),
+        }
+
+    return {
+        "fanout_risk": "MEDIUM",
+        "explanation": (
+            "Cardinality could not be confirmed from profiling data — "
+            "treat this join as a possible fan-out risk until verified."
+        ),
+    }
+
+
+_JQ_CONFIDENCE_WEIGHT    = 30
+_JQ_CARDINALITY_WEIGHT   = 20
+_JQ_GOVERNANCE_WEIGHT    = 15  # constant: only AUTO/APPROVED edges ever reach this code
+_JQ_PK_WEIGHT            = 15
+_JQ_DICTIONARY_WEIGHT    = 10
+_JQ_DOMAIN_ENTITY_WEIGHT = 5
+_JQ_PROFILING_WEIGHT     = 5
+
+_CARDINALITY_POINTS = {
+    "ONE_TO_ONE":   _JQ_CARDINALITY_WEIGHT,
+    "MANY_TO_ONE":  round(_JQ_CARDINALITY_WEIGHT * 0.75),
+    "ONE_TO_MANY":  round(_JQ_CARDINALITY_WEIGHT * 0.75),
+    "MANY_TO_MANY": round(_JQ_CARDINALITY_WEIGHT * 0.40),
+    "UNKNOWN":      round(_JQ_CARDINALITY_WEIGHT * 0.25),
+}
+
+
+def _compute_join_quality(
+    rel_confidence: int,
+    cardinality: str,
+    to_profile: dict | None,
+    enrich_from: dict,
+    enrich_to: dict,
+) -> dict:
+    """
+    Step 4. Weighted 0-100 join-quality score from relationship confidence,
+    cardinality, governance trust, target-column key quality, dictionary
+    approval, domain/entity confidence, and profiling completeness.
+    """
+    evidence: list[dict] = []
+    weaknesses: list[str] = []
+    raw = 0.0
+
+    conf_points = round(_JQ_CONFIDENCE_WEIGHT * rel_confidence / 100)
+    raw += conf_points
+    evidence.append({"signal": "relationship_confidence", "points": conf_points,
+                      "detail": f"Relationship confidence is {rel_confidence}/100."})
+
+    card_points = _CARDINALITY_POINTS.get(cardinality, 0)
+    raw += card_points
+    evidence.append({"signal": "cardinality", "points": card_points,
+                      "detail": f"Cardinality is {cardinality}."})
+    if cardinality == "UNKNOWN":
+        weaknesses.append("Cardinality could not be confirmed from profiling data.")
+    elif cardinality == "MANY_TO_MANY":
+        weaknesses.append("MANY_TO_MANY cardinality increases row-duplication risk.")
+
+    raw += _JQ_GOVERNANCE_WEIGHT
+    evidence.append({"signal": "governance_trust", "points": _JQ_GOVERNANCE_WEIGHT,
+                      "detail": "Relationship is governance-trusted (AUTO or APPROVED)."})
+
+    pk_score = pk_quality_score(to_profile)
+    pk_points = round(_JQ_PK_WEIGHT * pk_score / 100)
+    raw += pk_points
+    evidence.append({"signal": "pk_quality", "points": pk_points,
+                      "detail": f"Target column key-quality score is {pk_score}/100."})
+    if pk_score < 60:
+        weaknesses.append("Target column does not look like a confirmed primary/unique key.")
+
+    from_approved = bool(enrich_from.get("dict_approved"))
+    to_approved   = bool(enrich_to.get("dict_approved"))
+    if from_approved and to_approved:
+        dict_points = _JQ_DICTIONARY_WEIGHT
+    elif from_approved or to_approved:
+        dict_points = round(_JQ_DICTIONARY_WEIGHT * 0.5)
+    else:
+        dict_points = 0
+    raw += dict_points
+    evidence.append({"signal": "dictionary_approval", "points": dict_points,
+                      "detail": f"{int(from_approved) + int(to_approved)}/2 tables have an approved dictionary entry."})
+
+    confs = [
+        c for c in (
+            enrich_from.get("domain_confidence"), enrich_from.get("entity_confidence"),
+            enrich_to.get("domain_confidence"),   enrich_to.get("entity_confidence"),
+        ) if c is not None
+    ]
+    avg_conf = (sum(confs) / len(confs)) if confs else None
+    de_points = round(_JQ_DOMAIN_ENTITY_WEIGHT * avg_conf) if avg_conf is not None else 0
+    raw += de_points
+    evidence.append({
+        "signal": "domain_entity_confidence", "points": de_points,
+        "detail": (f"Average domain/entity assignment confidence is {avg_conf:.0%}."
+                   if avg_conf is not None else "No domain/entity assignment confidence available."),
+    })
+
+    from_complete = enrich_from.get("profiling_status") == "COMPLETE"
+    to_complete   = enrich_to.get("profiling_status") == "COMPLETE"
+    if from_complete and to_complete:
+        prof_points = _JQ_PROFILING_WEIGHT
+    elif from_complete or to_complete:
+        prof_points = round(_JQ_PROFILING_WEIGHT * 0.5)
+    else:
+        prof_points = 0
+    raw += prof_points
+    evidence.append({
+        "signal": "profiling_completeness", "points": prof_points,
+        "detail": ("Both tables fully profiled." if (from_complete and to_complete)
+                   else "Profiling is incomplete for one or both tables."),
+    })
+    if not (from_complete and to_complete):
+        weaknesses.append("Profiling is not complete for both tables; quality score may be conservative.")
+
+    score = int(min(100, round(raw)))
+    return {
+        "join_quality":      score,
+        "join_quality_tier": _confidence_tier(score / 100.0),
+        "confidence":        rel_confidence,
+        "evidence":          evidence,
+        "weaknesses":        weaknesses,
+    }
+
+
+def _recommend_join_type(
+    edge: dict, cardinality: str, from_profile: dict | None,
+    enrich_from: dict, enrich_to: dict, rel_confidence: int,
+) -> tuple[str, str]:
+    """
+    Step 1. Returns (join_type, driving_table).
+
+    driving_table reuses _recommended_join_direction's existing rule (prefer
+    the Transactional/more-granular side).
+
+    join_type:
+      INNER — driving table's FK column is not nullable (every row matches).
+      LEFT  — FK column is nullable (rows with a NULL FK must be preserved).
+      FULL  — MANY_TO_MANY, or UNKNOWN cardinality with confidence below
+              _LOW_CONF_THRESH — genuine bidirectional uncertainty.
+    RIGHT remains a valid value in the data model (rows can express it) but
+    the algorithm always normalizes the driving table to the LEFT position,
+    so it is never emitted here by construction.
+    """
+    driving_table = _recommended_join_direction(edge, enrich_from, enrich_to)
+
+    if cardinality == "MANY_TO_MANY":
+        return "FULL", driving_table
+    if cardinality == "UNKNOWN" and rel_confidence < int(_LOW_CONF_THRESH * 100):
+        return "FULL", driving_table
+
+    if driving_table == edge["from_table_fqn"] and from_profile is not None:
+        is_nullable = bool(from_profile.get("is_nullable"))
+        null_pct = from_profile.get("null_percentage") or 0
+        if is_nullable and null_pct > 0:
+            return "LEFT", driving_table
+
+    return "INNER", driving_table
+
+
+def _relationship_strength(rel_confidence: int) -> str:
+    """Step 1's lightweight strength tier — distinct from the richer join_quality score."""
+    if rel_confidence >= 80:
+        return "STRONG"
+    if rel_confidence >= 50:
+        return "MODERATE"
+    return "WEAK"
+
+
+def _analyze_edge(conn, source_id: int, prof_snap_id: int | None, edge: dict) -> dict:
+    """
+    Full Step 1-4 analysis for one trusted relationship edge.
+
+    edge must carry: from_table_fqn, to_table_fqn, from_column, to_column,
+    confidence, relationship_name — the shape _load_edges already returns.
+    Shared by analyze_join_quality (direct pairs) and recommend_best_join_path
+    (multi-hop paths) so there is exactly one implementation of "what makes
+    one edge good."
+    """
+    from_profile = to_profile = None
+    if prof_snap_id:
+        from_profile = get_column_profile_by_name(
+            conn, source_id, prof_snap_id, edge["from_table_fqn"], edge["from_column"]
+        )
+        to_profile = get_column_profile_by_name(
+            conn, source_id, prof_snap_id, edge["to_table_fqn"], edge["to_column"]
+        )
+
+    cardinality = _compute_cardinality(from_profile, to_profile)
+    fanout = _assess_fanout_risk(
+        conn, source_id, prof_snap_id, cardinality, edge["from_table_fqn"], edge["to_table_fqn"]
+    )
+    rel_confidence = int(round(float(edge["confidence"]) * 100))
+
+    enrich_from, enrich_to = _enrich_pair(
+        conn, source_id, edge["from_table_fqn"], edge["to_table_fqn"], prof_snap_id
+    )
+
+    quality = _compute_join_quality(rel_confidence, cardinality, to_profile, enrich_from, enrich_to)
+    join_type, driving_table = _recommend_join_type(
+        edge, cardinality, from_profile, enrich_from, enrich_to, rel_confidence,
+    )
+    strength = _relationship_strength(rel_confidence)
+    business_explanation = _business_explanation(edge, enrich_from, enrich_to, "a_references_b")
+
+    return {
+        "from_table_fqn": edge["from_table_fqn"], "from_column": edge["from_column"],
+        "to_table_fqn":   edge["to_table_fqn"],   "to_column":   edge["to_column"],
+        "relationship_name":       edge.get("relationship_name"),
+        "cardinality":             cardinality,
+        "fanout_risk":             fanout["fanout_risk"],
+        "fanout_explanation":      fanout["explanation"],
+        "join_type":               join_type,
+        "driving_table":           driving_table,
+        "relationship_strength":   strength,
+        "relationship_confidence": rel_confidence,
+        "join_quality":            quality["join_quality"],
+        "join_quality_tier":       quality["join_quality_tier"],
+        "evidence":                quality["evidence"],
+        "weaknesses":              quality["weaknesses"],
+        "business_explanation":    business_explanation,
+    }
 
 
 def _find_all_join_paths(
@@ -405,6 +735,79 @@ def _no_join_result(source_id: int, ta: str, tb: str, msg: str) -> dict:
     }
 
 
+def analyze_join_quality(source_id: int, user_id: str, table_a: str, table_b: str) -> dict | None:
+    """
+    Step 1+2+3+4+6. Deep join-quality analysis for the BEST direct trusted
+    relationship between two tables — not merely any available one.
+
+    Sibling to discover_business_joins (unchanged): that function finds and
+    lists direct join options; this one scores each in depth — join
+    type/direction, cardinality, fan-out risk, a 0-100 join_quality score —
+    and explains why the best one was chosen over any alternatives.
+
+    Returns None when source not found or not owned by user_id.
+    """
+    conn = get_connection()
+    try:
+        if not _verify_source(conn, source_id, user_id):
+            return None
+
+        snap_id      = _latest_schema_snap_id(conn, source_id)
+        prof_snap_id = _latest_profiling_snap_id(conn, source_id)
+        if not snap_id:
+            return _no_quality_result(source_id, table_a, table_b, "No schema snapshot available.")
+
+        edges = _load_edges(conn, source_id, snap_id)
+        direct = [
+            e for e in edges
+            if (e["from_table_fqn"] == table_a and e["to_table_fqn"] == table_b) or
+               (e["from_table_fqn"] == table_b and e["to_table_fqn"] == table_a)
+        ]
+        if not direct:
+            return _no_quality_result(
+                source_id, table_a, table_b,
+                f"No direct trusted relationship found between {table_a} and {table_b}. "
+                "Use recommend_best_join_path for an indirect route.",
+            )
+
+        analyzed = [_analyze_edge(conn, source_id, prof_snap_id, e) for e in direct]
+    finally:
+        conn.close()
+
+    analyzed.sort(key=lambda x: -x["join_quality"])
+    best = analyzed[0]
+    alternatives = analyzed[1:]
+
+    why_not_alternatives = [
+        f"{a['from_table_fqn']}.{a['from_column']} -> {a['to_table_fqn']}.{a['to_column']} "
+        f"scored {a['join_quality']}/100 ({a['join_quality_tier']}), lower than the "
+        f"recommended join ({best['join_quality']}/100)."
+        for a in alternatives
+    ]
+
+    return {
+        "source_id": source_id, "table_a": table_a, "table_b": table_b,
+        "best_join":          best,
+        "alternative_joins":  alternatives,
+        "why_best": (
+            f"Selected {best['from_table_fqn']}.{best['from_column']} -> "
+            f"{best['to_table_fqn']}.{best['to_column']} with join_quality "
+            f"{best['join_quality']}/100 ({best['join_quality_tier']})"
+            + (f"; {len(alternatives)} alternative(s) scored lower." if alternatives else ".")
+        ),
+        "why_not_alternatives": why_not_alternatives,
+        "message": None,
+    }
+
+
+def _no_quality_result(source_id: int, ta: str, tb: str, msg: str) -> dict:
+    return {
+        "source_id": source_id, "table_a": ta, "table_b": tb,
+        "best_join": None, "alternative_joins": [], "why_best": None,
+        "why_not_alternatives": [], "message": msg,
+    }
+
+
 def discover_join_paths(
     source_id: int,
     user_id: str,
@@ -482,6 +885,179 @@ def _no_path_result(source_id, start, target, msg):
         "source_id": source_id, "start_table": start, "target_table": target,
         "all_paths": [], "shortest_path": None, "highest_confidence_path": None,
         "recommended_path": None, "total_paths_found": 0, "message": msg,
+    }
+
+
+def _normalize_path_edge(current_node: str, edge_desc: dict) -> dict:
+    """
+    Recover true FK orientation (from_table_fqn references to_table_fqn) from
+    one _build_join_adj traversal step, regardless of which way the path
+    walked it — so cardinality/PK-quality analysis always evaluates the real
+    declared direction, not just "whichever way the path happens to be heading."
+    """
+    if edge_desc["direction"] == "references":
+        return {
+            "from_table_fqn": current_node,            "from_column": edge_desc["left_column"],
+            "to_table_fqn":   edge_desc["table_fqn"],   "to_column":   edge_desc["right_column"],
+            "confidence":     edge_desc["confidence"],  "relationship_name": edge_desc["fk_name"],
+        }
+    return {
+        "from_table_fqn": edge_desc["table_fqn"],   "from_column": edge_desc["right_column"],
+        "to_table_fqn":   current_node,             "to_column":   edge_desc["left_column"],
+        "confidence":     edge_desc["confidence"],  "relationship_name": edge_desc["fk_name"],
+    }
+
+
+_PATH_RISK_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+_PATH_CARDINALITY_RANK = {
+    "ONE_TO_ONE": 4, "MANY_TO_ONE": 3, "ONE_TO_MANY": 3, "MANY_TO_MANY": 1, "UNKNOWN": 0,
+}
+
+
+def _summarize_path(raw_path: dict, edge_analyses: list[dict]) -> dict:
+    n = len(edge_analyses)
+    avg_quality = round(sum(e["join_quality"] for e in edge_analyses) / n, 1) if n else 100.0
+    avg_conf    = round(sum(e["relationship_confidence"] for e in edge_analyses) / n, 1) if n else 100.0
+    worst_risk  = (
+        max(edge_analyses, key=lambda e: _PATH_RISK_RANK.get(e["fanout_risk"], 0))["fanout_risk"]
+        if edge_analyses else "LOW"
+    )
+    card_score = sum(_PATH_CARDINALITY_RANK.get(e["cardinality"], 0) for e in edge_analyses)
+
+    return {
+        "path":  raw_path["path"],
+        "hops":  raw_path["hops"],
+        "edges": edge_analyses,
+        "avg_join_quality":            avg_quality,
+        "avg_relationship_confidence": avg_conf,
+        "worst_fanout_risk":           worst_risk,
+        "cardinality_score":           card_score,
+    }
+
+
+def _why_best_path(best: dict, alternatives: list[dict]) -> str:
+    base = (
+        f"{best['hops']}-hop path via {' -> '.join(best['path'])} with average "
+        f"join_quality {best['avg_join_quality']}/100 and {best['worst_fanout_risk']} "
+        "worst-case fan-out risk."
+    )
+    if not alternatives:
+        return base
+
+    next_best = alternatives[0]
+    reasons: list[str] = []
+    if best["avg_join_quality"] > next_best["avg_join_quality"]:
+        reasons.append(
+            f"higher average join quality ({best['avg_join_quality']} vs {next_best['avg_join_quality']})"
+        )
+    if _PATH_RISK_RANK.get(best["worst_fanout_risk"], 0) < _PATH_RISK_RANK.get(next_best["worst_fanout_risk"], 0):
+        reasons.append(f"avoids a {next_best['worst_fanout_risk']} fan-out hop the next-best path has")
+    if best["hops"] < next_best["hops"]:
+        reasons.append(f"{next_best['hops'] - best['hops']} hop(s) shorter")
+    if not reasons:
+        reasons.append("ranked first on tie-break criteria")
+    return base + " Chosen over the next-best alternative because it has " + "; ".join(reasons) + "."
+
+
+def _no_best_path_result(source_id, start, target, msg, same_table=False):
+    trivial = None
+    if same_table:
+        trivial = {
+            "path": [start], "hops": 0, "edges": [],
+            "avg_join_quality": 100.0, "avg_relationship_confidence": 100.0,
+            "worst_fanout_risk": "LOW", "cardinality_score": 0,
+        }
+    return {
+        "source_id": source_id, "start_table": start, "target_table": target,
+        "best_join_path": trivial, "alternative_paths": [],
+        "why_best": msg if same_table else None,
+        "total_paths_found": 1 if same_table else 0, "message": msg,
+    }
+
+
+def recommend_best_join_path(
+    source_id: int,
+    user_id: str,
+    start_table: str,
+    target_table: str,
+    max_depth: int = _MAX_PATH_DEPTH,
+) -> dict | None:
+    """
+    Step 5. Rank the candidate join paths discover_join_paths already finds
+    by join quality, fan-out risk, cardinality, and confidence — not just
+    raw FK confidence or hop count.
+
+    Reuses the existing bounded BFS (_load_edges/_build_join_adj/
+    _find_all_join_paths) verbatim — no new graph traversal (Step 7). Per-edge
+    analysis (the same _analyze_edge used by analyze_join_quality) is
+    memoized per call so an edge shared by multiple candidate paths is
+    analyzed once, not once per path.
+
+    Returns None when source not found or not owned by user_id.
+    """
+    conn = get_connection()
+    try:
+        if not _verify_source(conn, source_id, user_id):
+            return None
+
+        snap_id = _latest_schema_snap_id(conn, source_id)
+        if not snap_id:
+            return _no_best_path_result(source_id, start_table, target_table, "No schema snapshot.")
+
+        if start_table == target_table:
+            return _no_best_path_result(
+                source_id, start_table, target_table,
+                "Source and target are the same table.", same_table=True,
+            )
+
+        prof_snap_id = _latest_profiling_snap_id(conn, source_id)
+        edges        = _load_edges(conn, source_id, snap_id)
+        join_adj     = _build_join_adj(edges)
+
+        raw_paths = _find_all_join_paths(join_adj, start_table, target_table, max_depth)
+        if not raw_paths:
+            return _no_best_path_result(
+                source_id, start_table, target_table,
+                f"No join path found within {max_depth} hops. "
+                "The tables may be in disconnected graph components.",
+            )
+
+        edge_cache: dict[tuple, dict] = {}
+
+        def _analyzed(current_node: str, edge_desc: dict) -> dict:
+            norm = _normalize_path_edge(current_node, edge_desc)
+            key = (norm["from_table_fqn"], norm["from_column"], norm["to_table_fqn"], norm["to_column"])
+            if key not in edge_cache:
+                edge_cache[key] = _analyze_edge(conn, source_id, prof_snap_id, norm)
+            return edge_cache[key]
+
+        analyzed_paths = [
+            _summarize_path(
+                p, [_analyzed(p["path"][i], p["joins"][i]) for i in range(len(p["joins"]))]
+            )
+            for p in raw_paths
+        ]
+    finally:
+        conn.close()
+
+    analyzed_paths.sort(key=lambda ap: (
+        -ap["avg_join_quality"],
+        _PATH_RISK_RANK.get(ap["worst_fanout_risk"], 1),
+        -ap["cardinality_score"],
+        -ap["avg_relationship_confidence"],
+        ap["hops"],
+    ))
+
+    best = analyzed_paths[0]
+    alternatives = analyzed_paths[1:]
+
+    return {
+        "source_id": source_id, "start_table": start_table, "target_table": target_table,
+        "best_join_path":     best,
+        "alternative_paths":  alternatives,
+        "why_best":           _why_best_path(best, alternatives),
+        "total_paths_found":  len(analyzed_paths),
+        "message":            f"{len(analyzed_paths)} join path(s) ranked.",
     }
 
 

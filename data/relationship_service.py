@@ -1155,3 +1155,40 @@ def reject_relationship(relationship_id: int, user_id: str) -> dict | None:
         )
 
     return dict(updated)
+
+
+# ---------------------------------------------------------------------------
+# Join Intelligence support (Program 3 Phase 2)
+#
+# pk_quality_score generalizes the PK/identity/uniqueness/GUID tiering already
+# used internally by _score_candidate's target-key scoring into a standalone,
+# reusable 0-100 utility for semantic_layer_service's join-quality scoring.
+# _score_candidate itself is untouched — this is a new parallel function, not
+# a refactor of tested Phase 1 code.
+# ---------------------------------------------------------------------------
+
+def pk_quality_score(col_profile: dict | None) -> int:
+    """
+    Score how strongly a column looks like a valid primary/unique join key, 0-100.
+
+    Mirrors the target-key tiering in _score_candidate:
+      declared primary key   -> 100
+      identity column        -> 90
+      uniqueness_score>=0.95 -> 80
+      GUID-shaped values     -> 60
+      none of the above      -> 0
+
+    Returns 0 when col_profile is None (column was never profiled) — never
+    invents a score for missing data.
+    """
+    if col_profile is None:
+        return 0
+    if col_profile.get("is_primary_key"):
+        return 100
+    if col_profile.get("is_identity"):
+        return 90
+    if (col_profile.get("uniqueness_score") or 0.0) >= 0.95:
+        return 80
+    if (col_profile.get("guid_match_rate") or 0.0) >= 0.8:
+        return 60
+    return 0

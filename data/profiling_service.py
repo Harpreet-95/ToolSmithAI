@@ -531,6 +531,33 @@ def get_key_candidate_columns(conn, source_id: int, profiling_snapshot_id: int) 
     return [dict(r) for r in rows]
 
 
+def get_column_profile_by_name(
+    conn, source_id: int, profiling_snapshot_id: int, table_fqn: str, column_name: str,
+) -> dict | None:
+    """
+    Single-row column profile lookup by exact (table_fqn, column_name).
+
+    Used by join-quality reasoning (Program 3 Phase 2), which needs the
+    profile of a specific named join column — unlike get_key_candidate_columns
+    (bulk, filtered to key-like columns) or get_column_profiles (paginated,
+    public-API shaped). Takes an open connection so callers analyzing
+    multiple edges in one pass can batch on a single connection.
+
+    Returns None when the column was never profiled — never invents data.
+    """
+    row = conn.execute(
+        "SELECT id, table_fqn, column_name, data_type, is_nullable, "
+        "null_percentage, populated_percentage, distinct_count, "
+        "uniqueness_score, cardinality_tier, is_primary_key, is_identity, "
+        "guid_match_rate, semantic_type "
+        "FROM profiling_column_profiles "
+        "WHERE source_id = ? AND profiling_snapshot_id = ? "
+        "AND table_fqn = ? AND column_name = ?",
+        (source_id, profiling_snapshot_id, table_fqn, column_name),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def get_table_profile_detail(
     source_id: int,
     user_id: str,
