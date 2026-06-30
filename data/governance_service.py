@@ -3088,3 +3088,555 @@ def governance_readiness_summary(
         "avg_confidence":    avg_conf,
         "open_assignments":  open_assignments,
     }
+
+
+# ---------------------------------------------------------------------------
+# Analytics & Executive Dashboard — Phase 6
+# ---------------------------------------------------------------------------
+
+def governance_kpis(*, source_id: int | None = None) -> dict:
+    """
+    Compute governance KPIs from governance_state_map and governance_assignments.
+
+    State distribution metrics (total_governed, *_pct, avg_confidence,
+    avg_risk_score) are always global — governance_state_map has no source_id.
+    Assignment counts (open_assignments, overdue_assignments, critical_backlog,
+    avg_resolution_days) are scoped to source_id when provided.
+    """
+    conn = get_connection()
+    try:
+        state_rows = conn.execute(
+            """SELECT approval_state, COUNT(*) AS cnt, AVG(confidence_score) AS avg_conf
+               FROM governance_state_map
+               GROUP BY approval_state"""
+        ).fetchall()
+
+        # Assignment metrics — optionally scoped by source_id
+        def _count(where_extra: str, params: list) -> int:
+            base = "SELECT COUNT(*) FROM governance_assignments WHERE " + where_extra
+            if source_id is not None:
+                base += " AND source_id = ?"
+                params = params + [source_id]
+            return conn.execute(base, params).fetchone()[0]
+
+        open_assignments    = _count("status = 'OPEN'", [])
+        overdue_assignments = _count(
+            "status = 'OPEN' AND substr(due_date,1,10) < date('now')", []
+        )
+        critical_backlog    = _count("status = 'OPEN' AND priority = 'CRITICAL'", [])
+
+        res_sql = (
+            "SELECT AVG(julianday(completed_at) - julianday(created_at)) "
+            "FROM governance_assignments "
+            "WHERE status = 'COMPLETED' AND completed_at IS NOT NULL "
+            "AND created_at IS NOT NULL"
+        )
+        res_params: list = []
+        if source_id is not None:
+            res_sql += " AND source_id = ?"
+            res_params.append(source_id)
+        avg_res_row = conn.execute(res_sql, res_params).fetchone()[0]
+    finally:
+        conn.close()
+
+    # Aggregate state distribution
+    state_counts: dict[str, int] = {}
+    conf_wsum = 0.0
+    conf_wn   = 0
+
+    for row in state_rows:
+        d   = dict(row)
+        s   = d["approval_state"]
+        cnt = d["cnt"] or 0
+        state_counts[s] = cnt
+        if d["avg_conf"] is not None:
+            conf_wsum += float(d["avg_conf"]) * cnt
+            conf_wn   += cnt
+
+    total         = sum(state_counts.values())
+    human_app     = state_counts.get("HUMAN_APPROVED", 0)
+    auto_app      = state_counts.get("AUTO_APPROVED",  0)
+    pending       = (state_counts.get("SUGGESTED", 0) +
+                     state_counts.get("GENERATED",  0) +
+                     state_counts.get("VALIDATED",  0))
+    blocked       = (state_counts.get("REJECTED",   0) +
+                     state_counts.get("DEPRECATED", 0) +
+                     state_counts.get("ARCHIVED",   0))
+    escalated     = state_counts.get("NEEDS_REVIEW", 0)
+
+    def _pct(n: int) -> float:
+        return round(n / total * 100, 1) if total > 0 else 0.0
+
+    # Approximate average risk from state base scores (no per-object profile loading)
+    weighted_risk = sum(
+        _STATE_RISK_BASE.get(GovernanceState(s), 40) * c
+        for s, c in state_counts.items()
+        if s in {gs.value for gs in GovernanceState}
+    )
+    avg_risk = round(weighted_risk / total) if total > 0 else None
+
+    return {
+        "total_governed":       total,
+        "human_approved_pct":   _pct(human_app),
+        "auto_approved_pct":    _pct(auto_app),
+        "pending_pct":          _pct(pending),
+        "blocked_pct":          _pct(blocked),
+        "escalated_pct":        _pct(escalated),
+        "avg_confidence":       round(conf_wsum / conf_wn, 3) if conf_wn > 0 else None,
+        "avg_risk_score":       avg_risk,
+        "avg_resolution_days":  round(float(avg_res_row), 1) if avg_res_row is not None else None,
+        "open_assignments":     open_assignments,
+        "overdue_assignments":  overdue_assignments,
+        "critical_backlog":     critical_backlog,
+    }
+
+
+def governance_trends(*, source_id: int | None = None) -> dict:
+    """
+    Return governance trend data.
+
+    No history table exists yet — trend_7d and trend_30d are empty arrays
+    whose schema is established for future implementation.  The velocity
+    object provides today's activity counts from governance_approval_events.
+    """
+    conn = get_connection()
+    try:
+        vel_row = conn.execute(
+            """SELECT
+                SUM(CASE WHEN to_state IN ('HUMAN_APPROVED','AUTO_APPROVED')
+                         THEN 1 ELSE 0 END)                  AS approvals_today,
+                SUM(CASE WHEN to_state = 'REJECTED'
+                         THEN 1 ELSE 0 END)                  AS rejections_today,
+                SUM(CASE WHEN event_type = 'ASSIGNMENT_COMPLETED'
+                         THEN 1 ELSE 0 END)                  AS completions_today
+               FROM governance_approval_events
+               WHERE date(created_at) = date('now')"""
+        ).fetchone()
+    finally:
+        conn.close()
+
+    readiness = governance_readiness_summary(source_id=source_id)
+    v = dict(vel_row) if vel_row else {}
+
+    return {
+        "trend_available": False,
+        "note": (
+            "Governance trend history will be available after the first 7 days "
+            "of operation. Historical snapshots are not yet persisted."
+        ),
+        "current_snapshot": {
+            "timestamp":         _now(),
+            "governance_score":  readiness["governance_score"],
+            "objects_ready":     readiness["objects_ready"],
+            "objects_pending":   readiness["objects_pending"],
+            "objects_blocked":   readiness["objects_blocked"],
+            "objects_escalated": readiness["objects_escalated"],
+            "avg_confidence":    readiness["avg_confidence"],
+            "open_assignments":  readiness["open_assignments"],
+        },
+        "velocity": {
+            "approvals_today":              v.get("approvals_today") or 0,
+            "rejections_today":             v.get("rejections_today") or 0,
+            "assignments_completed_today":  v.get("completions_today") or 0,
+        },
+        # Future shape — empty until a governance_history table is added.
+        "trend_7d":  [],
+        "trend_30d": [],
+    }
+
+
+def governance_bottlenecks(*, source_id: int | None = None) -> dict:
+    """
+    Identify governance bottlenecks: largest pending queues, low-confidence
+    areas, overdue stewards, active blocking policies, and domain/entity queues.
+    """
+    def _maybe_source(sql: str, params: list) -> tuple[str, list]:
+        if source_id is not None:
+            sql += " AND source_id = ?"
+            return sql, params + [source_id]
+        return sql, params
+
+    conn = get_connection()
+    try:
+        # Pending queue by object type (governance_state_map — no source_id filter)
+        pending_by_type = conn.execute(
+            """SELECT object_type_id, COUNT(*) AS cnt, AVG(confidence_score) AS avg_conf
+               FROM governance_state_map
+               WHERE approval_state NOT IN
+                     ('HUMAN_APPROVED','AUTO_APPROVED','REJECTED','DEPRECATED','ARCHIVED')
+               GROUP BY object_type_id ORDER BY cnt DESC"""
+        ).fetchall()
+
+        # Low-confidence areas (governance_state_map — global)
+        low_conf = conn.execute(
+            """SELECT object_type_id, COUNT(*) AS cnt, AVG(confidence_score) AS avg_conf
+               FROM governance_state_map
+               WHERE confidence_tier = 'LOW' OR confidence_score < 0.60
+               GROUP BY object_type_id ORDER BY cnt DESC"""
+        ).fetchall()
+
+        # NEEDS_REVIEW by type (global)
+        needs_review = conn.execute(
+            """SELECT object_type_id, COUNT(*) AS cnt
+               FROM governance_state_map
+               WHERE approval_state = 'NEEDS_REVIEW'
+               GROUP BY object_type_id ORDER BY cnt DESC"""
+        ).fetchall()
+
+        # Overdue stewards (optionally scoped by source_id)
+        ov_sql = (
+            "SELECT assigned_to, COUNT(*) AS overdue_cnt, "
+            "CAST(MAX(julianday('now') - julianday(substr(due_date,1,10))) AS INTEGER)"
+            " AS oldest_days_overdue "
+            "FROM governance_assignments "
+            "WHERE status = 'OPEN' AND substr(due_date,1,10) < date('now')"
+        )
+        ov_sql, ov_params = _maybe_source(ov_sql, [])
+        ov_sql += " GROUP BY assigned_to ORDER BY overdue_cnt DESC LIMIT 10"
+        overdue_stewards = conn.execute(ov_sql, ov_params).fetchall()
+
+        # Active blocking policies
+        blocking_policies = conn.execute(
+            """SELECT policy_name, action, priority
+               FROM governance_policies
+               WHERE enabled = 1 AND action IN ('REQUIRE_HUMAN','ESCALATE')
+               ORDER BY priority ASC LIMIT 10"""
+        ).fetchall()
+
+        # Pending domain rule queues (source-scoped)
+        dom_sql = (
+            "SELECT domain, COUNT(*) AS cnt, AVG(confidence) AS avg_conf "
+            "FROM domain_learning_rules WHERE approval_status = 'PENDING'"
+        )
+        dom_sql, dom_params = _maybe_source(dom_sql, [])
+        dom_sql += " GROUP BY domain ORDER BY cnt DESC LIMIT 10"
+        pending_domains = conn.execute(dom_sql, dom_params).fetchall()
+
+        # Pending entity rule queues (source-scoped)
+        ent_sql = (
+            "SELECT entity, COUNT(*) AS cnt, AVG(confidence) AS avg_conf "
+            "FROM entity_learning_rules WHERE approval_status = 'PENDING'"
+        )
+        ent_sql, ent_params = _maybe_source(ent_sql, [])
+        ent_sql += " GROUP BY entity ORDER BY cnt DESC LIMIT 10"
+        pending_entities = conn.execute(ent_sql, ent_params).fetchall()
+    finally:
+        conn.close()
+
+    def _avg(raw) -> float | None:
+        return round(float(raw), 3) if raw is not None else None
+
+    return {
+        "pending_by_type": [
+            {
+                "object_type":    dict(r)["object_type_id"],
+                "pending_count":  dict(r)["cnt"],
+                "avg_confidence": _avg(dict(r)["avg_conf"]),
+            }
+            for r in pending_by_type
+        ],
+        "low_confidence_areas": [
+            {
+                "object_type":    dict(r)["object_type_id"],
+                "low_conf_count": dict(r)["cnt"],
+                "avg_confidence": _avg(dict(r)["avg_conf"]),
+            }
+            for r in low_conf
+        ],
+        "needs_review_by_type": [
+            {"object_type": dict(r)["object_type_id"], "count": dict(r)["cnt"]}
+            for r in needs_review
+        ],
+        "overdue_stewards": [
+            {
+                "assigned_to":         dict(r)["assigned_to"],
+                "overdue_count":       dict(r)["overdue_cnt"],
+                "oldest_days_overdue": dict(r)["oldest_days_overdue"] or 0,
+            }
+            for r in overdue_stewards
+        ],
+        "active_blocking_policies": [
+            {
+                "policy_name": dict(r)["policy_name"],
+                "action":      dict(r)["action"],
+                "priority":    dict(r)["priority"],
+            }
+            for r in blocking_policies
+        ],
+        "pending_domains": [
+            {
+                "domain":         dict(r)["domain"],
+                "pending_count":  dict(r)["cnt"],
+                "avg_confidence": _avg(dict(r)["avg_conf"]),
+            }
+            for r in pending_domains
+        ],
+        "pending_entities": [
+            {
+                "entity":         dict(r)["entity"],
+                "pending_count":  dict(r)["cnt"],
+                "avg_confidence": _avg(dict(r)["avg_conf"]),
+            }
+            for r in pending_entities
+        ],
+    }
+
+
+def governance_recommendations(*, source_id: int | None = None) -> list[dict]:
+    """
+    Generate rule-based governance recommendations.
+
+    Evaluates threshold conditions across existing tables and returns
+    a prioritised list of actionable recommendations.  No AI; pure rules.
+
+    Recommendations are sorted CRITICAL → HIGH → MEDIUM → LOW.
+    """
+    conn = get_connection()
+    try:
+        def _qcount(sql: str, params: list | None = None) -> int:
+            return conn.execute(sql, params or []).fetchone()[0] or 0
+
+        def _with_src(sql: str, params: list) -> tuple[str, list]:
+            if source_id is not None:
+                return sql + " AND source_id = ?", params + [source_id]
+            return sql, params
+
+        # PII column backlog
+        pii_sql, pii_p = _with_src(
+            "SELECT COUNT(*) FROM data_dictionary_columns "
+            "WHERE pii_risk = 1 AND is_approved = 0", []
+        )
+        pii_count = _qcount(pii_sql, pii_p)
+
+        # High-confidence pending rules (domain + entity)
+        hc_dom_sql, hc_dom_p = _with_src(
+            "SELECT COUNT(*) FROM domain_learning_rules "
+            "WHERE confidence >= 0.95 AND approval_status = 'PENDING'", []
+        )
+        hc_ent_sql, hc_ent_p = _with_src(
+            "SELECT COUNT(*) FROM entity_learning_rules "
+            "WHERE confidence >= 0.95 AND approval_status = 'PENDING'", []
+        )
+        hc_total = _qcount(hc_dom_sql, hc_dom_p) + _qcount(hc_ent_sql, hc_ent_p)
+
+        # Overdue assignments
+        ov_sql, ov_p = _with_src(
+            "SELECT COUNT(*) FROM governance_assignments "
+            "WHERE status = 'OPEN' AND substr(due_date,1,10) < date('now')", []
+        )
+        overdue_count = _qcount(ov_sql, ov_p)
+
+        # Critical assignment backlog
+        cr_sql, cr_p = _with_src(
+            "SELECT COUNT(*) FROM governance_assignments "
+            "WHERE status = 'OPEN' AND priority = 'CRITICAL'", []
+        )
+        critical_count = _qcount(cr_sql, cr_p)
+
+        # Finance/regulatory domain pending
+        _fin_list = ",".join(f"'{d}'" for d in sorted(_FINANCIAL_DOMAINS | _REGULATORY_DOMAINS))
+        fin_sql, fin_p = _with_src(
+            f"SELECT COUNT(*) FROM domain_learning_rules "
+            f"WHERE approval_status = 'PENDING' AND domain IN ({_fin_list})", []
+        )
+        finance_count = _qcount(fin_sql, fin_p)
+
+        # Dictionary pending backlog
+        dict_sql, dict_p = _with_src(
+            "SELECT COUNT(*) FROM data_dictionary_tables "
+            "WHERE is_approved = 0 AND business_name IS NOT NULL", []
+        )
+        dict_count = _qcount(dict_sql, dict_p)
+
+        # Metadata gap
+        meta_sql, meta_p = _with_src(
+            "SELECT COUNT(*) FROM data_dictionary_tables "
+            "WHERE business_name IS NULL OR business_name = ''", []
+        )
+        meta_gap = _qcount(meta_sql, meta_p)
+
+        # Unassigned governed objects (SUGGESTED state, no open assignment).
+        # Matches on (object_type, object_id) together — object_id alone can
+        # collide across different object types (e.g. dict.table id "5" and
+        # domain.rule id "5" are different objects).
+        unassigned_count = _qcount(
+            """SELECT COUNT(*) FROM governance_state_map gsm
+               WHERE gsm.approval_state = 'SUGGESTED'
+               AND NOT EXISTS (
+                   SELECT 1 FROM governance_assignments ga
+                   WHERE ga.status = 'OPEN'
+                   AND ga.object_type = gsm.object_type_id
+                   AND ga.object_id = gsm.object_id
+               )""",
+        )
+    except Exception:
+        logger.warning("governance_recommendations query failed", exc_info=True)
+        return []
+    finally:
+        conn.close()
+
+    # Readiness for governance_score-based recommendations
+    try:
+        readiness = governance_readiness_summary(source_id=source_id)
+        gov_score = readiness["governance_score"]
+        pending_objects = readiness["objects_pending"]
+        total_governed = readiness["total_governed"]
+    except Exception:
+        gov_score = 100
+        pending_objects = 0
+        total_governed = 0
+
+    recs: list[dict] = []
+
+    if pii_count > 0:
+        recs.append({
+            "id":             "REVIEW_PII_BACKLOG",
+            "title":          "Review PII Column Backlog",
+            "description":    (
+                f"{pii_count} unapproved PII column(s) detected. "
+                "Immediate review required for data privacy compliance."
+            ),
+            "priority":       "CRITICAL",
+            "affected_count": pii_count,
+            "action_endpoint": "POST /governance/bulk/dry-run",
+            "action_params":   {"object_type": "dict.column", "exclude_pii": False},
+        })
+
+    if critical_count > 0:
+        recs.append({
+            "id":             "CLEAR_CRITICAL_BACKLOG",
+            "title":          "Clear Critical Assignment Backlog",
+            "description":    (
+                f"{critical_count} CRITICAL assignment(s) are open. "
+                "These require same-day resolution per SLA."
+            ),
+            "priority":       "CRITICAL",
+            "affected_count": critical_count,
+            "action_endpoint": "GET /governance/assignments",
+            "action_params":   {"priority": "CRITICAL", "status": "OPEN"},
+        })
+
+    if total_governed > 0 and gov_score < 50:
+        recs.append({
+            "id":             "IMPROVE_GOVERNANCE_COVERAGE",
+            "title":          "Governance Coverage Is Critically Low",
+            "description":    (
+                f"Overall governance score is {gov_score}/100 — "
+                "below acceptable threshold. Review pending items to improve coverage."
+            ),
+            "priority":       "CRITICAL",
+            "affected_count": pending_objects,
+            "action_endpoint": "GET /governance/readiness",
+            "action_params":   {},
+        })
+
+    if overdue_count > 0:
+        recs.append({
+            "id":             "ADDRESS_OVERDUE_ASSIGNMENTS",
+            "title":          "Address Overdue Governance Assignments",
+            "description":    (
+                f"{overdue_count} assignment(s) have passed their SLA due date. "
+                "Escalation may be required."
+            ),
+            "priority":       "HIGH",
+            "affected_count": overdue_count,
+            "action_endpoint": "GET /governance/assignments",
+            "action_params":   {"overdue_only": True},
+        })
+
+    if finance_count > 0:
+        recs.append({
+            "id":             "ESCALATE_FINANCE_APPROVALS",
+            "title":          "Escalate Finance/Regulatory Domain Approvals",
+            "description":    (
+                f"{finance_count} pending domain rule(s) fall in financial or "
+                "regulatory domains and require escalation to domain owners."
+            ),
+            "priority":       "HIGH",
+            "affected_count": finance_count,
+            "action_endpoint": "GET /governance/assignments",
+            "action_params":   {"priority": "HIGH"},
+        })
+
+    if hc_total >= 5:
+        recs.append({
+            "id":             "BULK_APPROVE_HIGH_CONFIDENCE",
+            "title":          "Bulk Approve High-Confidence Rules",
+            "description":    (
+                f"{hc_total} domain/entity rule(s) have confidence ≥ 95% "
+                "and are eligible for bulk approval. Run a dry-run first."
+            ),
+            "priority":       "HIGH",
+            "affected_count": hc_total,
+            "action_endpoint": "POST /governance/bulk/dry-run",
+            "action_params":   {"object_type": "domain.rule", "confidence_min": 0.95},
+        })
+
+    if dict_count > 10:
+        recs.append({
+            "id":             "REVIEW_DICTIONARY_ENTRIES",
+            "title":          "Increase Dictionary Review Rate",
+            "description":    (
+                f"{dict_count} data dictionary entries are awaiting review. "
+                "Consider assigning stewards or scheduling a review sprint."
+            ),
+            "priority":       "MEDIUM",
+            "affected_count": dict_count,
+            "action_endpoint": "POST /governance/bulk/dry-run",
+            "action_params":   {"object_type": "dict.table"},
+        })
+
+    if meta_gap > 0:
+        recs.append({
+            "id":             "IMPROVE_METADATA_COVERAGE",
+            "title":          "Improve Metadata Coverage",
+            "description":    (
+                f"{meta_gap} table(s) lack business names. "
+                "Run the dictionary generation pipeline to improve metadata coverage."
+            ),
+            "priority":       "MEDIUM",
+            "affected_count": meta_gap,
+            "action_endpoint": None,
+            "action_params":   {},
+        })
+
+    if unassigned_count > 0:
+        recs.append({
+            "id":             "ASSIGN_STEWARDS",
+            "title":          "Assign Stewards to Unassigned Items",
+            "description":    (
+                f"{unassigned_count} governed object(s) in SUGGESTED state "
+                "have no active stewardship assignment."
+            ),
+            "priority":       "MEDIUM",
+            "affected_count": unassigned_count,
+            "action_endpoint": "POST /governance/assign",
+            "action_params":   {},
+        })
+
+    _PSORT = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    recs.sort(key=lambda r: _PSORT.get(r["priority"], 99))
+    return recs
+
+
+def get_governance_dashboard(*, source_id: int | None = None) -> dict:
+    """
+    Master governance analytics dashboard.
+
+    Aggregates executive summary, KPIs, trends, bottlenecks, and
+    recommendations into one response.  All sub-functions are read-only.
+
+    Parameters
+    ----------
+    source_id : Scope assignment counts and source-table metrics to one
+                data source.  State-map metrics remain global.
+    """
+    return {
+        "generated_at":    _now(),
+        "source_id":       source_id,
+        "executive_summary": governance_readiness_summary(source_id=source_id),
+        "kpis":              governance_kpis(source_id=source_id),
+        "trends":            governance_trends(source_id=source_id),
+        "bottlenecks":       governance_bottlenecks(source_id=source_id),
+        "recommendations":   governance_recommendations(source_id=source_id),
+    }

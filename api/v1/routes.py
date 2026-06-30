@@ -5324,6 +5324,86 @@ def governance_get_readiness(
     return {"status": "success", "data": summary}
 
 
+# ---------------------------------------------------------------------------
+# Analytics & Executive Dashboard — Phase 6
+# ---------------------------------------------------------------------------
+
+@router.get("/governance/dashboard")
+def governance_get_dashboard(
+    source_id: int | None = Query(None, description="Scope dashboard to one source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return the full governance executive dashboard.
+
+    Aggregates executive summary, KPIs, trends, bottlenecks, and
+    recommendations into one read-only response. No new persistence.
+    """
+    from data.governance_service import get_governance_dashboard
+    dashboard = get_governance_dashboard(source_id=source_id)
+    return {"status": "success", "data": dashboard}
+
+
+@router.get("/governance/kpis")
+def governance_get_kpis(
+    source_id: int | None = Query(None, description="Scope assignment KPIs to one source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return governance KPIs: approval-state percentages, average confidence,
+    average risk score, average resolution time, and assignment backlog counts.
+    """
+    from data.governance_service import governance_kpis
+    kpis = governance_kpis(source_id=source_id)
+    return {"status": "success", "data": kpis}
+
+
+@router.get("/governance/trends")
+def governance_get_trends(
+    source_id: int | None = Query(None, description="Scope trend snapshot to one source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return governance trend data: today's approval/rejection velocity and a
+    current-state snapshot. Historical trend_7d/trend_30d are placeholders
+    until a history table is added.
+    """
+    from data.governance_service import governance_trends
+    trends = governance_trends(source_id=source_id)
+    return {"status": "success", "data": trends}
+
+
+@router.get("/governance/bottlenecks")
+def governance_get_bottlenecks(
+    source_id: int | None = Query(None, description="Scope bottleneck queues to one source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Identify governance bottlenecks: largest pending queues, low-confidence
+    areas, overdue stewards, active blocking policies, and pending
+    domain/entity rule queues.
+    """
+    from data.governance_service import governance_bottlenecks
+    bottlenecks = governance_bottlenecks(source_id=source_id)
+    return {"status": "success", "data": bottlenecks}
+
+
+@router.get("/governance/recommendations")
+def governance_get_recommendations(
+    source_id: int | None = Query(None, description="Scope recommendations to one source"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    """
+    Return rule-based governance recommendations, sorted by priority.
+
+    Pure rule-based thresholds — no AI. Each recommendation includes an
+    affected_count and a suggested action_endpoint for follow-up.
+    """
+    from data.governance_service import governance_recommendations
+    recommendations = governance_recommendations(source_id=source_id)
+    return {"status": "success", "data": recommendations}
+
+
 _VALID_DICT_STATUSES = {"approved", "generated", "none"}
 
 
