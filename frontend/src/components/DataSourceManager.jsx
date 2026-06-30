@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, continueBatchProfile, createDataSource, deleteDataSource, discoverDataSourceSchema, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getEntityRules, getEntitySummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, startBatchProfile, testDataSource } from '../api/client'
+import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, bulkGovernanceApprove, bulkGovernanceDryRun, bulkGovernanceReject, continueBatchProfile, createDataSource, deleteDataSource, discoverDataSourceSchema, explainTable, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getDownstreamLineage, getEntityRules, getEntitySummary, getGovernanceAssignments, getGovernanceAssignmentSummary, getGovernanceBottlenecks, getGovernanceDashboard, getGovernanceExplanation, getGovernancePolicies, getGovernanceRecommendations, getImpactAnalysis, getKnowledgeGraphSummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, getRelatedTables, getSemanticSummary, getSemanticTableProfile, getUpstreamLineage, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, startBatchProfile, testDataSource } from '../api/client'
 import DictionaryReview from './DictionaryReview'
 import ColumnProfileExplorer from './ColumnProfileExplorer'
 
@@ -122,6 +122,19 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [reviewPage,       setReviewPage]       = useState({})  // { [id]: number } 0-indexed current page
   const [srcMenu,          setSrcMenu]          = useState({})  // { [id]: bool } per-source three-dot menu
   const [landingSearch,    setLandingSearch]    = useState('')    // landing-page search filter
+  const [bkSelectedTable,  setBkSelectedTable]  = useState({})  // { [srcId]: table_fqn } — Business Knowledge tab's table picker
+  const [bkExpanded,       setBkExpanded]       = useState({})  // { [sectionKey]: bool } — collapsed/expanded per BK card (overview defaults open)
+  const [bkSectionState,   setBkSectionState]   = useState({})  // { [cacheKey]: { loading, data, error } } — lazy-loaded + cached per (source, table, section)
+
+  // ── Governance Command Center ──────────────────────────────────────────────
+  const [cmdCenterState,    setCmdCenterState]    = useState({})  // { [`${srcId}::dashboard`|`${srcId}::assignments`|`${srcId}::policies`]: { loading, data, error } }
+  const [cmdCenterExpanded, setCmdCenterExpanded] = useState({ exec: true })  // { [section]: bool } — Executive Dashboard open by default
+  const [recExpanded,       setRecExpanded]       = useState({})  // { [recommendationId]: bool } — expanded recommendation detail
+  const [assignFilters,     setAssignFilters]     = useState({})  // { [srcId]: { priority, status, steward } }
+  const [bulkForm,          setBulkForm]          = useState({})  // { [srcId]: { object_type, confidence_min, confidence_max, approval_state, domain, entity, schema_name, exclude_pii } }
+  const [bulkResult,        setBulkResult]        = useState({})  // { [srcId]: { loading, dryRun, approveResult, rejectResult, error, confirmAction } }
+  const [explainForm,       setExplainForm]       = useState({})  // { [srcId]: { object_type, table_fqn, column_name, rule_id, suggestion_id, tool_id } }
+  const [explainState,      setExplainState]      = useState({})  // { [srcId]: { loading, data, error } }
 
   function notify(msg, ok = true) {
     setToast({ text: msg, ok })
@@ -211,6 +224,16 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     }
     if (dsActiveTab === 'governance' && !reviewTaskState[id]?.data && !reviewTaskState[id]?.loading) {
       loadReviewTasks(id, 0)
+    }
+    if (dsActiveTab === 'governance' && cmdCenterExpanded.exec) {
+      ensureCmdDashboard(id)
+    }
+    if (dsActiveTab === 'business-knowledge') {
+      if (!schemaState[id]?.data && !schemaState[id]?.loading && src?.last_snapshot_id != null) {
+        loadSchema(id)
+      }
+      const bkFqn = bkSelectedTable[id]
+      if (bkFqn) ensureBkSection(id, bkFqn, 'overview')
     }
   }, [dsActiveTab, dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -418,6 +441,216 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       setSchemaExpand(s => ({ ...s, [id]: { schemas: [], tables: [] } }))
     } catch (e) {
       setSchemaState(s => ({ ...s, [id]: { loading: false, error: e?.message ?? 'Failed to load schema.' } }))
+    }
+  }
+
+  // ── Business Knowledge tab: generic per-section lazy loader + cache ─────────
+  // Each section's data is fetched once per (source, table) and reused across
+  // sections that need the same underlying call (e.g. Overview + Business
+  // Explanation both reuse the same explain_table() fetch).
+  function _bkTableKey(sourceId, tableFqn, dataKey) {
+    return `${sourceId}::${tableFqn}::${dataKey}`
+  }
+  function _bkSourceKey(sourceId, dataKey) {
+    return `${sourceId}::${dataKey}`
+  }
+  const BK_FETCHERS = {
+    explain:         (id, fqn) => explainTable(id, fqn, token),
+    semanticProfile: (id, fqn) => getSemanticTableProfile(id, fqn, token),
+    related:         (id, fqn) => getRelatedTables(id, fqn, token),
+    upstream:        (id, fqn) => getUpstreamLineage(id, fqn, token),
+    downstream:      (id, fqn) => getDownstreamLineage(id, fqn, token),
+    impact:          (id, fqn) => getImpactAnalysis(id, fqn, token),
+  }
+  const BK_SOURCE_FETCHERS = {
+    kgSummary:       id => getKnowledgeGraphSummary(id, token),
+    semanticSummary: id => getSemanticSummary(id, token),
+  }
+  const BK_SECTION_DEPS = {
+    overview:    ['explain', 'semanticProfile'],
+    graph:       ['related'],
+    lineage:     ['upstream', 'downstream', 'impact'],
+    semantic:    ['semanticProfile'],
+    explanation: ['explain'],
+  }
+  const BK_SECTION_SOURCE_DEPS = {
+    summary: ['kgSummary', 'semanticSummary'],
+  }
+
+  async function _loadBkData(key, fetchFn) {
+    setBkSectionState(s => ({ ...s, [key]: { ...(s[key] ?? {}), loading: true, error: null } }))
+    try {
+      const resp = await fetchFn()
+      setBkSectionState(s => ({ ...s, [key]: { loading: false, data: resp?.data ?? resp, error: null } }))
+    } catch (e) {
+      setBkSectionState(s => ({ ...s, [key]: { loading: false, data: null, error: _is404(e) ? null : (e?.message ?? 'Failed to load.') } }))
+    }
+  }
+
+  // Fetches only the data a section needs, only if not already cached/in-flight.
+  function ensureBkSection(sourceId, tableFqn, sectionId) {
+    for (const dataKey of BK_SECTION_DEPS[sectionId] ?? []) {
+      const key = _bkTableKey(sourceId, tableFqn, dataKey)
+      if (!bkSectionState[key]?.data && !bkSectionState[key]?.loading) {
+        _loadBkData(key, () => BK_FETCHERS[dataKey](sourceId, tableFqn))
+      }
+    }
+    for (const dataKey of BK_SECTION_SOURCE_DEPS[sectionId] ?? []) {
+      const key = _bkSourceKey(sourceId, dataKey)
+      if (!bkSectionState[key]?.data && !bkSectionState[key]?.loading) {
+        _loadBkData(key, () => BK_SOURCE_FETCHERS[dataKey](sourceId))
+      }
+    }
+  }
+
+  function toggleBkSection(sourceId, tableFqn, sectionId) {
+    const opening = !bkExpanded[sectionId]
+    setBkExpanded(s => ({ ...s, [sectionId]: opening }))
+    if (opening && tableFqn) ensureBkSection(sourceId, tableFqn, sectionId)
+  }
+
+  // Selecting a table (directly, or by clicking a related/lineage node) refreshes
+  // only the sections currently expanded — collapsed sections fetch on next expand.
+  function handleBkSelectTable(sourceId, tableFqn) {
+    setBkSelectedTable(s => ({ ...s, [sourceId]: tableFqn }))
+    for (const sectionId of Object.keys(BK_SECTION_DEPS)) {
+      const isOpen = sectionId === 'overview' ? (bkExpanded.overview !== false) : !!bkExpanded[sectionId]
+      if (isOpen) ensureBkSection(sourceId, tableFqn, sectionId)
+    }
+  }
+
+  // ── Governance Command Center: lazy-load + cache ────────────────────────────
+  // Executive Dashboard / Recommendations / Bottlenecks all read from the same
+  // /governance/dashboard payload (it already embeds kpis, bottlenecks, and
+  // recommendations) so expanding all three never issues more than one fetch.
+  function _cmdKey(sourceId, section) {
+    return `${sourceId}::${section}`
+  }
+
+  async function _loadCmd(key, fetchFn) {
+    setCmdCenterState(s => ({ ...s, [key]: { ...(s[key] ?? {}), loading: true, error: null } }))
+    try {
+      const resp = await fetchFn()
+      setCmdCenterState(s => ({ ...s, [key]: { loading: false, data: resp?.data ?? resp, error: null } }))
+    } catch (e) {
+      setCmdCenterState(s => ({ ...s, [key]: { loading: false, data: null, error: e?.message ?? 'Failed to load.' } }))
+    }
+  }
+
+  function ensureCmdDashboard(sourceId, force = false) {
+    const key = _cmdKey(sourceId, 'dashboard')
+    if (force || (!cmdCenterState[key]?.data && !cmdCenterState[key]?.loading)) {
+      _loadCmd(key, () => getGovernanceDashboard(sourceId, token))
+    }
+  }
+
+  function ensureCmdRecommendations(sourceId) {
+    const dashKey = _cmdKey(sourceId, 'dashboard')
+    if (cmdCenterState[dashKey]?.data) return
+    const key = _cmdKey(sourceId, 'recommendations')
+    if (!cmdCenterState[key]?.data && !cmdCenterState[key]?.loading) {
+      _loadCmd(key, () => getGovernanceRecommendations(sourceId, token))
+    }
+  }
+
+  function ensureCmdBottlenecks(sourceId) {
+    const dashKey = _cmdKey(sourceId, 'dashboard')
+    if (cmdCenterState[dashKey]?.data) return
+    const key = _cmdKey(sourceId, 'bottlenecks')
+    if (!cmdCenterState[key]?.data && !cmdCenterState[key]?.loading) {
+      _loadCmd(key, () => getGovernanceBottlenecks(sourceId, token))
+    }
+  }
+
+  function ensureCmdAssignments(sourceId, force = false) {
+    const key = _cmdKey(sourceId, 'assignments')
+    if (force || (!cmdCenterState[key]?.data && !cmdCenterState[key]?.loading)) {
+      _loadCmd(key, async () => {
+        const [listResp, summaryResp] = await Promise.all([
+          getGovernanceAssignments(sourceId, token, { limit: 200 }),
+          getGovernanceAssignmentSummary(sourceId, token),
+        ])
+        return { data: { items: listResp?.data ?? [], summary: summaryResp?.data ?? null } }
+      })
+    }
+  }
+
+  function ensureCmdPolicies(force = false) {
+    const key = 'global::policies'
+    if (force || (!cmdCenterState[key]?.data && !cmdCenterState[key]?.loading)) {
+      _loadCmd(key, () => getGovernancePolicies(token))
+    }
+  }
+
+  function toggleCmdSection(sourceId, section) {
+    const opening = !cmdCenterExpanded[section]
+    setCmdCenterExpanded(s => ({ ...s, [section]: opening }))
+    if (!opening) return
+    if (section === 'exec')            ensureCmdDashboard(sourceId)
+    if (section === 'recommendations') ensureCmdRecommendations(sourceId)
+    if (section === 'bottlenecks')     ensureCmdBottlenecks(sourceId)
+    if (section === 'assignments')     ensureCmdAssignments(sourceId)
+    if (section === 'policies')        ensureCmdPolicies()
+  }
+
+  function updateBulkForm(sourceId, patch) {
+    setBulkForm(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? { object_type: 'dict.table', exclude_pii: true }), ...patch } }))
+  }
+
+  async function handleBulkDryRun(sourceId) {
+    const filter = { source_id: sourceId, object_type: 'dict.table', exclude_pii: true, ...(bulkForm[sourceId] ?? {}) }
+    setBulkResult(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: true, error: null, confirmAction: null } }))
+    try {
+      const resp = await bulkGovernanceDryRun(filter, token)
+      setBulkResult(s => ({ ...s, [sourceId]: { loading: false, dryRun: resp?.data ?? resp, approveResult: null, rejectResult: null, error: null, confirmAction: null } }))
+    } catch (e) {
+      setBulkResult(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: false, error: e?.message ?? 'Dry run failed.' } }))
+    }
+  }
+
+  function handleBulkRequestConfirm(sourceId, action) {
+    setBulkResult(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), confirmAction: action } }))
+  }
+
+  function handleBulkCancelConfirm(sourceId) {
+    setBulkResult(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), confirmAction: null } }))
+  }
+
+  async function handleBulkExecute(sourceId, action) {
+    const filter = { source_id: sourceId, object_type: 'dict.table', exclude_pii: true, ...(bulkForm[sourceId] ?? {}) }
+    setBulkResult(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: true, error: null, confirmAction: null } }))
+    try {
+      const fn = action === 'approve' ? bulkGovernanceApprove : bulkGovernanceReject
+      const resp = await fn(filter, token)
+      setBulkResult(s => ({
+        ...s,
+        [sourceId]: {
+          ...(s[sourceId] ?? {}),
+          loading: false,
+          error: null,
+          [action === 'approve' ? 'approveResult' : 'rejectResult']: resp?.data ?? resp,
+        },
+      }))
+      notify(`Bulk ${action} complete.`)
+      ensureCmdDashboard(sourceId, true) // refresh KPIs/backlog after a write
+    } catch (e) {
+      setBulkResult(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: false, error: e?.message ?? `Bulk ${action} failed.` } }))
+      notify(e?.message ?? `Bulk ${action} failed.`, false)
+    }
+  }
+
+  function updateExplainForm(sourceId, patch) {
+    setExplainForm(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? { object_type: 'dict.table' }), ...patch } }))
+  }
+
+  async function handleExplain(sourceId) {
+    const f = explainForm[sourceId] ?? { object_type: 'dict.table' }
+    setExplainState(s => ({ ...s, [sourceId]: { loading: true, data: null, error: null } }))
+    try {
+      const resp = await getGovernanceExplanation({ source_id: sourceId, ...f }, token)
+      setExplainState(s => ({ ...s, [sourceId]: { loading: false, data: resp?.data ?? resp, error: null } }))
+    } catch (e) {
+      setExplainState(s => ({ ...s, [sourceId]: { loading: false, data: null, error: e?.message ?? 'Failed to load explanation.' } }))
     }
   }
 
@@ -978,6 +1211,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       { id: 'domains',    label: 'Domains'    },
       { id: 'entities',   label: 'Entities'   },
       { id: 'governance', label: 'Governance' },
+      { id: 'business-knowledge', label: 'Knowledge' },
       { id: 'lineage',    label: 'Lineage'    },
       { id: 'runs',       label: 'Runs'       },
     ]
@@ -1839,7 +2073,334 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       </div>
     )
 
+    // ── Governance Command Center: collapsible card wrapper ─────────────────────
+    const cmdCard = (id, title, badge, body) => (
+      <div style={card({ padding: '0' })}>
+        <button
+          onClick={() => toggleCmdSection(dsSelectedSourceId, id)}
+          style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 16px', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={muted} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: cmdCenterExpanded[id] ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s', flexShrink: 0 }}><polyline points="9 18 15 12 9 6" /></svg>
+          <span style={{ fontSize: '0.84rem', fontWeight: '700', color: text, fontFamily: FONT }}>{title}</span>
+          {badge}
+        </button>
+        {cmdCenterExpanded[id] && <div style={{ padding: '0 16px 16px' }}>{body}</div>}
+      </div>
+    )
+
+    const cmdStat = (label, value, color) => (
+      <div key={label}>
+        <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '3px' }}>{label}</div>
+        <div style={{ fontSize: '1.1rem', fontWeight: '700', color: color ?? text, fontFamily: FONT, lineHeight: 1 }}>{value}</div>
+      </div>
+    )
+
+    const cmdPriorityBadge = p => (
+      <span style={{ padding: '1px 7px', borderRadius: '6px', fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.04em', background: SEV_BG[p] ?? `${muted}10`, color: SEV_COLOR[p] ?? muted, border: `1px solid ${(SEV_COLOR[p] ?? muted)}35`, fontFamily: FONT, textTransform: 'uppercase' }}>{p}</span>
+    )
+
+    // ── Section data (Executive Dashboard / Recommendations / Bottlenecks share one fetch) ──
+    const cmdDash      = cmdCenterState[_cmdKey(dsSelectedSourceId, 'dashboard')] ?? {}
+    const cmdRecFb      = cmdCenterState[_cmdKey(dsSelectedSourceId, 'recommendations')] ?? {}
+    const cmdBotFb      = cmdCenterState[_cmdKey(dsSelectedSourceId, 'bottlenecks')] ?? {}
+    const cmdAssign     = cmdCenterState[_cmdKey(dsSelectedSourceId, 'assignments')] ?? {}
+    const cmdPolicies   = cmdCenterState['global::policies'] ?? {}
+    const execSummary   = cmdDash.data?.executive_summary ?? null
+    const execKpis      = cmdDash.data?.kpis ?? null
+    const recommendations = cmdDash.data?.recommendations ?? cmdRecFb.data ?? null
+    const recLoading       = cmdDash.loading || cmdRecFb.loading
+    const recError         = cmdRecFb.error
+    const bottlenecks      = cmdDash.data?.bottlenecks ?? cmdBotFb.data ?? null
+    const botLoading       = cmdDash.loading || cmdBotFb.loading
+    const botError         = cmdBotFb.error
+    const bulkF   = bulkForm[dsSelectedSourceId]   ?? { object_type: 'dict.table', exclude_pii: true }
+    const bulkR   = bulkResult[dsSelectedSourceId] ?? {}
+    const explainF = explainForm[dsSelectedSourceId] ?? { object_type: 'dict.table' }
+    const explainR = explainState[dsSelectedSourceId] ?? {}
+    const assignF  = assignFilters[dsSelectedSourceId] ?? { priority: '', status: '', steward: '' }
+
+    // ── Section 1: Executive Dashboard ──────────────────────────────────────────
+    const cmdExecBody = cmdDash.loading ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT, padding: '4px 0' }}><Spinner size={12} /> Loading dashboard…</div>
+    ) : cmdDash.error ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{cmdDash.error}</p>
+    ) : (!execSummary || !execKpis) ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>No governance data yet.</p>
+    ) : (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '22px' }}>
+        {cmdStat('Governance Score', `${execSummary.governance_score}/100`, execSummary.governance_score >= 70 ? success : execSummary.governance_score >= 40 ? warn : danger)}
+        {cmdStat('Readiness Score',  `${execSummary.governance_score}/100`, execSummary.governance_score >= 70 ? success : execSummary.governance_score >= 40 ? warn : danger)}
+        {cmdStat('Human Approved %', `${execKpis.human_approved_pct}%`)}
+        {cmdStat('Auto Approved %',  `${execKpis.auto_approved_pct}%`)}
+        {cmdStat('Pending',          `${execKpis.pending_pct}%`, execKpis.pending_pct > 0 ? warn : muted)}
+        {cmdStat('Blocked',          `${execKpis.blocked_pct}%`, execKpis.blocked_pct > 0 ? danger : muted)}
+        {cmdStat('Critical Backlog', execKpis.critical_backlog, execKpis.critical_backlog > 0 ? danger : muted)}
+        {cmdStat('Avg Confidence',   execKpis.avg_confidence != null ? `${Math.round(execKpis.avg_confidence * 100)}%` : '—')}
+        {cmdStat('Avg Risk',         execKpis.avg_risk_score ?? '—')}
+        {cmdStat('Open Assignments', execKpis.open_assignments)}
+        {cmdStat('Overdue Assignments', execKpis.overdue_assignments, execKpis.overdue_assignments > 0 ? danger : muted)}
+      </div>
+    )
+
+    // ── Section 2: Recommendations ──────────────────────────────────────────────
+    const cmdRecBody = recLoading ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT, padding: '4px 0' }}><Spinner size={12} /> Loading recommendations…</div>
+    ) : recError ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{recError}</p>
+    ) : !recommendations || recommendations.length === 0 ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>No active recommendations — governance is in good shape.</p>
+    ) : (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {recommendations.map(r => (
+          <div key={r.id} style={{ border: `1px solid ${border}`, borderRadius: '8px', background: `${accent}06` }}>
+            <button
+              onClick={() => setRecExpanded(s => ({ ...s, [r.id]: !s[r.id] }))}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}
+            >
+              {cmdPriorityBadge(r.priority)}
+              <span style={{ fontSize: '0.8rem', fontWeight: '600', color: text, flex: 1 }}>{r.title}</span>
+              <span style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>{r.affected_count} item{r.affected_count !== 1 ? 's' : ''}</span>
+            </button>
+            {recExpanded[r.id] && (
+              <div style={{ padding: '0 12px 10px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT, lineHeight: 1.5 }}>{r.description}</div>
+                <div style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>Expected impact: {r.affected_count} item{r.affected_count !== 1 ? 's' : ''}</div>
+                {r.action_endpoint && <div style={{ fontSize: '0.66rem', color: muted, fontFamily: MONO }}>{r.action_endpoint}</div>}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+
+    // ── Section 3: Assignments ──────────────────────────────────────────────────
+    const cmdAssignItems = cmdAssign.data?.items ?? []
+    const cmdAssignFiltered = cmdAssignItems.filter(a =>
+      (!assignF.priority || a.priority === assignF.priority) &&
+      (!assignF.status   || a.status   === assignF.status) &&
+      (!assignF.steward  || a.assigned_to === assignF.steward)
+    )
+    const cmdStewards = [...new Set(cmdAssignItems.map(a => a.assigned_to).filter(Boolean))]
+    const cmdAssignBody = cmdAssign.loading ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT, padding: '4px 0' }}><Spinner size={12} /> Loading assignments…</div>
+    ) : cmdAssign.error ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{cmdAssign.error}</p>
+    ) : (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {cmdAssign.data?.summary && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px' }}>
+            {cmdStat('Open', cmdAssign.data.summary.open)}
+            {cmdStat('Overdue', cmdAssign.data.summary.overdue, cmdAssign.data.summary.overdue > 0 ? danger : muted)}
+            {cmdStat('Critical Backlog', cmdAssign.data.summary.critical_backlog, cmdAssign.data.summary.critical_backlog > 0 ? danger : muted)}
+            {cmdStat('Completed Today', cmdAssign.data.summary.completed_today)}
+            {cmdStat('Avg Resolution (days)', cmdAssign.data.summary.avg_resolution_days ?? '—')}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <select value={assignF.priority} onChange={e => setAssignFilters(s => ({ ...s, [dsSelectedSourceId]: { ...assignF, priority: e.target.value } }))} style={{ ...inp({ width: 'auto' }), padding: '5px 10px', fontSize: '0.76rem' }}>
+            <option value="">All priorities</option>
+            {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select value={assignF.status} onChange={e => setAssignFilters(s => ({ ...s, [dsSelectedSourceId]: { ...assignF, status: e.target.value } }))} style={{ ...inp({ width: 'auto' }), padding: '5px 10px', fontSize: '0.76rem' }}>
+            <option value="">All statuses</option>
+            <option value="OPEN">OPEN</option>
+            <option value="COMPLETED">COMPLETED</option>
+          </select>
+          <select value={assignF.steward} onChange={e => setAssignFilters(s => ({ ...s, [dsSelectedSourceId]: { ...assignF, steward: e.target.value } }))} style={{ ...inp({ width: 'auto' }), padding: '5px 10px', fontSize: '0.76rem' }}>
+            <option value="">All stewards</option>
+            {cmdStewards.map(st => <option key={st} value={st}>{st}</option>)}
+          </select>
+          <button onClick={() => ensureCmdAssignments(dsSelectedSourceId, true)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }) }}>Refresh</button>
+        </div>
+        {cmdAssignFiltered.length === 0 ? (
+          <p style={{ margin: 0, fontSize: '0.76rem', color: muted, fontFamily: FONT }}>No assignments match the current filters.</p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {cmdAssignFiltered.map(a => (
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '7px 10px', borderRadius: '6px', border: `1px solid ${border}`, background: a.sla?.sla_status === 'OVERDUE' ? `${danger}08` : 'transparent' }}>
+                {cmdPriorityBadge(a.priority)}
+                <span style={{ fontSize: '0.76rem', color: text, fontFamily: MONO }}>{a.object_type}#{a.object_id}</span>
+                <span style={{ fontSize: '0.73rem', color: textSec }}>{a.assigned_to}</span>
+                <span style={{ fontSize: '0.68rem', color: muted, fontFamily: FONT }}>{a.status}</span>
+                <span style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>due {fmtDate(a.due_date) ?? '—'}</span>
+                {a.sla?.sla_status === 'OVERDUE' && <span style={{ padding: '1px 6px', borderRadius: '6px', fontSize: '0.58rem', fontWeight: '700', background: `${danger}20`, color: danger, fontFamily: FONT }}>OVERDUE</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+
+    // ── Section 4: Policies ──────────────────────────────────────────────────────
+    const cmdPolicyList = cmdPolicies.data ?? null
+    const cmdPolicyBody = cmdPolicies.loading ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT, padding: '4px 0' }}><Spinner size={12} /> Loading policies…</div>
+    ) : cmdPolicies.error ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{cmdPolicies.error}</p>
+    ) : !cmdPolicyList || cmdPolicyList.length === 0 ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>No governance policies configured.</p>
+    ) : (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <p style={{ margin: '0 0 4px', fontSize: '0.68rem', color: muted, fontFamily: FONT, fontStyle: 'italic' }}>Read-only — no editing in this phase.</p>
+        {cmdPolicyList.map(p => (
+          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '7px 10px', borderRadius: '6px', border: `1px solid ${border}` }}>
+            <span style={{ fontSize: '0.78rem', fontWeight: '600', color: text, fontFamily: FONT, flex: '1 1 auto' }}>{p.policy_name}</span>
+            <span style={{ padding: '1px 7px', borderRadius: '6px', fontSize: '0.6rem', fontWeight: '700', background: p.enabled ? `${success}20` : `${muted}20`, color: p.enabled ? success : muted, fontFamily: FONT }}>{p.enabled ? 'ENABLED' : 'DISABLED'}</span>
+            <span style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>priority {p.priority}</span>
+            <span style={{ fontSize: '0.7rem', color: accent, fontFamily: MONO }}>{p.action}</span>
+            <span style={{ fontSize: '0.68rem', color: textSec, fontFamily: MONO }}>{(p.object_types ?? []).join(', ') || 'all types'}</span>
+          </div>
+        ))}
+      </div>
+    )
+
+    // ── Section 5: Bulk Governance ───────────────────────────────────────────────
+    const cmdBulkBody = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <select value={bulkF.object_type} onChange={e => updateBulkForm(dsSelectedSourceId, { object_type: e.target.value })} style={{ ...inp({ width: 'auto' }), padding: '5px 10px', fontSize: '0.76rem' }}>
+            {['dict.table', 'dict.column', 'domain.rule', 'entity.rule', 'domain.refinement'].map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <input type="number" placeholder="Min confidence" min="0" max="1" step="0.05" value={bulkF.confidence_min ?? ''} onChange={e => updateBulkForm(dsSelectedSourceId, { confidence_min: e.target.value === '' ? null : Number(e.target.value) })} style={{ ...inp({ width: '120px' }), padding: '5px 10px', fontSize: '0.76rem' }} />
+          <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.74rem', color: textSec, fontFamily: FONT }}>
+            <input type="checkbox" checked={bulkF.exclude_pii !== false} onChange={e => updateBulkForm(dsSelectedSourceId, { exclude_pii: e.target.checked })} /> Exclude PII
+          </label>
+          <button onClick={() => handleBulkDryRun(dsSelectedSourceId)} disabled={bulkR.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: !bulkR.loading ? accent : `${muted}50`, borderColor: !bulkR.loading ? `${accent}55` : border }}>{bulkR.loading ? 'Running…' : 'Preview (Dry Run)'}</button>
+        </div>
+        {bulkR.error && <p style={{ margin: 0, fontSize: '0.76rem', color: danger, fontFamily: FONT }}>{bulkR.error}</p>}
+        {bulkR.dryRun && (
+          <div style={{ padding: '10px 12px', borderRadius: '8px', border: `1px solid ${border}`, background: `${accent}06`, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+              {cmdStat('Candidates', bulkR.dryRun.total_candidates)}
+              {cmdStat('Affected', bulkR.dryRun.affected_count, success)}
+              {cmdStat('Blocked', bulkR.dryRun.blocked_count, bulkR.dryRun.blocked_count > 0 ? danger : muted)}
+            </div>
+            {bulkR.dryRun.blocked_items?.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                {bulkR.dryRun.blocked_items.slice(0, 10).map((b, i) => (
+                  <div key={i} style={{ fontSize: '0.68rem', color: muted, fontFamily: MONO }}>{b.object_type_id}#{b.object_id} — {b.blocking_policy}: {b.reason}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={() => handleBulkRequestConfirm(dsSelectedSourceId, 'approve')} disabled={bulkR.loading || bulkR.dryRun.affected_count === 0} style={{ background: `${success}20`, color: success, border: `1px solid ${success}40`, borderRadius: '6px', padding: '5px 14px', fontSize: '0.76rem', fontWeight: '600', cursor: bulkR.dryRun.affected_count === 0 ? 'not-allowed' : 'pointer', fontFamily: FONT }}>Approve {bulkR.dryRun.affected_count} Item{bulkR.dryRun.affected_count !== 1 ? 's' : ''}</button>
+              <button onClick={() => handleBulkRequestConfirm(dsSelectedSourceId, 'reject')} disabled={bulkR.loading || bulkR.dryRun.affected_count === 0} style={{ background: 'transparent', color: danger, border: `1px solid ${danger}40`, borderRadius: '6px', padding: '5px 14px', fontSize: '0.76rem', fontWeight: '600', cursor: bulkR.dryRun.affected_count === 0 ? 'not-allowed' : 'pointer', fontFamily: FONT }}>Reject {bulkR.dryRun.affected_count} Item{bulkR.dryRun.affected_count !== 1 ? 's' : ''}</button>
+            </div>
+          </div>
+        )}
+        {bulkR.confirmAction && (
+          <div style={{ padding: '12px 14px', borderRadius: '8px', border: `1px solid ${warn}40`, background: `${warn}0d`, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <span style={{ fontSize: '0.8rem', color: text, fontFamily: FONT, fontWeight: '600' }}>
+              Confirm bulk {bulkR.confirmAction}: {bulkR.dryRun?.affected_count ?? 0} {bulkF.object_type} item{(bulkR.dryRun?.affected_count ?? 0) !== 1 ? 's' : ''}?
+            </span>
+            <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>This action writes to governance state and cannot be undone from this screen.</span>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button onClick={() => handleBulkExecute(dsSelectedSourceId, bulkR.confirmAction)} style={{ background: bulkR.confirmAction === 'approve' ? success : danger, color: '#fff', border: 'none', borderRadius: '6px', padding: '5px 14px', fontSize: '0.76rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT }}>Confirm</button>
+              <button onClick={() => handleBulkCancelConfirm(dsSelectedSourceId)} style={btnGhost({ padding: '5px 14px', fontSize: '0.76rem' })}>Cancel</button>
+            </div>
+          </div>
+        )}
+        {(bulkR.approveResult || bulkR.rejectResult) && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {bulkR.approveResult && <span style={{ fontSize: '0.74rem', color: success, fontFamily: FONT }}>Approved {bulkR.approveResult.affected_count} item(s), {bulkR.approveResult.blocked_count} blocked.</span>}
+            {bulkR.rejectResult && <span style={{ fontSize: '0.74rem', color: danger, fontFamily: FONT }}>Rejected {bulkR.rejectResult.affected_count} item(s), {bulkR.rejectResult.blocked_count} blocked.</span>}
+          </div>
+        )}
+      </div>
+    )
+
+    // ── Section 6: Decision Intelligence ─────────────────────────────────────────
+    const _GOV_TYPES = ['dict.table', 'dict.column', 'domain.rule', 'entity.rule', 'domain.refinement', 'tool.engine', 'pii.confirmation']
+    const cmdDecisionBody = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <select value={explainF.object_type} onChange={e => updateExplainForm(dsSelectedSourceId, { object_type: e.target.value })} style={{ ...inp({ width: 'auto' }), padding: '5px 10px', fontSize: '0.76rem' }}>
+            {_GOV_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          {['dict.table', 'dict.column', 'pii.confirmation'].includes(explainF.object_type) && (
+            <input placeholder="table_fqn" value={explainF.table_fqn ?? ''} onChange={e => updateExplainForm(dsSelectedSourceId, { table_fqn: e.target.value })} style={{ ...inp({ width: '180px' }), padding: '5px 10px', fontSize: '0.76rem' }} />
+          )}
+          {['dict.column', 'pii.confirmation'].includes(explainF.object_type) && (
+            <input placeholder="column_name" value={explainF.column_name ?? ''} onChange={e => updateExplainForm(dsSelectedSourceId, { column_name: e.target.value })} style={{ ...inp({ width: '140px' }), padding: '5px 10px', fontSize: '0.76rem' }} />
+          )}
+          {['domain.rule', 'entity.rule'].includes(explainF.object_type) && (
+            <input type="number" placeholder="rule_id" value={explainF.rule_id ?? ''} onChange={e => updateExplainForm(dsSelectedSourceId, { rule_id: e.target.value === '' ? null : Number(e.target.value) })} style={{ ...inp({ width: '100px' }), padding: '5px 10px', fontSize: '0.76rem' }} />
+          )}
+          {explainF.object_type === 'domain.refinement' && (
+            <input type="number" placeholder="suggestion_id" value={explainF.suggestion_id ?? ''} onChange={e => updateExplainForm(dsSelectedSourceId, { suggestion_id: e.target.value === '' ? null : Number(e.target.value) })} style={{ ...inp({ width: '120px' }), padding: '5px 10px', fontSize: '0.76rem' }} />
+          )}
+          {explainF.object_type === 'tool.engine' && (
+            <input placeholder="tool_id" value={explainF.tool_id ?? ''} onChange={e => updateExplainForm(dsSelectedSourceId, { tool_id: e.target.value })} style={{ ...inp({ width: '140px' }), padding: '5px 10px', fontSize: '0.76rem' }} />
+          )}
+          <button onClick={() => handleExplain(dsSelectedSourceId)} disabled={explainR.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: !explainR.loading ? accent : `${muted}50`, borderColor: !explainR.loading ? `${accent}55` : border }}>{explainR.loading ? 'Explaining…' : 'Explain'}</button>
+        </div>
+        {explainR.error && <p style={{ margin: 0, fontSize: '0.76rem', color: danger, fontFamily: FONT }}>{explainR.error}</p>}
+        {explainR.data && (
+          <div style={{ padding: '10px 12px', borderRadius: '8px', border: `1px solid ${border}`, background: `${accent}06`, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <span style={{ fontSize: '0.82rem', fontWeight: '600', color: text, fontFamily: FONT }}>{explainR.data.decision}</span>
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+              {cmdStat('Risk Score', explainR.data.risk_score, explainR.data.risk_score >= 70 ? danger : explainR.data.risk_score >= 40 ? warn : success)}
+              {cmdStat('Confidence', explainR.data.confidence_score != null ? `${Math.round(explainR.data.confidence_score * 100)}%` : '—')}
+              {cmdStat('Est. Review Time', `${explainR.data.estimated_review_minutes}m`)}
+            </div>
+            <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT }}><strong>Recommended action:</strong> {explainR.data.recommended_action}</div>
+            {explainR.data.recommended_steward && <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT }}><strong>Recommended steward:</strong> {explainR.data.recommended_steward}</div>}
+            <div style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT }}><strong>Priority reason:</strong> {explainR.data.priority_reason}</div>
+            {explainR.data.matched_policies?.length > 0 && <div style={{ fontSize: '0.72rem', color: muted, fontFamily: MONO }}>Matched policies: {explainR.data.matched_policies.join(', ')}</div>}
+            {explainR.data.blocking_policies?.length > 0 && <div style={{ fontSize: '0.72rem', color: danger, fontFamily: MONO }}>Blocking policies: {explainR.data.blocking_policies.join(', ')}</div>}
+            {explainR.data.evidence?.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span style={{ fontSize: '0.66rem', color: muted, fontWeight: '700', letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>Evidence</span>
+                {explainR.data.evidence.map((ev, i) => <div key={i} style={{ fontSize: '0.7rem', color: textSec, fontFamily: MONO }}>{JSON.stringify(ev)}</div>)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+
+    // ── Section 7: Bottlenecks ───────────────────────────────────────────────────
+    const cmdBotBody = botLoading ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT, padding: '4px 0' }}><Spinner size={12} /> Loading bottlenecks…</div>
+    ) : botError ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{botError}</p>
+    ) : !bottlenecks ? (
+      <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>No bottleneck data yet.</p>
+    ) : (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        {[
+          { label: 'Largest Pending Queues', items: bottlenecks.pending_by_type, render: x => `${x.object_type}: ${x.pending_count} pending` },
+          { label: 'Most Overdue Stewards',  items: bottlenecks.overdue_stewards, render: x => `${x.assigned_to}: ${x.overdue_count} overdue (oldest ${x.oldest_days_overdue}d)` },
+          { label: 'Lowest-Confidence Areas', items: bottlenecks.low_confidence_areas, render: x => `${x.object_type}: ${x.low_conf_count} low-confidence` },
+          { label: 'Policy Blocks', items: bottlenecks.active_blocking_policies, render: x => `${x.policy_name} (${x.action}, priority ${x.priority})` },
+          { label: 'Pending Domain Queues', items: bottlenecks.pending_domains, render: x => `${x.domain}: ${x.pending_count} pending` },
+        ].filter(g => g.items && g.items.length > 0).map(g => (
+          <div key={g.label}>
+            {govSectionLabel(g.label, g.items.length)}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              {g.items.map((x, i) => <div key={i} style={{ fontSize: '0.74rem', color: textSec, fontFamily: FONT }}>{g.render(x)}</div>)}
+            </div>
+          </div>
+        ))}
+        {['pending_by_type', 'overdue_stewards', 'low_confidence_areas', 'active_blocking_policies', 'pending_domains'].every(k => !bottlenecks[k] || bottlenecks[k].length === 0) && (
+          <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>No bottlenecks detected.</p>
+        )}
+      </div>
+    )
+
     const governanceTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+        {/* ── Governance Command Center ── */}
+        {cmdCard('exec',            'Executive Dashboard',     null, cmdExecBody)}
+        {cmdCard('recommendations', 'Recommendations',         recommendations?.length > 0 ? <span style={{ padding: '1px 7px', borderRadius: '8px', fontSize: '0.62rem', fontWeight: '700', background: `${accent}20`, color: accent, fontFamily: FONT }}>{recommendations.length}</span> : null, cmdRecBody)}
+        {cmdCard('assignments',     'Assignments',              null, cmdAssignBody)}
+        {cmdCard('policies',        'Policies',                 null, cmdPolicyBody)}
+        {cmdCard('bulk',            'Bulk Governance',          null, cmdBulkBody)}
+        {cmdCard('decision',        'Decision Intelligence',    null, cmdDecisionBody)}
+        {cmdCard('bottlenecks',     'Bottlenecks',               null, cmdBotBody)}
+
+        {cmdCard('workqueue', 'Governance Work Queue', null, (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
         {/* ── Quality Review Tasks (from profiling) ── */}
@@ -1958,6 +2519,8 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           </>
         )}
       </div>
+        ))}
+      </div>
     )
 
     const lineageTab = (
@@ -2019,7 +2582,304 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       </div>
     )
 
-    const TAB_CONTENT = { overview: overviewTab, schema: schemaTab, profile: profileTab, domains: domainsTab, entities: entitiesTab, governance: governanceTab, lineage: lineageTab, runs: runsTab }
+    // ── Business Knowledge tab: enterprise knowledge center for the selected table ──
+    // Composes Relationship/Business Knowledge/Knowledge Graph/Lineage/Semantic
+    // services already used elsewhere in this workspace. No new backend calls
+    // beyond thin GET wrappers over existing routes; no data duplicated from
+    // the Profile/Governance/Dictionary/Schema tabs.
+    const bkAllTables    = (sc.data?.schemas ?? []).flatMap(s => (s.tables ?? []).map(t => t.table_fqn)).sort()
+    const bkTableFqn     = bkSelectedTable[dsSelectedSourceId] ?? ''
+    const bkOverviewOpen    = bkExpanded.overview !== false
+    const bkGraphOpen       = !!bkExpanded.graph
+    const bkLineageOpen     = !!bkExpanded.lineage
+    const bkSemanticOpen    = !!bkExpanded.semantic
+    const bkExplanationOpen = !!bkExpanded.explanation
+    const bkSummaryOpen     = !!bkExpanded.summary
+
+    const bkExplain    = bkTableFqn ? bkSectionState[_bkTableKey(dsSelectedSourceId, bkTableFqn, 'explain')]          : null
+    const bkSemantic   = bkTableFqn ? bkSectionState[_bkTableKey(dsSelectedSourceId, bkTableFqn, 'semanticProfile')] : null
+    const bkRelated    = bkTableFqn ? bkSectionState[_bkTableKey(dsSelectedSourceId, bkTableFqn, 'related')]         : null
+    const bkUpstream   = bkTableFqn ? bkSectionState[_bkTableKey(dsSelectedSourceId, bkTableFqn, 'upstream')]        : null
+    const bkDownstream = bkTableFqn ? bkSectionState[_bkTableKey(dsSelectedSourceId, bkTableFqn, 'downstream')]      : null
+    const bkImpact     = bkTableFqn ? bkSectionState[_bkTableKey(dsSelectedSourceId, bkTableFqn, 'impact')]          : null
+    const bkKgSummary  = dsSelectedSourceId != null ? bkSectionState[_bkSourceKey(dsSelectedSourceId, 'kgSummary')]       : null
+    const bkSemSummary = dsSelectedSourceId != null ? bkSectionState[_bkSourceKey(dsSelectedSourceId, 'semanticSummary')] : null
+
+    const bkSectionHeader = (label, open, onClick, count) => (
+      <div onClick={onClick} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', userSelect: 'none' }}>
+        <span style={{ fontSize: '0.6rem', color: muted, width: '10px', flexShrink: 0 }}>{open ? '▾' : '▸'}</span>
+        <span style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>{label}</span>
+        {count != null && <span style={{ fontSize: '0.68rem', color: muted, fontFamily: FONT }}>({count})</span>}
+      </div>
+    )
+    const bkStat = (label, value, color = text) => (
+      <div>
+        <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '3px' }}>{label}</div>
+        <div style={{ fontSize: '0.88rem', fontWeight: '600', color, fontFamily: FONT }}>{value ?? '—'}</div>
+      </div>
+    )
+    const bkPct = v => (v == null ? '—' : `${Math.min(100, Math.round(v * 100))}%`)
+    const bkClassLabel = (v, fallback) => (!v || v === 'Unknown' ? fallback : v)
+    const BK_REL_LABEL = { FK_OUTBOUND: 'Foreign Key', FK_INBOUND: 'Foreign Key', SAME_DOMAIN: 'Same Domain', SAME_ENTITY: 'Same Entity' }
+    const BK_REL_COLOR = { FK_OUTBOUND: accent, FK_INBOUND: accent, SAME_DOMAIN: '#38bdf8', SAME_ENTITY: warn }
+
+    const bkTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div>
+          <h3 style={{ margin: '0 0 4px', fontSize: '1.05rem', fontWeight: '700', color: text, fontFamily: FONT }}>Business Knowledge Graph</h3>
+          <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>
+            Summarize, connect, navigate, and explain this source's business metadata — composed from the existing Relationship, Business Knowledge, Knowledge Graph, Lineage, and Semantic services.
+          </p>
+        </div>
+
+        <div style={{ ...card({ padding: '12px 16px' }), display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: '0.7rem', color: textSec, fontWeight: '600', letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>Table</label>
+          {!hasSchema && (
+            <span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Discover schema first to select a table.</span>
+          )}
+          {hasSchema && sc.loading && !sc.data && (
+            <span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT, display: 'flex', alignItems: 'center', gap: '6px' }}><Spinner size={11} /> Loading tables…</span>
+          )}
+          {hasSchema && sc.data && (
+            <select
+              value={bkTableFqn}
+              onChange={e => handleBkSelectTable(dsSelectedSourceId, e.target.value)}
+              style={inp({ width: 'auto', minWidth: '260px', padding: '7px 12px', fontSize: '0.82rem' })}
+            >
+              <option value="">Select a table…</option>
+              {bkAllTables.map(fqn => <option key={fqn} value={fqn}>{fqn}</option>)}
+            </select>
+          )}
+        </div>
+
+        {!bkTableFqn && hasSchema && sc.data && (
+          <div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}>
+            <p style={{ margin: 0, fontSize: '0.85rem', color: textSec, fontFamily: FONT }}>Select a table above to view its business knowledge.</p>
+          </div>
+        )}
+
+        {bkTableFqn && (
+          <>
+            {/* ── Section 1: Business Overview ── */}
+            <div style={card({ padding: '14px 18px' })}>
+              {bkSectionHeader('Business Overview', bkOverviewOpen, () => toggleBkSection(dsSelectedSourceId, bkTableFqn, 'overview'))}
+              {bkOverviewOpen && (
+                <div style={{ marginTop: '12px' }}>
+                  {(bkExplain?.loading || bkSemantic?.loading) && !bkExplain?.data && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}><Spinner size={12} /> Loading overview…</div>
+                  )}
+                  {bkExplain?.error && <div style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{bkExplain.error}</div>}
+                  {bkExplain?.data && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '14px' }}>
+                      {bkStat('Business Name', bkExplain.data.business_name ?? bkExplain.data.table_name)}
+                      {bkStat('Description', bkExplain.data.business_purpose)}
+                      {bkStat('Domain', bkClassLabel(bkExplain.data.business_domain, 'Not yet classified'))}
+                      {bkStat('Entity', bkClassLabel(bkExplain.data.business_entity, 'Not yet classified'))}
+                      {bkStat('Importance', bkExplain.data.business_importance?.label, SEV_COLOR[bkExplain.data.business_importance?.label] ?? text)}
+                      {bkStat('Confidence', bkPct(bkExplain.data.domain_confidence ?? bkExplain.data.entity_confidence))}
+                      {bkStat('Governance Status', bkPct(bkExplain.data.governance_score), bkExplain.data.governance_score >= 0.75 ? success : bkExplain.data.governance_score >= 0.4 ? warn : danger)}
+                      {bkStat('Business Role', bkSemantic?.data ? bkClassLabel(bkSemantic.data.semantic_role, 'Awaiting semantic classification') : '—')}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── Section 2: Knowledge Graph ── */}
+            <div style={card({ padding: '14px 18px' })}>
+              {bkSectionHeader('Knowledge Graph', bkGraphOpen, () => toggleBkSection(dsSelectedSourceId, bkTableFqn, 'graph'), bkRelated?.data?.total_related)}
+              {bkGraphOpen && (
+                <div style={{ marginTop: '12px' }}>
+                  {bkRelated?.loading && !bkRelated?.data && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}><Spinner size={12} /> Loading related tables…</div>
+                  )}
+                  {bkRelated?.error && <div style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{bkRelated.error}</div>}
+                  {bkRelated?.data && bkRelated.data.related_tables.length === 0 && (
+                    <div style={{ fontSize: '0.8rem', color: muted, fontFamily: FONT }}>No related tables found.</div>
+                  )}
+                  {bkRelated?.data && bkRelated.data.related_tables.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {bkRelated.data.related_tables.map(rt => (
+                        <div
+                          key={rt.table_fqn}
+                          onClick={() => handleBkSelectTable(dsSelectedSourceId, rt.table_fqn)}
+                          style={{ padding: '8px 12px', borderRadius: '8px', border: `1px solid ${border}`, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '4px' }}
+                          onMouseEnter={e => e.currentTarget.style.background = accentSoft}
+                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                            <span style={{ fontSize: '0.82rem', color: accent, fontFamily: MONO, fontWeight: '600' }}>{rt.table_fqn} →</span>
+                            <span style={{ fontSize: '0.7rem', color: muted, fontFamily: FONT }}>{bkPct(rt.confidence)} confidence</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            {rt.relationship_types.map(t => {
+                              const relColor = BK_REL_COLOR[t] ?? accent
+                              return (
+                                <span key={t} style={{ fontSize: '0.6rem', padding: '1px 7px', borderRadius: '8px', background: `${relColor}18`, color: relColor, border: `1px solid ${relColor}30`, fontFamily: FONT }}>{BK_REL_LABEL[t] ?? t}</span>
+                              )
+                            })}
+                          </div>
+                          {rt.evidence?.length > 0 && (
+                            <span style={{ fontSize: '0.72rem', color: textSec, fontFamily: FONT }}>{rt.evidence[0]}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── Section 3: Business Lineage ── */}
+            <div style={card({ padding: '14px 18px' })}>
+              {bkSectionHeader('Business Lineage', bkLineageOpen, () => toggleBkSection(dsSelectedSourceId, bkTableFqn, 'lineage'))}
+              {bkLineageOpen && (
+                <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  {(bkUpstream?.loading || bkDownstream?.loading || bkImpact?.loading) && !bkImpact?.data && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}><Spinner size={12} /> Loading lineage…</div>
+                  )}
+                  {bkImpact?.data && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '14px' }}>
+                      {bkStat('Critical Asset', bkImpact.data.impact_label, SEV_COLOR[bkImpact.data.impact_label] ?? text)}
+                      {bkStat('Impact Score', bkPct(bkImpact.data.impact_score))}
+                      {bkStat('Affected Domains', bkImpact.data.affected_domains.length ? bkImpact.data.affected_domains.join(', ') : '—')}
+                      {bkStat('Affected Entities', bkImpact.data.affected_entities.length ? bkImpact.data.affected_entities.join(', ') : '—')}
+                    </div>
+                  )}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                    <div>
+                      <div style={{ fontSize: '0.65rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '6px' }}>Upstream ({bkUpstream?.data?.total_upstream ?? 0})</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        {(bkUpstream?.data?.upstream ?? []).map(n => (
+                          <span key={n.table_fqn} onClick={() => handleBkSelectTable(dsSelectedSourceId, n.table_fqn)} style={{ fontSize: '0.76rem', color: accent, fontFamily: MONO, cursor: 'pointer' }}>
+                            {n.table_fqn} <span style={{ color: muted, fontFamily: FONT }}>(dist {n.distance})</span>
+                          </span>
+                        ))}
+                        {bkUpstream?.data && bkUpstream.data.upstream.length === 0 && <span style={{ fontSize: '0.76rem', color: muted, fontFamily: FONT }}>None</span>}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.65rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '6px' }}>Downstream ({bkDownstream?.data?.total_downstream ?? 0})</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        {(bkDownstream?.data?.downstream ?? []).map(n => (
+                          <span key={n.table_fqn} onClick={() => handleBkSelectTable(dsSelectedSourceId, n.table_fqn)} style={{ fontSize: '0.76rem', color: accent, fontFamily: MONO, cursor: 'pointer' }}>
+                            {n.table_fqn} <span style={{ color: muted, fontFamily: FONT }}>(dist {n.distance})</span>
+                          </span>
+                        ))}
+                        {bkDownstream?.data && bkDownstream.data.downstream.length === 0 && <span style={{ fontSize: '0.76rem', color: muted, fontFamily: FONT }}>None</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Section 4: Semantic Intelligence ── */}
+            <div style={card({ padding: '14px 18px' })}>
+              {bkSectionHeader('Semantic Intelligence', bkSemanticOpen, () => toggleBkSection(dsSelectedSourceId, bkTableFqn, 'semantic'))}
+              {bkSemanticOpen && (
+                <div style={{ marginTop: '12px' }}>
+                  {bkSemantic?.loading && !bkSemantic?.data && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}><Spinner size={12} /> Loading semantic profile…</div>
+                  )}
+                  {bkSemantic?.data && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '14px' }}>
+                        {bkStat('Role', bkClassLabel(bkSemantic.data.semantic_role, 'Awaiting semantic classification'), accent)}
+                        {bkStat('Role Confidence', bkPct(bkSemantic.data.semantic_role_confidence))}
+                        {bkStat('Business Process', (bkSemantic.data.related_business_processes ?? []).join(', ') || '—')}
+                        {bkStat('Trusted', bkSemantic.data.trusted ? 'Yes' : 'No', bkSemantic.data.trusted ? success : muted)}
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                        <div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '6px' }}>Typical Joins</div>
+                          {(bkSemantic.data.typical_joins ?? []).map((j, i) => (
+                            <div key={i} style={{ fontSize: '0.76rem', color: text, fontFamily: MONO, marginBottom: '3px' }}>→ {j.to_table_fqn} <span style={{ color: muted, fontFamily: FONT }}>({bkPct(j.confidence)})</span></div>
+                          ))}
+                          {(bkSemantic.data.typical_joins ?? []).length === 0 && <span style={{ fontSize: '0.76rem', color: muted, fontFamily: FONT }}>None</span>}
+                        </div>
+                        <div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '6px' }}>Typical Consumers</div>
+                          {(bkSemantic.data.typical_consumers ?? []).map((j, i) => (
+                            <div key={i} style={{ fontSize: '0.76rem', color: text, fontFamily: MONO, marginBottom: '3px' }}>← {j.from_table_fqn} <span style={{ color: muted, fontFamily: FONT }}>({bkPct(j.confidence)})</span></div>
+                          ))}
+                          {(bkSemantic.data.typical_consumers ?? []).length === 0 && <span style={{ fontSize: '0.76rem', color: muted, fontFamily: FONT }}>None</span>}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── Section 5: Business Explanation ── */}
+            <div style={card({ padding: '14px 18px' })}>
+              {bkSectionHeader('Business Explanation', bkExplanationOpen, () => toggleBkSection(dsSelectedSourceId, bkTableFqn, 'explanation'))}
+              {bkExplanationOpen && (
+                <div style={{ marginTop: '12px' }}>
+                  {bkExplain?.loading && !bkExplain?.data && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}><Spinner size={12} /> Loading explanation…</div>
+                  )}
+                  {bkExplain?.data && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Purpose</div>
+                        <div style={{ fontSize: '0.82rem', color: text, fontFamily: FONT }}>{bkExplain.data.business_purpose}</div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '14px' }}>
+                        {bkStat('Metadata Completeness', bkPct(bkExplain.data.profiling?.completeness_score))}
+                        {bkStat('Governance Score', bkPct(bkExplain.data.governance_score))}
+                        {bkStat('Business Importance', bkExplain.data.business_importance?.label, SEV_COLOR[bkExplain.data.business_importance?.label] ?? text)}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.65rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Evidence</div>
+                        {bkExplain.data.evidence.length === 0 && <span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>None</span>}
+                        <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                          {bkExplain.data.evidence.map((e, i) => <li key={i} style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT, marginBottom: '2px' }}>{e}</li>)}
+                        </ul>
+                      </div>
+                      {bkExplain.data.gaps.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '0.65rem', fontWeight: '700', color: warn, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Missing Metadata</div>
+                          <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                            {bkExplain.data.gaps.map((g, i) => <li key={i} style={{ fontSize: '0.78rem', color: warn, fontFamily: FONT, marginBottom: '2px' }}>{g}</li>)}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* ── Section 6: Knowledge Summary ── */}
+            <div style={card({ padding: '14px 18px' })}>
+              {bkSectionHeader('Knowledge Summary', bkSummaryOpen, () => toggleBkSection(dsSelectedSourceId, bkTableFqn, 'summary'))}
+              {bkSummaryOpen && (
+                <div style={{ marginTop: '12px' }}>
+                  {(bkKgSummary?.loading || bkSemSummary?.loading) && !bkKgSummary?.data && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}><Spinner size={12} /> Loading knowledge summary…</div>
+                  )}
+                  {bkKgSummary?.data && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '14px' }}>
+                      {bkKgSummary.data.nodes?.total_tables != null && bkStat('Total Tables', bkKgSummary.data.nodes.total_tables)}
+                      {bkStat('Relationship Count', bkKgSummary.data.edges.total_relationships)}
+                      {bkStat('Domain Coverage', bkPct(bkKgSummary.data.domain_coverage.coverage_rate))}
+                      {bkStat('Entity Coverage', bkPct(bkKgSummary.data.entity_coverage.coverage_rate))}
+                      {bkStat('Dictionary Coverage', bkPct(bkKgSummary.data.dictionary_coverage.coverage_rate))}
+                      {bkStat('Business Completeness', bkSemSummary?.data ? bkPct(bkSemSummary.data.metrics.business_completeness) : '—')}
+                      {bkStat('Knowledge Confidence', `${bkKgSummary.data.confidence_distribution.high} high / ${bkKgSummary.data.confidence_distribution.medium} med / ${bkKgSummary.data.confidence_distribution.low} low`)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    )
+
+    const TAB_CONTENT = { overview: overviewTab, schema: schemaTab, profile: profileTab, domains: domainsTab, entities: entitiesTab, governance: governanceTab, 'business-knowledge': bkTab, lineage: lineageTab, runs: runsTab }
 
     return (
       <div style={{ fontFamily: FONT, color: text }}>
