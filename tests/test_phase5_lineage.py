@@ -16,6 +16,7 @@ import json
 import os
 import sqlite3
 
+import pytest
 from cryptography.fernet import Fernet
 
 os.environ.setdefault("ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -629,8 +630,8 @@ def test_lineage_summary(tmp_path, monkeypatch):
     assert chain_path[0]  == "dbo.customers"
     assert chain_path[-1] == "dbo.payments"
 
-    # Average depth > 0
-    assert result["average_depth"] > 0.0
+    # Linear chain: customers(0) -> orders(1) -> invoices(2) -> payments(3); avg = 1.5
+    assert result["average_depth"] == pytest.approx(1.5)
 
 
 # T12 — empty graph (no table_relationships): all lists empty, graceful
