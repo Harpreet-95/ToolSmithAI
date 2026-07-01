@@ -1,0 +1,397 @@
+"""
+SQL Planning & Validation Engine — Program 3 Phase 4.
+
+Transforms the structured output of
+query_planning_service.plan_business_query() into a SQL-ready PLAN —
+select/from/joins/where/group_by/order_by/limits — and validates it against
+a fixed set of safety rules.
+
+NO SQL string generation. NO execution. NO LLM. Does not call
+find_business_assets / get_table_business_context / analyze_join_quality /
+recommend_best_join_path again — query_plan already carries everything
+Steps 3-6 need (it IS plan_business_query's output: measures/dimensions with
+resolved table_fqn+column_name, a join_plan with per-edge join_type/
+cardinality/fanout_risk/confidence already trust-filtered to AUTO/APPROVED
+relationships, resolved filters, and the full candidate column set).
+
+The one new call this module makes is
+business_knowledge_service.get_column_business_context, used only for
+precise structured PII/approval validation (Step 8) on the small set of
+columns actually selected — everything else is reached transitively through
+query_plan, exactly as query_planning_service reached profiling_service/
+governance_service transitively through get_table_business_context.
+"""
+import logging
+import re
+
+from data.business_knowledge_service import get_column_business_context
+
+logger = logging.getLogger(__name__)
+
+_ALLOWED_OPERATORS = {"=", "!=", ">", ">=", "<", "<=", "IN", "BETWEEN", "LIKE"}
+
+# Defense-in-depth: reject filter values shaped like raw SQL injection
+# attempts, even though this layer never builds a SQL string itself — the
+# guarantee should still hold for whenever a future phase parameterizes
+# these values into real SQL.
+_UNSAFE_VALUE_PATTERN = re.compile(
+    r";|--|/\*|\*/|\b(DROP|DELETE|UPDATE|EXEC|EXECUTE|INSERT|ALTER|TRUNCATE|UNION)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_unsafe_value(value) -> bool:
+    return isinstance(value, str) and bool(_UNSAFE_VALUE_PATTERN.search(value))
+
+
+def _short_alias(table_fqn: str, used: set[str]) -> str:
+    base = (table_fqn.split(".")[-1][:3] or "t").lower()
+    alias = base
+    i = 1
+    while alias in used:
+        i += 1
+        alias = f"{base}{i}"
+    used.add(alias)
+    return alias
+
+
+def _columns_known(table_fqn: str | None, column_name: str | None, known_columns: dict) -> bool:
+    if not table_fqn or not column_name:
+        return False
+    return column_name in (known_columns.get(table_fqn) or [])
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — SELECT planning
+# ---------------------------------------------------------------------------
+
+def _select_entries(entries: list[dict], aggregation: str | None) -> tuple[list[dict], list[str]]:
+    """
+    entries = query_plan["measures"] or query_plan["dimensions"]. Returns
+    (select_rows, unresolved_terms) — unresolved_terms feed the Step 8
+    ambiguity block; dimensions always pass aggregation=None (never
+    aggregated, per Step 3).
+    """
+    rows: list[dict] = []
+    unresolved: list[str] = []
+    for entry in entries:
+        sel = entry.get("selected")
+        if sel is None:
+            unresolved.append(entry["term"])
+            continue
+        alias = (
+            f"{aggregation.lower()}_{sel['column_name']}" if aggregation else sel["column_name"]
+        )
+        rows.append({
+            "table_fqn":   sel["table_fqn"],
+            "column_name": sel["column_name"],
+            "alias":       alias,
+            "aggregation": aggregation,
+        })
+    return rows, unresolved
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — JOIN planning
+# ---------------------------------------------------------------------------
+
+def _build_joins(join_plan: dict) -> tuple[list[dict], list[str]]:
+    """
+    One joins[] entry per trusted (path_found=True) step already in
+    query_plan["join_plan"]["steps"] — those steps are, by construction,
+    sourced only from analyze_join_quality/recommend_best_join_path, which
+    only ever see AUTO/APPROVED relationships (Phase 2's _load_edges
+    filter). A step with path_found=False is never emitted as a join; it is
+    instead reported so the caller can hard-block the plan (Step 8).
+    """
+    joins: list[dict] = []
+    untrusted: list[str] = []
+    for step in join_plan.get("steps") or []:
+        if not step.get("path_found"):
+            untrusted.append(f"{step.get('from_table')} -> {step.get('to_table')}")
+            continue
+        joins.append({
+            "join_type":    step.get("join_type"),
+            "left_table":   step.get("from_table"),
+            "left_column":  step.get("from_column"),
+            "right_table":  step.get("to_table"),
+            "right_column": step.get("to_column"),
+            "cardinality":  step.get("cardinality"),
+            "fanout_risk":  step.get("fanout_risk"),
+            "confidence":   step.get("confidence"),
+        })
+    return joins, untrusted
+
+
+# ---------------------------------------------------------------------------
+# Step 6 — WHERE planning
+# ---------------------------------------------------------------------------
+
+def _build_where(filters: list[dict]) -> tuple[list[dict], list[str]]:
+    """
+    Only query_plan["filters"] entries already resolved against a known
+    column (Phase 3's resolved=True) are eligible. No raw user SQL is ever
+    accepted: operator must be in the whitelist and the value must not be
+    shaped like a SQL injection attempt. A failing filter is dropped from
+    `where` and reported for Step 8's blocking check — never silently
+    passed through, never silently dropped without a trace.
+    """
+    where: list[dict] = []
+    rejected: list[str] = []
+    for f in filters:
+        column = f.get("column") or f.get("field")
+        operator = f.get("operator")
+        value = f.get("value")
+
+        if not f.get("resolved"):
+            continue  # already reported as unknown_filter_column by query_planning_service
+
+        if operator not in _ALLOWED_OPERATORS:
+            rejected.append(f"{column}: operator '{operator}' is not allowed")
+            continue
+        if _is_unsafe_value(value) or _is_unsafe_value(column):
+            rejected.append(f"{column}: value looks like raw SQL and was rejected")
+            continue
+
+        where.append({
+            "table_fqn":   f.get("table_fqn"),
+            "column_name": column,
+            "operator":    operator,
+            "value":       value,
+        })
+    return where, rejected
+
+
+# ---------------------------------------------------------------------------
+# Step 7 — GROUP BY planning
+# ---------------------------------------------------------------------------
+
+def _build_group_by(select: list[dict]) -> list[dict]:
+    """All non-aggregated (dimension) columns must be grouped whenever at
+    least one aggregated measure is present — prevents an invalid mixed
+    aggregate/non-aggregate query. No measures selected -> nothing to group."""
+    has_measure = any(row["aggregation"] for row in select)
+    if not has_measure:
+        return []
+    return [
+        {"table_fqn": row["table_fqn"], "column_name": row["column_name"]}
+        for row in select if not row["aggregation"]
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Step 8 — PII/approval validation (the one new call this module makes)
+# ---------------------------------------------------------------------------
+
+def _check_pii_and_approval(
+    source_id: int, user_id: str, select: list[dict], allow_unconfirmed_pii: bool,
+) -> tuple[list[str], list[dict]]:
+    """
+    Per selected column: structured PII/approval state via
+    business_knowledge_service.get_column_business_context — precise flags,
+    not a parse of query_plan's free-text warning strings. Bounded to the
+    columns actually selected (never the full candidate set).
+    """
+    pii_blocks: list[str] = []
+    warnings: list[dict] = []
+    for row in select:
+        ctx = get_column_business_context(source_id, user_id, row["table_fqn"], row["column_name"])
+        if ctx is None:
+            continue
+        dic = ctx.get("dictionary")
+        prof = ctx.get("profiling")
+
+        if not dic or not dic.get("is_approved"):
+            warnings.append({
+                "type": "metadata_not_approved", "severity": "LOW",
+                "message": f"{row['table_fqn']}.{row['column_name']} has no approved dictionary entry.",
+            })
+
+        pii_flagged = (prof and prof.get("pii_name_heuristic")) or (dic and dic.get("pii_risk"))
+        if pii_flagged:
+            confirmed = bool(prof and prof.get("pii_confirmed"))
+            warnings.append({
+                "type": "pii_involved", "severity": "MEDIUM" if confirmed else "HIGH",
+                "message": (
+                    f"{row['table_fqn']}.{row['column_name']} may contain PII "
+                    f"({'confirmed' if confirmed else 'unconfirmed'})."
+                ),
+            })
+            if not confirmed and not allow_unconfirmed_pii:
+                pii_blocks.append(f"{row['table_fqn']}.{row['column_name']} (unconfirmed PII)")
+
+    return pii_blocks, warnings
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+def build_sql_plan(
+    source_id: int,
+    user_id: str,
+    query_plan: dict,
+    *,
+    allow_unconfirmed_pii: bool = False,
+) -> dict:
+    """
+    Step 2. Transform plan_business_query()'s output into a structured,
+    SQL-ready plan. Never produces a SQL string, never executes anything.
+
+    query_plan is trusted as the caller's own prior plan_business_query()
+    output — source ownership was already verified when it was built, so
+    this function does not re-verify it. The only DB reads here are bounded
+    get_column_business_context calls, one per selected column.
+
+    query_plan being None (e.g. caller's plan_business_query returned None
+    for an unowned/unknown source) is itself a hard validation failure
+    rather than a crash.
+    """
+    if not query_plan:
+        return {
+            "select": [], "from": None, "joins": [], "where": [],
+            "group_by": [], "order_by": [], "limits": {},
+            "warnings": [],
+            "validation": {
+                "valid": False, "read_only": True, "checks": {},
+                "blocking_reasons": ["No query plan was provided."],
+            },
+            "explanation": ["No query plan was provided — nothing to build."],
+        }
+
+    checks: dict[str, bool] = {}
+    blocking_reasons: list[str] = []
+    warnings: list[dict] = list(query_plan.get("warnings") or [])
+    explanation: list[str] = []
+
+    known_columns = query_plan.get("columns") or {}
+    aggregation = (query_plan.get("intent") or {}).get("aggregation")
+
+    measure_rows, unresolved_measures = _select_entries(query_plan.get("measures") or [], aggregation)
+    dimension_rows, unresolved_dimensions = _select_entries(query_plan.get("dimensions") or [], None)
+    select = measure_rows + dimension_rows
+
+    # --- ambiguity ------------------------------------------------------
+    unresolved_terms = unresolved_measures + unresolved_dimensions
+    checks["no_ambiguous_unresolved_terms"] = not unresolved_terms
+    if unresolved_terms:
+        blocking_reasons.append(f"Unresolved term(s) cannot be planned: {', '.join(unresolved_terms)}.")
+
+    # --- no SELECT * (select must be non-empty and column-specific) ------
+    checks["select_not_empty"] = bool(select)
+    if not select:
+        blocking_reasons.append("No measures or dimensions resolved — refusing to plan an empty/SELECT * query.")
+
+    # --- every referenced column must exist in query_plan["columns"] -----
+    missing = [
+        f"{r['table_fqn']}.{r['column_name']}" for r in select
+        if not _columns_known(r["table_fqn"], r["column_name"], known_columns)
+    ]
+    checks["all_columns_exist"] = not missing
+    if missing:
+        blocking_reasons.append(f"Column(s) not found in query plan: {', '.join(missing)}.")
+
+    # --- Step 4: FROM ------------------------------------------------------
+    join_plan = query_plan.get("join_plan") or {}
+    primary_table = join_plan.get("primary_table")
+    if not primary_table:
+        tables = join_plan.get("tables") or []
+        primary_table = tables[0] if tables else (select[0]["table_fqn"] if select else None)
+
+    alias_pool: set[str] = set()
+    from_clause = (
+        {"table_fqn": primary_table, "alias": _short_alias(primary_table, alias_pool)}
+        if primary_table else None
+    )
+    checks["from_table_resolved"] = from_clause is not None
+    if from_clause is None:
+        blocking_reasons.append("No driving table could be determined for FROM.")
+
+    # --- Step 5: JOINs -------------------------------------------------------
+    joins, untrusted_joins = _build_joins(join_plan)
+    checks["all_joins_trusted"] = not untrusted_joins
+    if untrusted_joins:
+        blocking_reasons.append(
+            f"No trusted (AUTO/APPROVED) join path found for: {', '.join(untrusted_joins)}."
+        )
+    for j in joins:
+        if j.get("fanout_risk") in ("MEDIUM", "HIGH"):
+            warnings.append({
+                "type": "high_fanout_risk" if j["fanout_risk"] == "HIGH" else "fanout_risk",
+                "severity": "HIGH" if j["fanout_risk"] == "HIGH" else "MEDIUM",
+                "message": (
+                    f"Join {j['left_table']}.{j['left_column']} -> "
+                    f"{j['right_table']}.{j['right_column']} has {j['fanout_risk']} fan-out risk."
+                ),
+            })
+
+    # --- Step 6: WHERE -------------------------------------------------------
+    where, rejected_filters = _build_where(query_plan.get("filters") or [])
+    checks["no_invalid_filters"] = not rejected_filters
+    if rejected_filters:
+        blocking_reasons.append(f"Invalid filter(s) rejected: {'; '.join(rejected_filters)}.")
+
+    # --- Step 7: GROUP BY ------------------------------------------------
+    group_by = _build_group_by(select)
+
+    # --- Step 8: PII / approval -------------------------------------------
+    pii_blocks: list[str] = []
+    if select:
+        pii_blocks, pii_warnings = _check_pii_and_approval(
+            source_id, user_id, select, allow_unconfirmed_pii
+        )
+        warnings.extend(pii_warnings)
+    checks["no_unconfirmed_pii"] = not pii_blocks
+    if pii_blocks:
+        blocking_reasons.append(
+            f"Unconfirmed PII column(s) blocked (pass allow_unconfirmed_pii=True to override): "
+            f"{', '.join(pii_blocks)}."
+        )
+
+    checks["read_only"] = True  # structural guarantee — this layer has no write concept
+
+    valid = not blocking_reasons
+
+    # Narrative prose only — deliberately avoids spelling out SQL clause
+    # keywords/syntax (SELECT/FROM/JOIN ON/GROUP BY), even informally, so
+    # this stays a structured-plan explanation rather than SQL-shaped text.
+    if select:
+        described = ", ".join(
+            f"{r['aggregation'].lower()} of {r['table_fqn']}.{r['column_name']}" if r["aggregation"]
+            else f"{r['table_fqn']}.{r['column_name']}"
+            for r in select
+        )
+        explanation.append(f"Resolved columns: {described}.")
+    if from_clause:
+        explanation.append(f"Driving table: {from_clause['table_fqn']}.")
+    for j in joins:
+        explanation.append(
+            f"Links to {j['right_table']} via {j['left_table']}.{j['left_column']} "
+            f"matching {j['right_table']}.{j['right_column']} "
+            f"({j['join_type'] or 'INNER'}-style, cardinality {j['cardinality']}, "
+            f"fan-out risk {j['fanout_risk']})."
+        )
+    if where:
+        explanation.append(f"{len(where)} validated filter(s) will be applied.")
+    if group_by:
+        explanation.append(f"Results will be grouped by {len(group_by)} dimension(s).")
+    if not valid:
+        explanation.append(f"BLOCKED: {' '.join(blocking_reasons)}")
+
+    return {
+        "select":   select,
+        "from":     from_clause,
+        "joins":    joins,
+        "where":    where,
+        "group_by": group_by,
+        "order_by": [],
+        "limits":   {"row_limit": 1000} if valid else {},
+        "warnings": warnings,
+        "validation": {
+            "valid": valid,
+            "read_only": True,
+            "checks": checks,
+            "blocking_reasons": blocking_reasons,
+        },
+        "explanation": explanation,
+    }

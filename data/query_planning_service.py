@@ -210,40 +210,57 @@ def _resolve_term(term: str, table_contexts: dict[str, dict], kind: str) -> dict
 # Step 6 — Join planning (composes analyze_join_quality / recommend_best_join_path)
 # ---------------------------------------------------------------------------
 
-def _plan_one_join(source_id: int, user_id: str, table_a: str, table_b: str) -> dict:
+def _plan_one_join(source_id: int, user_id: str, table_a: str, table_b: str) -> list[dict]:
+    """
+    Returns a list of granular, single-hop join steps (never a multi-hop
+    aggregate) — one dict per relationship edge actually traversed, each
+    carrying the real from_column/to_column. A direct join is a 1-element
+    list; a multi-hop path is expanded to one element per edge, sourced from
+    recommend_best_join_path's best_join_path["edges"] (Phase 2 already
+    computes full per-edge detail there — previously discarded down to just
+    aggregate stats, which left no column names for Phase 4's JOIN planning
+    to use).
+    """
     direct = analyze_join_quality(source_id, user_id, table_a, table_b)
     if direct and direct.get("best_join"):
         b = direct["best_join"]
-        return {
-            "from_table": table_a, "to_table": table_b, "path_found": True, "hops": 1,
-            "path": [table_a, table_b],
+        return [{
+            "from_table": b["from_table_fqn"], "from_column": b["from_column"],
+            "to_table":   b["to_table_fqn"],   "to_column":   b["to_column"],
+            "path_found": True, "hops": 1,
             "join_type": b["join_type"], "cardinality": b["cardinality"],
             "fanout_risk": b["fanout_risk"], "fanout_explanation": b["fanout_explanation"],
             "join_quality": b["join_quality"], "join_quality_tier": b["join_quality_tier"],
             "relationship_strength": b["relationship_strength"],
             "confidence": b["relationship_confidence"],
-        }
+        }]
 
     indirect = recommend_best_join_path(source_id, user_id, table_a, table_b)
     best_path = indirect.get("best_join_path") if indirect else None
     if best_path and best_path["hops"] > 0:
-        return {
-            "from_table": table_a, "to_table": table_b, "path_found": True, "hops": best_path["hops"],
-            "path": best_path["path"],
-            "join_type": None, "cardinality": None,
-            "fanout_risk": best_path["worst_fanout_risk"], "fanout_explanation": None,
-            "join_quality": best_path["avg_join_quality"], "join_quality_tier": None,
-            "relationship_strength": None,
-            "confidence": int(best_path["avg_relationship_confidence"]),
-        }
+        return [
+            {
+                "from_table": edge["from_table_fqn"], "from_column": edge["from_column"],
+                "to_table":   edge["to_table_fqn"],   "to_column":   edge["to_column"],
+                "path_found": True, "hops": 1,
+                "join_type": edge["join_type"], "cardinality": edge["cardinality"],
+                "fanout_risk": edge["fanout_risk"], "fanout_explanation": edge["fanout_explanation"],
+                "join_quality": edge["join_quality"], "join_quality_tier": edge["join_quality_tier"],
+                "relationship_strength": edge["relationship_strength"],
+                "confidence": edge["relationship_confidence"],
+            }
+            for edge in best_path["edges"]
+        ]
 
-    return {
-        "from_table": table_a, "to_table": table_b, "path_found": False, "hops": None,
-        "path": None, "join_type": None, "cardinality": None,
+    return [{
+        "from_table": table_a, "from_column": None,
+        "to_table":   table_b, "to_column":   None,
+        "path_found": False, "hops": None,
+        "join_type": None, "cardinality": None,
         "fanout_risk": None, "fanout_explanation": None,
         "join_quality": None, "join_quality_tier": None,
         "relationship_strength": None, "confidence": 0,
-    }
+    }]
 
 
 def _plan_joins(source_id: int, user_id: str, primary_table: str | None, selected_tables: set[str]) -> dict:
@@ -265,7 +282,9 @@ def _plan_joins(source_id: int, user_id: str, primary_table: str | None, selecte
             "steps": [], "fanout_risk": None, "confidence": 100,
         }
 
-    steps = [_plan_one_join(source_id, user_id, primary_table, t) for t in other_tables]
+    steps: list[dict] = []
+    for t in other_tables:
+        steps.extend(_plan_one_join(source_id, user_id, primary_table, t))
 
     fanout_levels = {s["fanout_risk"] for s in steps if s.get("fanout_risk")}
     worst_fanout = next((lvl for lvl in ("HIGH", "MEDIUM", "LOW") if lvl in fanout_levels), None)

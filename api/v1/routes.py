@@ -736,6 +736,10 @@ class QueryPlanRequest(BaseModel):
     filters:    list[dict] = []
 
 
+class SqlPlanRequest(QueryPlanRequest):
+    allow_unconfirmed_pii: bool = False
+
+
 @router.post("/interpret")
 def interpret(request: InterpretRequest, user: AuthenticatedUser = Depends(require_jwt)) -> dict:
     if not request.input.strip():
@@ -4755,6 +4759,46 @@ def plan_business_query_route(
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
     return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# SQL Planning & Validation Engine  (/v1/sources/{id}/sql-plan)
+# ---------------------------------------------------------------------------
+
+@router.post("/sources/{source_id}/sql-plan")
+def build_sql_plan_route(
+    source_id: int,
+    request: SqlPlanRequest,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    if not request.question or not request.question.strip():
+        return JSONResponse(status_code=400, content=build_error_response("question must not be empty."))
+    try:
+        from data.query_planning_service import plan_business_query
+        from data.sql_planning_service import build_sql_plan
+
+        query_plan = plan_business_query(
+            source_id,
+            user.user_id,
+            {
+                "question":   request.question.strip(),
+                "concepts":   request.concepts,
+                "measures":   request.measures,
+                "dimensions": request.dimensions,
+                "filters":    request.filters,
+            },
+        )
+        if query_plan is None:
+            return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+
+        sql_plan = build_sql_plan(
+            source_id, user.user_id, query_plan,
+            allow_unconfirmed_pii=request.allow_unconfirmed_pii,
+        )
+    except Exception:
+        logger.exception("build_sql_plan_route failed for source_id=%s", source_id)
+        return JSONResponse(status_code=500, content=build_error_response("SQL plan generation failed."))
+    return {"status": "success", "data": {"query_plan": query_plan, "sql_plan": sql_plan}}
 
 
 @router.post("/domain-refinements/{suggestion_id}/reject")
