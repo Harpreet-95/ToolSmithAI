@@ -1265,4 +1265,33 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # query_execution_log — immutable audit record for every AI-generated query execution.
+    # SQL is never stored; only its SHA-256 hash. Parameter values and row values are
+    # never stored.  user_id ownership check enforced in service layer.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS query_execution_log (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            execution_id         TEXT    NOT NULL,
+            user_id              TEXT    NOT NULL,
+            source_id            INTEGER NOT NULL,
+            sql_hash             TEXT,
+            tables_accessed_json TEXT,
+            param_count          INTEGER NOT NULL DEFAULT 0,
+            row_count            INTEGER NOT NULL DEFAULT 0,
+            truncated            INTEGER NOT NULL DEFAULT 0,
+            duration_ms          INTEGER NOT NULL DEFAULT 0,
+            status               TEXT    NOT NULL,
+            error_code           TEXT,
+            executed_at          TEXT    NOT NULL,
+            created_at           TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_qel_execution_id ON query_execution_log(execution_id);
+        CREATE INDEX IF NOT EXISTS idx_qel_user_id       ON query_execution_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_qel_source_id     ON query_execution_log(source_id);
+        CREATE INDEX IF NOT EXISTS idx_qel_status        ON query_execution_log(status);
+        CREATE INDEX IF NOT EXISTS idx_qel_executed_at   ON query_execution_log(executed_at);
+    """)
+    conn.commit()
+
     conn.close()

@@ -18,6 +18,7 @@ This module does NOT:
 """
 
 import decimal
+import hashlib
 import json
 import logging
 import re
@@ -347,13 +348,28 @@ def _build_rows(rows_raw, columns: list[dict]) -> list[dict]:
 # Audit helper
 # ---------------------------------------------------------------------------
 
-def _write_audit(task_type: str, status: str, user_id: str, source_id: int) -> None:
+def _write_audit(
+    task_type: str,
+    status: str,
+    user_id: str,
+    source_id: int,
+    *,
+    execution_id: str = "",
+    row_count: int = 0,
+    truncated: bool = False,
+) -> None:
     """Write one audit event.  Never logs raw SQL or parameter values."""
     try:
+        payload = json.dumps({
+            "execution_id": execution_id,
+            "source_id":    source_id,
+            "row_count":    row_count,
+            "truncated":    truncated,
+        })
         log_audit_event(
             {
                 "task_type":      task_type,
-                "original_input": f"source_id={source_id}",
+                "original_input": payload,
                 "status":         status,
             },
             user_id=user_id,
@@ -424,6 +440,142 @@ def _error_result(
 
 
 # ---------------------------------------------------------------------------
+# Query execution audit log — Phase 6.2
+# ---------------------------------------------------------------------------
+
+def _extract_tables(sql_plan: dict) -> list[str]:
+    """Return a sorted list of unique table FQNs referenced in sql_plan."""
+    tables: set[str] = set()
+    for sel in (sql_plan.get("select") or []):
+        if sel.get("table_fqn"):
+            tables.add(sel["table_fqn"])
+    from_entry = sql_plan.get("from")
+    if from_entry and from_entry.get("table_fqn"):
+        tables.add(from_entry["table_fqn"])
+    for j in (sql_plan.get("joins") or []):
+        for key in ("left_table", "right_table"):
+            if j.get(key):
+                tables.add(j[key])
+    return sorted(tables)
+
+
+def _log_row_to_dict(row) -> dict:
+    """Convert a sqlite3.Row from query_execution_log to a plain dict."""
+    return {
+        "id":              row["id"],
+        "execution_id":    row["execution_id"],
+        "user_id":         row["user_id"],
+        "source_id":       row["source_id"],
+        "sql_hash":        row["sql_hash"],
+        "tables_accessed": json.loads(row["tables_accessed_json"] or "[]"),
+        "param_count":     row["param_count"],
+        "row_count":       row["row_count"],
+        "truncated":       bool(row["truncated"]),
+        "duration_ms":     row["duration_ms"],
+        "status":          row["status"],
+        "error_code":      row["error_code"],
+        "executed_at":     row["executed_at"],
+        "created_at":      row["created_at"],
+    }
+
+
+def log_query_execution(
+    execution_id: str,
+    user_id: str,
+    source_id: int,
+    sql: "str | None",
+    sql_plan: dict,
+    *,
+    param_count: int,
+    row_count: int,
+    truncated: bool,
+    duration_ms: int,
+    status: str,
+    error_code: "str | None",
+    executed_at: str,
+) -> None:
+    """Persist one row to query_execution_log.
+
+    Security invariants:
+      - Raw SQL is NEVER stored — only its SHA-256 hex digest.
+      - Parameter values are NEVER stored — only the count.
+      - Returned row values are NEVER stored.
+      - PII values are NEVER stored.
+    """
+    try:
+        sql_hash       = hashlib.sha256(sql.encode("utf-8")).hexdigest() if sql else None
+        tables_json    = json.dumps(_extract_tables(sql_plan))
+        created_at_str = _now_iso()
+
+        conn = get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO query_execution_log
+                    (execution_id, user_id, source_id, sql_hash,
+                     tables_accessed_json, param_count, row_count, truncated,
+                     duration_ms, status, error_code, executed_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    execution_id, user_id, source_id, sql_hash,
+                    tables_json, param_count, row_count, 1 if truncated else 0,
+                    duration_ms, status, error_code, executed_at, created_at_str,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "log_query_execution: DB write failed [execution_id=%s]", execution_id
+        )
+
+
+def get_query_execution_log(execution_id: str, user_id: str) -> "dict | None":
+    """Return one query_execution_log row, enforcing user_id ownership."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM query_execution_log WHERE execution_id = ? AND user_id = ?",
+            (execution_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _log_row_to_dict(row) if row is not None else None
+
+
+def list_query_executions(
+    user_id: str,
+    *,
+    source_id: "int | None" = None,
+    status: "str | None" = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list:
+    """Return paginated query_execution_log rows for user_id, newest first."""
+    parts:  list[str] = ["SELECT * FROM query_execution_log WHERE user_id = ?"]
+    params: list      = [user_id]
+
+    if source_id is not None:
+        parts.append("AND source_id = ?")
+        params.append(source_id)
+    if status:
+        parts.append("AND status = ?")
+        params.append(status)
+
+    parts.extend(["ORDER BY executed_at DESC", "LIMIT ? OFFSET ?"])
+    params.extend([limit, offset])
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(" ".join(parts), params).fetchall()
+    finally:
+        conn.close()
+    return [_log_row_to_dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -454,12 +606,23 @@ def execute_generated_query(
     execution_id = str(uuid.uuid4())
     started_at   = datetime.now(timezone.utc)
     warnings: list[dict] = list(generated_sql_result.get("warnings") or [])
+    param_count  = len(
+        (generated_sql_result.get("parameters") or {}).get("values") or []
+    )
 
     # ── STEP 1: Safety gate (all checks before opening any connection) ────────
     sql    = generated_sql_result.get("sql")
     blocks = _safety_gate(sql, generated_sql_result, sql_plan)
     if blocks:
-        _write_audit("query_execution", "governance_block", user_id, source_id)
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="governance_block",
+            error_code="safety_gate", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "governance_block", user_id, source_id,
+                     execution_id=execution_id)
         return _block_result(execution_id, source_id, started_at, blocks, warnings)
 
     # ── STEP 2: Governance re-check per column ────────────────────────────────
@@ -468,7 +631,15 @@ def execute_generated_query(
     )
     warnings.extend(gov_warnings)
     if blocked_cols:
-        _write_audit("query_execution", "governance_block", user_id, source_id)
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="governance_block",
+            error_code="pii_blocked", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "governance_block", user_id, source_id,
+                     execution_id=execution_id)
         return _block_result(
             execution_id, source_id, started_at,
             [f"Blocked: unconfirmed PII column(s): {', '.join(blocked_cols)}"],
@@ -485,14 +656,30 @@ def execute_generated_query(
     try:
         db_conn, _source_type = _load_source_connection(source_id, user_id)
     except PermissionError as exc:
-        _write_audit("query_execution", "failed", user_id, source_id)
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="failed",
+            error_code="permission_denied", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "failed", user_id, source_id,
+                     execution_id=execution_id)
         return _error_result(execution_id, source_id, started_at, str(exc), warnings)
     except Exception:
         logger.exception(
             "execute_generated_query: connection failed [source_id=%s user_id=%s]",
             source_id, user_id,
         )
-        _write_audit("query_execution", "failed", user_id, source_id)
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="failed",
+            error_code="connection_failed", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "failed", user_id, source_id,
+                     execution_id=execution_id)
         return _error_result(
             execution_id, source_id, started_at,
             "Failed to open database connection.",
@@ -506,13 +693,21 @@ def execute_generated_query(
         )
 
         if timed_out:
-            _write_audit("query_execution", "timeout", user_id, source_id)
+            _dur = _elapsed_ms(started_at)
+            log_query_execution(
+                execution_id, user_id, source_id, sql, sql_plan,
+                param_count=param_count, row_count=0, truncated=False,
+                duration_ms=_dur, status="timeout",
+                error_code="timeout", executed_at=started_at.isoformat(),
+            )
+            _write_audit("query_execution", "timeout", user_id, source_id,
+                         execution_id=execution_id)
             return {
                 "execution_id":     execution_id,
                 "status":           "timeout",
                 "source_id":        source_id,
                 "executed_at":      started_at.isoformat(),
-                "duration_ms":      _elapsed_ms(started_at),
+                "duration_ms":      _dur,
                 "columns":          [],
                 "rows":             [],
                 "row_count":        0,
@@ -529,7 +724,15 @@ def execute_generated_query(
                 "execute_generated_query: query error [source_id=%s]: %s",
                 source_id, exec_error,
             )
-            _write_audit("query_execution", "failed", user_id, source_id)
+            _dur = _elapsed_ms(started_at)
+            log_query_execution(
+                execution_id, user_id, source_id, sql, sql_plan,
+                param_count=param_count, row_count=0, truncated=False,
+                duration_ms=_dur, status="failed",
+                error_code="query_error", executed_at=started_at.isoformat(),
+            )
+            _write_audit("query_execution", "failed", user_id, source_id,
+                         execution_id=execution_id)
             return _error_result(
                 execution_id, source_id, started_at, exec_error, warnings
             )
@@ -553,15 +756,23 @@ def execute_generated_query(
             except Exception:
                 pass
 
-    # ── STEP 9: Audit log ─────────────────────────────────────────────────────
-    _write_audit("query_execution", "success", user_id, source_id)
+    # ── STEP 9: Audit + execution log ────────────────────────────────────────
+    _dur = _elapsed_ms(started_at)
+    log_query_execution(
+        execution_id, user_id, source_id, sql, sql_plan,
+        param_count=param_count, row_count=len(rows), truncated=truncated,
+        duration_ms=_dur, status="success",
+        error_code=None, executed_at=started_at.isoformat(),
+    )
+    _write_audit("query_execution", "success", user_id, source_id,
+                 execution_id=execution_id, row_count=len(rows), truncated=truncated)
 
     return {
         "execution_id":     execution_id,
         "status":           "success",
         "source_id":        source_id,
         "executed_at":      started_at.isoformat(),
-        "duration_ms":      _elapsed_ms(started_at),
+        "duration_ms":      _dur,
         "columns":          columns,
         "rows":             rows,
         "row_count":        len(rows),

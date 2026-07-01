@@ -4909,6 +4909,44 @@ def execute_query_route(
     }
 
 
+# ---------------------------------------------------------------------------
+# Query Execution Audit Log  (/v1/query-executions)
+# ---------------------------------------------------------------------------
+
+@router.get("/query-executions/{execution_id}")
+def get_query_execution_route(
+    execution_id: str,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    from data.query_execution_service import get_query_execution_log
+    record = get_query_execution_log(execution_id, user.user_id)
+    if record is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Query execution log not found."),
+        )
+    return {"status": "success", "data": record}
+
+
+@router.get("/query-executions")
+def list_query_executions_route(
+    source_id: "int | None" = Query(None),
+    status: "str | None" = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    from data.query_execution_service import list_query_executions
+    records = list_query_executions(
+        user.user_id,
+        source_id=source_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return {"status": "success", "data": records}
+
+
 @router.post("/domain-refinements/{suggestion_id}/reject")
 def reject_domain_refinement_route(
     suggestion_id: int,
