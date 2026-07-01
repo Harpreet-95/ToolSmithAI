@@ -24,7 +24,7 @@ import logging
 import re
 import threading
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import core.connectors.registry as _registry
 from core.connectors.base import DataSourceConfig
@@ -42,6 +42,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_QUERY_TIMEOUT_S: int = 30
 DEFAULT_ROW_LIMIT: int = 1_000
 MAX_ROW_LIMIT: int = 5_000
+
+# ---------------------------------------------------------------------------
+# Operational safeguard constants — Phase 6.3
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_WINDOW_S: int      = 2     # minimum seconds between per-user executions
+DAILY_LIMIT: int              = 500   # max execution attempts per user per UTC day
+SOURCE_RATE_PER_MINUTE: int   = 60    # max executions per source per 60-second window
+REPEATED_QUERY_WINDOW_S: int  = 300   # look-back window (seconds) for repeated-query detection
+REPEATED_QUERY_THRESHOLD: int = 3     # inclusive count at which the warning fires
 
 # Write / DDL keywords blocked anywhere in the SQL string (after stripping
 # quoted identifiers so bracketed column names don't cause false positives).
@@ -439,6 +449,29 @@ def _error_result(
     }
 
 
+def _rate_limit_result(
+    execution_id: str,
+    source_id: int,
+    started_at: datetime,
+    error: str,
+    warnings: list[dict],
+) -> dict:
+    return {
+        "execution_id":      execution_id,
+        "status":            "rate_limited",
+        "source_id":         source_id,
+        "executed_at":       started_at.isoformat(),
+        "duration_ms":       _elapsed_ms(started_at),
+        "columns":           [],
+        "rows":              [],
+        "row_count":         0,
+        "truncated":         False,
+        "row_limit_applied": 0,
+        "warnings":          warnings,
+        "error":             error,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Query execution audit log — Phase 6.2
 # ---------------------------------------------------------------------------
@@ -576,6 +609,209 @@ def list_query_executions(
 
 
 # ---------------------------------------------------------------------------
+# Operational safeguards — Phase 6.3
+# All reads come from query_execution_log — no new table required.
+# No raw SQL or parameter values are read or stored here.
+# ---------------------------------------------------------------------------
+
+def _check_user_rate_limit(user_id: str) -> bool:
+    """Return True (blocked) if user has executed within the last RATE_LIMIT_WINDOW_S seconds.
+
+    Returns False (fail-open) on any DB error so that infrastructure failures
+    never block legitimate executions.
+    """
+    try:
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT executed_at FROM query_execution_log "
+                "WHERE user_id = ? ORDER BY executed_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return False
+        last_dt = datetime.fromisoformat(row["executed_at"])
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last_dt).total_seconds() < RATE_LIMIT_WINDOW_S
+    except Exception:
+        return False  # fail-open: never block due to a safeguard's own DB error
+
+
+def _check_daily_limit(user_id: str) -> int:
+    """Return the number of executions recorded for user_id on today's UTC date.
+
+    Returns 0 (fail-open) on any DB error.
+    """
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM query_execution_log "
+                "WHERE user_id = ? AND executed_at >= ?",
+                (user_id, f"{today}T00:00:00"),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row["cnt"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _check_source_rate(source_id: int) -> int:
+    """Return the number of executions for source_id in the last 60 seconds.
+
+    Returns 0 (fail-open) on any DB error.
+    """
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM query_execution_log "
+                "WHERE source_id = ? AND executed_at >= ?",
+                (source_id, cutoff),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row["cnt"]) if row else 0
+    except Exception:
+        return 0
+
+
+def _check_repeated_query(user_id: str, sql_hash: "str | None") -> int:
+    """Return how many times user_id has run sql_hash in the last REPEATED_QUERY_WINDOW_S seconds.
+
+    Returns 0 if sql_hash is None or on any DB error.  Reads only hashes,
+    never raw SQL or parameter values.
+    """
+    if not sql_hash:
+        return 0
+    try:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=REPEATED_QUERY_WINDOW_S)
+        ).isoformat()
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM query_execution_log "
+                "WHERE user_id = ? AND sql_hash = ? AND executed_at >= ?",
+                (user_id, sql_hash, cutoff),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row["cnt"]) if row else 0
+    except Exception:
+        return 0
+
+
+def get_execution_readiness(
+    user_id: str,
+    source_id: "int | None" = None,
+) -> dict:
+    """Return operational readiness metrics for a user's execution context.
+
+    All values are derived from query_execution_log timestamps and hashes.
+    No raw SQL or parameter values are read.
+    """
+    now         = datetime.now(timezone.utc)
+    today_str   = now.date().isoformat()
+    one_min_ago = (now - timedelta(seconds=60)).isoformat()
+    five_min_ago = (now - timedelta(seconds=300)).isoformat()
+    day_start   = f"{today_str}T00:00:00"
+
+    _empty = {
+        "executions_today": 0, "user_rate_limited": False,
+        "daily_remaining": DAILY_LIMIT, "source_recent_count": 0,
+        "recent_failures": 0, "recent_timeouts": 0,
+        "repeated_query_warnings": 0,
+    }
+    try:
+        conn = get_connection()
+    except Exception:
+        return _empty
+    try:
+        # executions today (all statuses)
+        today_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM query_execution_log "
+            "WHERE user_id = ? AND executed_at >= ?",
+            (user_id, day_start),
+        ).fetchone()
+        executions_today = int(today_row["cnt"]) if today_row else 0
+
+        # most recent execution timestamp (for rate-limit state)
+        last_row = conn.execute(
+            "SELECT executed_at FROM query_execution_log "
+            "WHERE user_id = ? ORDER BY executed_at DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        user_rate_limited = False
+        if last_row:
+            try:
+                last_dt = datetime.fromisoformat(last_row["executed_at"])
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                user_rate_limited = (now - last_dt).total_seconds() < RATE_LIMIT_WINDOW_S
+            except Exception:
+                pass
+
+        # source executions in the last 60 seconds
+        source_recent_count = 0
+        if source_id is not None:
+            src_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM query_execution_log "
+                "WHERE source_id = ? AND executed_at >= ?",
+                (source_id, one_min_ago),
+            ).fetchone()
+            source_recent_count = int(src_row["cnt"]) if src_row else 0
+
+        # failed executions in the last 5 minutes
+        fail_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM query_execution_log "
+            "WHERE user_id = ? AND status = 'failed' AND executed_at >= ?",
+            (user_id, five_min_ago),
+        ).fetchone()
+        recent_failures = int(fail_row["cnt"]) if fail_row else 0
+
+        # timeout executions in the last 5 minutes
+        timeout_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM query_execution_log "
+            "WHERE user_id = ? AND status = 'timeout' AND executed_at >= ?",
+            (user_id, five_min_ago),
+        ).fetchone()
+        recent_timeouts = int(timeout_row["cnt"]) if timeout_row else 0
+
+        # sql_hash values run >= REPEATED_QUERY_THRESHOLD times in last 5 minutes
+        rq_rows = conn.execute(
+            "SELECT COUNT(*) AS hash_count FROM ("
+            "  SELECT sql_hash FROM query_execution_log "
+            "  WHERE user_id = ? AND sql_hash IS NOT NULL AND executed_at >= ? "
+            "  GROUP BY sql_hash HAVING COUNT(*) >= ?"
+            ")",
+            (user_id, five_min_ago, REPEATED_QUERY_THRESHOLD),
+        ).fetchone()
+        repeated_query_warnings = int(rq_rows["hash_count"]) if rq_rows else 0
+
+    except Exception:
+        return _empty
+    finally:
+        conn.close()
+
+    return {
+        "executions_today":        executions_today,
+        "user_rate_limited":       user_rate_limited,
+        "daily_remaining":         max(0, DAILY_LIMIT - executions_today),
+        "source_recent_count":     source_recent_count,
+        "recent_failures":         recent_failures,
+        "recent_timeouts":         recent_timeouts,
+        "repeated_query_warnings": repeated_query_warnings,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -609,9 +845,63 @@ def execute_generated_query(
     param_count  = len(
         (generated_sql_result.get("parameters") or {}).get("values") or []
     )
+    sql      = generated_sql_result.get("sql")
+    sql_hash = hashlib.sha256(sql.encode("utf-8")).hexdigest() if sql else None
+
+    # ── STEP 0a: Per-user rate limit (RATE_LIMIT_WINDOW_S between executions) ─
+    if _check_user_rate_limit(user_id):
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="rate_limited",
+            error_code="user_rate_limit", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "rate_limited", user_id, source_id,
+                     execution_id=execution_id)
+        return _rate_limit_result(
+            execution_id, source_id, started_at,
+            f"Rate limit exceeded: 1 execution per {RATE_LIMIT_WINDOW_S} seconds per user.",
+            warnings,
+        )
+
+    # ── STEP 0b: Daily execution limit ───────────────────────────────────────
+    executions_today = _check_daily_limit(user_id)
+    if executions_today >= DAILY_LIMIT:
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="rate_limited",
+            error_code="daily_limit", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "rate_limited", user_id, source_id,
+                     execution_id=execution_id)
+        return _rate_limit_result(
+            execution_id, source_id, started_at,
+            f"Daily execution limit of {DAILY_LIMIT} reached for today.",
+            warnings,
+        )
+
+    # ── STEP 0c: Per-source rate limit (SOURCE_RATE_PER_MINUTE / 60 seconds) ─
+    if _check_source_rate(source_id) >= SOURCE_RATE_PER_MINUTE:
+        _dur = _elapsed_ms(started_at)
+        log_query_execution(
+            execution_id, user_id, source_id, sql, sql_plan,
+            param_count=param_count, row_count=0, truncated=False,
+            duration_ms=_dur, status="rate_limited",
+            error_code="source_rate_limit", executed_at=started_at.isoformat(),
+        )
+        _write_audit("query_execution", "rate_limited", user_id, source_id,
+                     execution_id=execution_id)
+        return _rate_limit_result(
+            execution_id, source_id, started_at,
+            f"Source rate limit exceeded: {SOURCE_RATE_PER_MINUTE} executions per minute.",
+            warnings,
+        )
 
     # ── STEP 1: Safety gate (all checks before opening any connection) ────────
-    sql    = generated_sql_result.get("sql")
+    # sql already extracted above (before rate limit checks)
     blocks = _safety_gate(sql, generated_sql_result, sql_plan)
     if blocks:
         _dur = _elapsed_ms(started_at)
@@ -764,6 +1054,20 @@ def execute_generated_query(
         duration_ms=_dur, status="success",
         error_code=None, executed_at=started_at.isoformat(),
     )
+
+    # ── STEP 10: Repeated-query detection (warn only, never block) ───────────
+    repeat_count = _check_repeated_query(user_id, sql_hash)
+    if repeat_count >= REPEATED_QUERY_THRESHOLD:
+        window_min = REPEATED_QUERY_WINDOW_S // 60
+        warnings.append({
+            "type":     "repeated_query",
+            "severity": "LOW",
+            "message":  (
+                f"Repeated query detected: this SQL has been executed "
+                f"{repeat_count} time(s) in the last {window_min} minutes."
+            ),
+        })
+
     _write_audit("query_execution", "success", user_id, source_id,
                  execution_id=execution_id, row_count=len(rows), truncated=truncated)
 

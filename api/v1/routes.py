@@ -4910,8 +4910,20 @@ def execute_query_route(
 
 
 # ---------------------------------------------------------------------------
-# Query Execution Audit Log  (/v1/query-executions)
+# Query Execution Audit Log + Operational Safeguards  (/v1/query-executions)
+# IMPORTANT: static paths (/readiness) must be declared before dynamic ones
+# (/{execution_id}) so FastAPI does not treat "readiness" as an id.
 # ---------------------------------------------------------------------------
+
+@router.get("/query-executions/readiness")
+def get_execution_readiness_route(
+    source_id: "int | None" = Query(None),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    from data.query_execution_service import get_execution_readiness
+    data = get_execution_readiness(user.user_id, source_id=source_id)
+    return {"status": "success", "data": data}
+
 
 @router.get("/query-executions/{execution_id}")
 def get_query_execution_route(
