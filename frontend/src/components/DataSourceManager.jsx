@@ -103,6 +103,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [discoverState, setDiscoverState] = useState({})  // { [id]: { loading, result, error } }
   const [schemaState,   setSchemaState]   = useState({})  // { [id]: { loading, data, error } }
   const [schemaExpand,  setSchemaExpand]  = useState({})  // { [id]: { schemas: [], tables: [] } }
+  const [schemaTabUi,   setSchemaTabUi]   = useState({})  // { [id]: { search, selectedTable, schemaFilter, typeFilter } }
   const [profileState,  setProfileState]  = useState({})  // { [id]: { loading, data, error } }
   const [dictState,     setDictState]     = useState({})  // { [id]: { loading, generating, tables, error } }
   const [domainState,   setDomainState]   = useState({})  // { [id]: { loading, generating, summary, error } }
@@ -1803,74 +1804,295 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       )
     })()
 
-    const schemaTab = (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {!hasSchema && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 8px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Schema not discovered yet</p><p style={{ margin: '0 0 16px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to crawl schemas, tables, and columns.</p><button onClick={() => src && handleDiscoverAndProfile(src)} disabled={!src || discSt.loading || js.running} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Discover & Profile</button></div>)}
-        {hasSchema && sc.loading  && (<div style={{ ...card({ padding: '36px 24px' }), textAlign: 'center', color: muted, fontSize: '0.82rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={12} /> Loading schema…</div>)}
-        {hasSchema && !sc.data && !sc.loading && (<div style={{ ...card({ padding: '24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 8px', fontSize: '0.82rem', color: textSec, fontFamily: FONT }}>Schema not loaded for this session.</p><button onClick={() => loadSchema(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '7px 16px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}>Load Schema</button></div>)}
-        {sc.error && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{sc.error}</span></div>)}
-        {sc.data && (
-          <div style={card({ overflow: 'hidden' })}>
-            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT }}>
-                <span style={{ fontWeight: '600' }}>{sc.data.database_name ?? 'Database'}</span>
-                <span style={{ color: muted, marginLeft: '8px' }}>{sc.data.schemas?.length ?? 0} schemas</span>
-                {sc.data.discovery_duration_ms != null && <span style={{ color: muted, marginLeft: '8px' }}>discovered in {sc.data.discovery_duration_ms}ms</span>}
-              </div>
-              <button onClick={() => loadSchema(dsSelectedSourceId)} disabled={sc.loading} style={{ ...btnGhost({ padding: '4px 10px', fontSize: '0.74rem' }), color: textSec }}>Refresh</button>
+    const schemaTab = (() => {
+      // ── UI state for this source's schema tab ───────────────────────────
+      const schemaUi      = schemaTabUi[dsSelectedSourceId] ?? {}
+      const stSearch      = (schemaUi.search ?? '').toLowerCase()
+      const stSelectedFqn = schemaUi.selectedTable  ?? null
+      const stSchFilter   = schemaUi.schemaFilter   ?? ''
+      const stTypeFilter  = schemaUi.typeFilter     ?? 'all'
+
+      function setSchUi(patch) {
+        setSchemaTabUi(s => ({ ...s, [dsSelectedSourceId]: { ...(s[dsSelectedSourceId] ?? {}), ...patch } }))
+      }
+
+      // ── 1. No schema discovered yet ─────────────────────────────────────
+      if (!hasSchema) return (
+        <div style={{ ...card({ padding: '56px 24px' }), textAlign: 'center' }}>
+          <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: `${accent}14`, border: `1px solid ${accent}28`, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 18px', fontSize: '20px', color: accent }}>&#9671;</div>
+          <p style={{ margin: '0 0 6px', fontSize: '0.92rem', color: text, fontWeight: '600', fontFamily: FONT }}>Schema not discovered yet</p>
+          <p style={{ margin: '0 0 22px', fontSize: '0.8rem', color: muted, fontFamily: FONT, maxWidth: '300px', marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5 }}>
+            Run Discover &amp; Profile to crawl all schemas, tables, and columns.
+          </p>
+          <button
+            onClick={() => src && handleDiscoverAndProfile(src)}
+            disabled={!src || discSt.loading || js.running}
+            style={{ ...btnMain, fontSize: '0.83rem', padding: '8px 22px', opacity: (!src || discSt.loading || js.running) ? 0.55 : 1 }}
+          >
+            {(discSt.loading || js.running) ? 'Discovering…' : 'Discover & Profile'}
+          </button>
+        </div>
+      )
+
+      // ── 2. Loading (initial) ─────────────────────────────────────────────
+      if (sc.loading && !sc.data) return (
+        <div style={{ ...card({ padding: '56px 24px' }), textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: muted, fontSize: '0.84rem', fontFamily: FONT }}>
+          <Spinner size={16} /> Loading schema…
+        </div>
+      )
+
+      // ── 3. Has snapshot but not yet loaded this session ──────────────────
+      if (!sc.data && !sc.loading) return (
+        <div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}>
+          <p style={{ margin: '0 0 6px', fontSize: '0.86rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>Schema not loaded for this session</p>
+          <p style={{ margin: '0 0 18px', fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Click below to load the discovered schema snapshot.</p>
+          <button
+            onClick={() => loadSchema(dsSelectedSourceId)}
+            style={{ ...btnGhost({ padding: '7px 18px', fontSize: '0.8rem' }), color: accent, borderColor: `${accent}50` }}
+          >Load Schema</button>
+        </div>
+      )
+
+      // ── 4. Aggregate stats ───────────────────────────────────────────────
+      const allSchemas   = sc.data?.schemas ?? []
+      const allTables    = allSchemas.flatMap(sch => (sch.tables ?? []).map(t => ({ ...t, _schema: sch.schema_name })))
+      const totalTables  = allTables.filter(t => t.table_type === 'TABLE').length
+      const totalViews   = allTables.filter(t => t.table_type === 'VIEW').length
+      const totalCols    = allTables.reduce((a, t) => a + (t.columns?.length ?? 0), 0)
+      const tablesWithPk = allTables.filter(t => t.table_type === 'TABLE' && t.columns?.some(c => c.is_primary_key)).length
+      const hasFkData    = allTables.some(t => t.columns?.some(c => c.is_foreign_key != null))
+      const tablesWithFk = hasFkData ? allTables.filter(t => t.columns?.some(c => c.is_foreign_key)).length : null
+
+      // ── 5. Filtered table list ───────────────────────────────────────────
+      const filtered = allTables.filter(t => {
+        if (stTypeFilter === 'tables' && t.table_type !== 'TABLE') return false
+        if (stTypeFilter === 'views'  && t.table_type !== 'VIEW')  return false
+        if (stSchFilter  && t._schema !== stSchFilter)             return false
+        if (stSearch     && !t.table_name.toLowerCase().includes(stSearch)) return false
+        return true
+      })
+
+      // ── 6. Selected table detail ─────────────────────────────────────────
+      const selT   = allTables.find(t => t.table_fqn === stSelectedFqn) ?? null
+      const pkCols = selT?.columns?.filter(c => c.is_primary_key) ?? []
+      const fkCols = hasFkData ? (selT?.columns?.filter(c => c.is_foreign_key) ?? []) : []
+
+      // ── 7. Helpers ───────────────────────────────────────────────────────
+      const statCard = (label, value, col) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', padding: '10px 14px', borderRadius: '8px', background: `${col}0d`, border: `1px solid ${col}25`, minWidth: '76px' }}>
+          <span style={{ fontSize: '1.1rem', fontWeight: '700', color: col, fontFamily: FONT, lineHeight: 1 }}>{value}</span>
+          <span style={{ fontSize: '0.63rem', color: muted, fontFamily: FONT, textTransform: 'uppercase', letterSpacing: '0.07em', fontWeight: '600' }}>{label}</span>
+        </div>
+      )
+
+      const typeToggle = (label, val) => (
+        <button
+          onClick={() => setSchUi({ typeFilter: val })}
+          style={{ ...btnGhost({ padding: '3px 9px', fontSize: '0.71rem' }), background: stTypeFilter === val ? `${accent}1e` : 'transparent', color: stTypeFilter === val ? accent : muted, borderColor: stTypeFilter === val ? `${accent}45` : border }}
+        >{label}</button>
+      )
+
+      const colGrid = hasFkData ? '1fr 136px 64px 36px 36px' : '1fr 136px 64px 36px'
+
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+
+          {/* Error banner */}
+          {sc.error && (
+            <div style={{ padding: '10px 14px', marginBottom: '10px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}>
+              <span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{sc.error}</span>
             </div>
-            {sc.data.schemas?.map(schema => {
-              const sexp   = schemaExpand[dsSelectedSourceId]?.schemas.includes(schema.schema_name)
-              const tables = schema.tables?.filter(t => t.table_type === 'TABLE') ?? []
-              const views  = schema.tables?.filter(t => t.table_type === 'VIEW')  ?? []
-              return (
-                <div key={schema.schema_name} style={{ borderBottom: `1px solid ${border}30` }}>
-                  <div onClick={() => toggleSchemaItem(dsSelectedSourceId, 'schemas', schema.schema_name)} style={{ padding: '9px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.82rem', fontFamily: FONT, userSelect: 'none', background: sexp ? `${accent}06` : 'transparent' }}>
-                    <span style={{ fontSize: '0.6rem', color: muted, width: '10px', flexShrink: 0 }}>{sexp ? '▾' : '▸'}</span>
-                    <span style={{ fontWeight: '600', color: textSec }}>{schema.schema_name}</span>
-                    <span style={{ fontSize: '0.68rem', color: muted }}>{tables.length} table{tables.length !== 1 ? 's' : ''}{views.length > 0 ? ` · ${views.length} view${views.length !== 1 ? 's' : ''}` : ''}</span>
-                  </div>
-                  {sexp && (
-                    <div style={{ paddingLeft: '8px', paddingBottom: '4px' }}>
-                      {schema.tables?.map(t => {
-                        const texp   = schemaExpand[dsSelectedSourceId]?.tables.includes(t.table_fqn)
-                        const isView = t.table_type === 'VIEW'
-                        return (
-                          <div key={t.table_fqn}>
-                            <div onClick={() => toggleSchemaItem(dsSelectedSourceId, 'tables', t.table_fqn)} style={{ padding: '5px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '7px', fontSize: '0.78rem', fontFamily: MONO, userSelect: 'none' }}>
-                              <span style={{ fontSize: '0.58rem', color: muted, width: '10px' }}>{texp ? '▾' : '▸'}</span>
-                              {isView && <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', background: `${muted}18`, color: muted, border: `1px solid ${muted}30`, fontFamily: FONT }}>VIEW</span>}
-                              <span style={{ color: text }}>{t.table_name}</span>
-                              {t.row_count_estimate != null && <span style={{ fontSize: '0.67rem', color: muted }}>~{t.row_count_estimate.toLocaleString()} rows</span>}
-                              <span style={{ fontSize: '0.67rem', color: muted, marginLeft: 'auto' }}>{t.columns?.length ?? 0} cols</span>
-                            </div>
-                            {texp && (
-                              <div style={{ paddingLeft: '28px', paddingBottom: '6px' }}>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 70px 50px', padding: '3px 14px', fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>
-                                  <span>Column</span><span>Type</span><span>Nullable</span><span>Key</span>
-                                </div>
-                                {t.columns?.map(c => (
-                                  <div key={c.column_name} style={{ display: 'grid', gridTemplateColumns: '1fr 110px 70px 50px', padding: '3px 14px', fontSize: '0.74rem', fontFamily: MONO, borderTop: `1px solid ${border}15` }}>
-                                    <span style={{ color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.column_name}</span>
-                                    <span style={{ color: muted }}>{c.data_type}</span>
-                                    <span style={{ color: c.is_nullable ? `${muted}80` : muted }}>{c.is_nullable ? 'yes' : 'no'}</span>
-                                    <span>{c.is_primary_key ? <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '4px', background: `${accent}20`, color: accent, border: `1px solid ${accent}30`, fontFamily: FONT }}>PK</span> : null}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
+          )}
+
+          <div style={{ ...card({ padding: '0' }), overflow: 'hidden' }}>
+
+            {/* ── Header ─────────────────────────────────────────────────── */}
+            <div style={{ padding: '11px 16px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                <span style={{ fontSize: '0.88rem', fontWeight: '700', color: text, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {sc.data.database_name ?? 'Database'}
+                </span>
+                <span style={{ fontSize: '0.66rem', fontWeight: '600', padding: '2px 8px', borderRadius: '20px', background: `${accent}14`, color: accent, fontFamily: FONT, flexShrink: 0 }}>
+                  {allSchemas.length} schema{allSchemas.length !== 1 ? 's' : ''}
+                </span>
+                {sc.data.discovery_duration_ms != null && (
+                  <span style={{ fontSize: '0.69rem', color: muted, fontFamily: FONT, flexShrink: 0 }}>
+                    discovered in {sc.data.discovery_duration_ms.toLocaleString()}ms
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => loadSchema(dsSelectedSourceId)}
+                disabled={sc.loading}
+                style={{ ...btnGhost({ padding: '4px 12px', fontSize: '0.74rem' }), color: textSec, display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}
+              >
+                {sc.loading ? <><Spinner size={10} /> Refreshing</> : 'Refresh'}
+              </button>
+            </div>
+
+            {/* ── Summary stat strip ──────────────────────────────────────── */}
+            <div style={{ padding: '10px 16px', borderBottom: `1px solid ${border}`, display: 'flex', gap: '7px', flexWrap: 'wrap', alignItems: 'center' }}>
+              {statCard('Tables',  totalTables.toLocaleString(), accent)}
+              {totalViews   > 0  && statCard('Views',    totalViews.toLocaleString(),    muted)}
+              {allSchemas.length > 0 && statCard('Schemas',  allSchemas.length.toString(),   textSec)}
+              {totalCols    > 0  && statCard('Columns',  totalCols.toLocaleString(),     textSec)}
+              {tablesWithPk > 0  && statCard('With PK',  tablesWithPk.toLocaleString(),  success)}
+              {tablesWithFk != null && tablesWithFk > 0 && statCard('With FK', tablesWithFk.toLocaleString(), warn)}
+            </div>
+
+            {/* ── Two-panel workspace ─────────────────────────────────────── */}
+            <div style={{ display: 'flex', height: '62vh', minHeight: '360px', overflow: 'hidden' }}>
+
+              {/* Left: table explorer ───────────────────────────────────── */}
+              <div style={{ width: '256px', flexShrink: 0, borderRight: `1px solid ${border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+                {/* Search */}
+                <div style={{ padding: '9px 10px 6px' }}>
+                  <input
+                    value={schemaUi.search ?? ''}
+                    onChange={e => setSchUi({ search: e.target.value })}
+                    placeholder="Search tables…"
+                    style={{ width: '100%', boxSizing: 'border-box', background: bg, border: `1px solid ${border}`, borderRadius: '7px', color: text, fontSize: '0.77rem', padding: '6px 10px', outline: 'none', fontFamily: FONT }}
+                  />
                 </div>
-              )
-            })}
+
+                {/* Schema filter + type toggles */}
+                <div style={{ padding: '0 10px 7px', display: 'flex', gap: '5px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {allSchemas.length > 1 && (
+                    <select
+                      value={stSchFilter}
+                      onChange={e => setSchUi({ schemaFilter: e.target.value })}
+                      style={{ flex: 1, minWidth: 0, background: bg, border: `1px solid ${border}`, borderRadius: '6px', color: textSec, fontSize: '0.72rem', padding: '4px 7px', outline: 'none', fontFamily: FONT }}
+                    >
+                      <option value=''>All schemas</option>
+                      {allSchemas.map(sch => <option key={sch.schema_name} value={sch.schema_name}>{sch.schema_name}</option>)}
+                    </select>
+                  )}
+                  <div style={{ display: 'flex', gap: '3px', flexShrink: 0 }}>
+                    {typeToggle('All', 'all')}
+                    {totalTables > 0 && typeToggle('T', 'tables')}
+                    {totalViews  > 0 && typeToggle('V', 'views')}
+                  </div>
+                </div>
+
+                {/* Result count */}
+                <div style={{ padding: '0 12px 5px', fontSize: '0.67rem', color: muted, fontFamily: FONT }}>
+                  {filtered.length.toLocaleString()} of {allTables.length.toLocaleString()} objects
+                </div>
+
+                {/* Scrollable table list */}
+                <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+                  {filtered.length === 0 ? (
+                    <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: '0.76rem', color: muted, fontFamily: FONT }}>
+                      No tables match
+                    </div>
+                  ) : filtered.map(t => {
+                    const isSel  = t.table_fqn === stSelectedFqn
+                    const isView = t.table_type === 'VIEW'
+                    const hasPk  = t.columns?.some(c => c.is_primary_key)
+                    return (
+                      <div
+                        key={t.table_fqn}
+                        onClick={() => setSchUi({ selectedTable: t.table_fqn })}
+                        style={{
+                          padding: '5px 12px 5px 10px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          background: isSel ? `${accent}14` : 'transparent',
+                          borderLeft: `2px solid ${isSel ? accent : 'transparent'}`,
+                          userSelect: 'none',
+                        }}
+                      >
+                        {isView && (
+                          <span style={{ fontSize: '0.57rem', padding: '1px 4px', borderRadius: '3px', background: `${muted}1a`, color: muted, border: `1px solid ${muted}28`, fontFamily: FONT, flexShrink: 0, fontWeight: '600' }}>V</span>
+                        )}
+                        <span style={{ fontSize: '0.78rem', fontFamily: MONO, color: isSel ? text : textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                          {t.table_name}
+                        </span>
+                        {hasPk && <span style={{ fontSize: '0.6rem', padding: '1px 4px', borderRadius: '3px', background: `${success}14`, color: success, border: `1px solid ${success}28`, fontFamily: FONT, flexShrink: 0 }}>PK</span>}
+                        <span style={{ fontSize: '0.64rem', color: muted, flexShrink: 0, fontFamily: FONT }}>{t.columns?.length ?? 0}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Right: detail panel ────────────────────────────────────── */}
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {!selT ? (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px' }}>
+                    <span style={{ fontSize: '0.8rem', color: muted, fontFamily: FONT }}>Select a table to inspect its columns</span>
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+                    {/* Table detail header */}
+                    <div style={{ padding: '13px 16px', borderBottom: `1px solid ${border}`, flexShrink: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '7px' }}>
+                        <span style={{ fontSize: '0.96rem', fontWeight: '700', color: text, fontFamily: MONO }}>{selT.table_name}</span>
+                        <span style={{ fontSize: '0.63rem', padding: '2px 7px', borderRadius: '4px', background: selT.table_type === 'VIEW' ? `${muted}1a` : `${accent}14`, color: selT.table_type === 'VIEW' ? muted : accent, border: `1px solid ${selT.table_type === 'VIEW' ? muted : accent}28`, fontFamily: FONT, fontWeight: '600' }}>
+                          {selT.table_type}
+                        </span>
+                        <span style={{ fontSize: '0.71rem', color: muted, fontFamily: FONT }}>
+                          in <span style={{ color: textSec, fontFamily: MONO }}>{selT._schema}</span>
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
+                          <span style={{ color: textSec, fontWeight: '600' }}>{selT.columns?.length ?? 0}</span> columns
+                        </span>
+                        {selT.row_count_estimate != null && (
+                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
+                            ~<span style={{ color: textSec, fontWeight: '600' }}>{selT.row_count_estimate.toLocaleString()}</span> rows
+                          </span>
+                        )}
+                        {pkCols.length > 0 && (
+                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
+                            PK: <span style={{ color: success, fontFamily: MONO, fontWeight: '500' }}>{pkCols.map(c => c.column_name).join(', ')}</span>
+                          </span>
+                        )}
+                        {hasFkData && fkCols.length > 0 && (
+                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
+                            <span style={{ color: warn, fontWeight: '600' }}>{fkCols.length}</span> FK{fkCols.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Column grid — sticky header + scrollable rows */}
+                    <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto' }}>
+                      <div style={{ minWidth: '400px' }}>
+                        {/* Sticky column header */}
+                        <div style={{ display: 'grid', gridTemplateColumns: colGrid, padding: '5px 16px', fontSize: '0.61rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}`, background: `${border}18`, position: 'sticky', top: 0, zIndex: 1 }}>
+                          <span>Column</span><span>Type</span><span>Nullable</span><span>PK</span>
+                          {hasFkData && <span>FK</span>}
+                        </div>
+                        {/* Column rows */}
+                        {(selT.columns ?? []).map((c, i) => (
+                          <div
+                            key={c.column_name}
+                            style={{ display: 'grid', gridTemplateColumns: colGrid, padding: '5px 16px', fontSize: '0.77rem', fontFamily: MONO, borderBottom: `1px solid ${border}14`, background: i % 2 === 0 ? 'transparent' : `${border}09` }}
+                          >
+                            <span style={{ color: c.is_primary_key ? success : text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: c.is_primary_key ? '600' : '400' }}>{c.column_name}</span>
+                            <span style={{ color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.data_type}</span>
+                            <span style={{ color: c.is_nullable ? `${muted}70` : `${danger}88` }}>{c.is_nullable ? 'yes' : 'no'}</span>
+                            <span>{c.is_primary_key ? <span style={{ fontSize: '0.59rem', padding: '1px 4px', borderRadius: '3px', background: `${success}1a`, color: success, border: `1px solid ${success}28`, fontFamily: FONT }}>PK</span> : null}</span>
+                            {hasFkData && <span>{c.is_foreign_key ? <span style={{ fontSize: '0.59rem', padding: '1px 4px', borderRadius: '3px', background: `${warn}1a`, color: warn, border: `1px solid ${warn}28`, fontFamily: FONT }}>FK</span> : null}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        )}
-      </div>
-    )
+        </div>
+      )
+    })()
 
     const profileDepth   = profSnap?.mode
     const reviewSummary  = reviewTaskSt.data?.summary ?? null
