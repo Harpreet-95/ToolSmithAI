@@ -76,6 +76,27 @@ class ProfilingQueryBuilder(ABC):
         ...
 
     @abstractmethod
+    def build_histogram_query(
+        self,
+        table_fqn: str,
+        column_name: str,
+        min_val: float,
+        max_val: float,
+        n_buckets: int = 10,
+    ) -> str:
+        """Return a single-scan query computing equal-width histogram buckets.
+
+        Called for INTEGER and DECIMAL columns only, after column statistics have
+        already established min/max so they can be injected as safe numeric literals.
+
+        Must return rows of (bucket_idx INTEGER, row_count INTEGER) for every
+        non-empty bucket, ordered by bucket_idx ascending.  Empty buckets are
+        omitted — the caller reconstructs the full bucket list.
+        min_val and max_val must be pre-validated finite floats.
+        """
+        ...
+
+    @abstractmethod
     def quote_identifier(self, identifier: str) -> str:
         """Return the identifier wrapped in dialect-appropriate quotes."""
         ...

@@ -12,6 +12,7 @@ from core.profiling.sql.base import ProfilingQueryBuilder
 from core.profiling.sql.mssql import (
     build_column_stats_query as _col_stats_fn,
     build_date_range_query as _date_range_fn,
+    build_histogram_query as _histogram_fn,
     build_percentile_query as _percentile_fn,
     build_row_count_query as _row_count_fn,
     build_sample_values_query as _sample_values_fn,
@@ -65,6 +66,16 @@ class MssqlProfilingQueryBuilder(ProfilingQueryBuilder):
 
     def build_percentile_query(self, table_fqn: str, column_name: str) -> str:
         return _percentile_fn(table_fqn, column_name)
+
+    def build_histogram_query(
+        self,
+        table_fqn: str,
+        column_name: str,
+        min_val: float,
+        max_val: float,
+        n_buckets: int = 10,
+    ) -> str:
+        return _histogram_fn(table_fqn, column_name, min_val, max_val, n_buckets)
 
     def build_null_count_query(self, table_fqn: str, column_name: str) -> str:
         t = _fqn(table_fqn)

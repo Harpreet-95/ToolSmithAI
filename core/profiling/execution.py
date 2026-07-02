@@ -6,7 +6,9 @@ executes one or more read-only queries against the source database, and updates
 the profile object in-place.  Nothing is persisted here — the caller persists.
 """
 
+import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
 
@@ -22,6 +24,7 @@ from core.profiling.patterns import (
 from core.profiling.sql.base import ProfilingQueryBuilder
 from core.profiling.statistics import (
     calculate_percentage, calculate_uniqueness_score,
+    classify_distribution_shape, compute_histogram,
     detect_data_currency, determine_cardinality_tier,
     determine_row_count_tier, safe_float, summarize_top_values,
 )
@@ -306,6 +309,85 @@ def profile_sample_values(
 
     except Exception:
         logger.error("Sample values query failed for %s.%s", cp.table_fqn, cp.column_name)
+    finally:
+        cp.profiling_duration_ms = (cp.profiling_duration_ms or 0) + int((time.monotonic() - t0) * 1000)
+
+    return cp
+
+
+def profile_column_histogram(
+    conn,
+    cp: ColumnProfile,
+    config: ProfilingConfig,
+    builder: ProfilingQueryBuilder,
+) -> ColumnProfile:
+    """Compute a 10-bucket histogram and classify distribution shape; update in-place.
+
+    Numeric columns only (INTEGER, DECIMAL).  Skipped when populated_count is
+    zero or when min/max are unavailable (structural-only pass, failed stats).
+    Must be called after profile_column_percentiles so quartiles are present.
+
+    Distribution shape is derived purely from existing stats — no extra SQL.
+    The histogram uses one SQL scan via a derived-table bucket assignment.
+    """
+    dt = cp.data_type.upper()
+    if dt not in ('INTEGER', 'DECIMAL'):
+        return cp
+    if not cp.populated_count:
+        return cp
+
+    # Always derive distribution shape from already-computed stats (no SQL).
+    cp.distribution_shape = classify_distribution_shape(
+        distinct_count=cp.distinct_count,
+        populated_count=cp.populated_count,
+        null_percentage=cp.null_percentage,
+        p25_value=cp.p25_value,
+        p50_value=cp.p50_value,
+        p75_value=cp.p75_value,
+    )
+
+    # Histogram requires min/max from the stats pass.
+    if cp.min_value is None or cp.max_value is None:
+        return cp
+
+    try:
+        min_val = float(cp.min_value)
+        max_val = float(cp.max_value)
+    except (ValueError, TypeError):
+        return cp
+
+    if not math.isfinite(min_val) or not math.isfinite(max_val):
+        return cp
+
+    # Constant column: synthesise histogram without a query (avoids a redundant scan).
+    if min_val == max_val:
+        cp.histogram_json = json.dumps([{
+            'lower_bound': min_val,
+            'upper_bound': max_val,
+            'row_count':   cp.populated_count,
+            'percentage':  100.0,
+        }])
+        return cp
+
+    t0 = time.monotonic()
+    try:
+        sql  = builder.build_histogram_query(
+            cp.table_fqn, cp.column_name,
+            min_val=min_val, max_val=max_val, n_buckets=10,
+        )
+        cur  = conn.execute(sql)
+        rows = cur.fetchall()
+
+        raw_buckets = [
+            (int(r[0]), int(r[1]))
+            for r in rows
+            if r[0] is not None and r[1] is not None
+        ]
+        hist = compute_histogram(min_val, max_val, raw_buckets, 10, cp.populated_count)
+        cp.histogram_json = json.dumps(hist) if hist else None
+
+    except Exception:
+        logger.error("Histogram query failed for %s.%s", cp.table_fqn, cp.column_name)
     finally:
         cp.profiling_duration_ms = (cp.profiling_duration_ms or 0) + int((time.monotonic() - t0) * 1000)
 

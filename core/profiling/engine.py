@@ -9,7 +9,8 @@ from core.dictionary.pii_detector import detect_pii
 from core.profiling.classification.column_typer import classify_column
 from core.profiling.classification.table_classifier import classify_table
 from core.profiling.execution import (
-    profile_column_percentiles, profile_column_statistics, profile_sample_values,
+    profile_column_histogram, profile_column_percentiles,
+    profile_column_statistics, profile_sample_values,
     profile_table_statistics, profile_top_values,
 )
 from core.profiling.models import (
@@ -247,6 +248,7 @@ def _run_statistical_pass(
         profile_column_percentiles(conn, cp, config, query_builder)
         profile_top_values(conn, cp, config, query_builder)
         profile_sample_values(conn, cp, config, query_builder)
+        profile_column_histogram(conn, cp, config, query_builder)
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────

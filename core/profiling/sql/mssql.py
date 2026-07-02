@@ -6,6 +6,7 @@ No queries are executed here.  No pyodbc import.
 Every table/column identifier is bracket-quoted to prevent injection.
 """
 
+import math
 import re
 
 # Reject identifiers that would escape the bracket-quote or corrupt the query.
@@ -238,4 +239,66 @@ def build_percentile_query(
         f"    CAST(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {cast_c}) OVER () AS NVARCHAR(100)) AS p95_value\n"
         f"FROM {t}{nl}\n"
         f"WHERE {c} IS NOT NULL"
+    )
+
+
+def build_histogram_query(
+    table_fqn: str,
+    column_name: str,
+    min_val: float,
+    max_val: float,
+    n_buckets: int = 10,
+    use_nolock: bool = True,
+) -> str:
+    """Return a single-scan histogram query for a numeric column.
+
+    Injects pre-validated min_val and max_val as safe float literals (never
+    user-supplied strings).  Returns (bucket_idx, row_count) for each
+    non-empty bucket; the caller reconstructs empty buckets and percentages.
+
+    The inner derived table assigns each value to a bucket in one table scan.
+    The max value is clamped to the last bucket to handle float precision edge
+    cases where FLOOR would otherwise produce index n_buckets.
+    """
+    if not isinstance(n_buckets, int) or n_buckets < 1 or n_buckets > 1_000:
+        raise ValueError(f"n_buckets must be an integer between 1 and 1000, got: {n_buckets!r}")
+    if not math.isfinite(min_val) or not math.isfinite(max_val):
+        raise ValueError("min_val and max_val must be finite floats")
+    if min_val > max_val:
+        raise ValueError("min_val must be <= max_val")
+
+    t  = _fqn(table_fqn)
+    c  = _q(column_name)
+    nl = _nolock(use_nolock)
+
+    # Constant column: return one bucket with all rows in a single query.
+    if min_val == max_val:
+        return (
+            f"SELECT 0 AS bucket_idx, COUNT_BIG(*) AS row_count\n"
+            f"FROM {t}{nl}\n"
+            f"WHERE {c} IS NOT NULL"
+        )
+
+    bucket_width = (max_val - min_val) / n_buckets
+    n_minus_1    = n_buckets - 1
+
+    # Format as full-precision float literals — numeric, never user-controlled.
+    min_s = repr(float(min_val))
+    max_s = repr(float(max_val))
+    bw_s  = repr(float(bucket_width))
+
+    return (
+        f"SELECT bucket_idx, COUNT_BIG(*) AS row_count\n"
+        f"FROM (\n"
+        f"    SELECT\n"
+        f"        CASE\n"
+        f"            WHEN CAST({c} AS FLOAT) >= {max_s} THEN {n_minus_1}\n"
+        f"            WHEN CAST({c} AS FLOAT) <  {min_s} THEN 0\n"
+        f"            ELSE CAST(FLOOR((CAST({c} AS FLOAT) - {min_s}) / {bw_s}) AS INT)\n"
+        f"        END AS bucket_idx\n"
+        f"    FROM {t}{nl}\n"
+        f"    WHERE {c} IS NOT NULL\n"
+        f") AS _hist\n"
+        f"GROUP BY bucket_idx\n"
+        f"ORDER BY bucket_idx"
     )

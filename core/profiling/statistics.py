@@ -121,3 +121,111 @@ def summarize_top_values(
             'percentage': calculate_percentage(row.get('row_count'), total_rows),
         })
     return result
+
+
+def compute_histogram(
+    min_val: float,
+    max_val: float,
+    raw_buckets: list[tuple[int, int]],
+    n_buckets: int,
+    populated_count: int,
+) -> list[dict]:
+    """Build a complete histogram from raw SQL bucket counts.
+
+    raw_buckets: [(bucket_idx, row_count), ...] — only non-empty buckets.
+    Returns n_buckets entries with lower_bound, upper_bound, row_count, percentage.
+    Empty buckets are included with row_count=0.
+    When min_val == max_val (constant column) returns a single bucket containing all rows.
+    """
+    if populated_count <= 0 or n_buckets <= 0:
+        return []
+
+    if max_val == min_val:
+        return [{
+            'lower_bound': min_val,
+            'upper_bound': max_val,
+            'row_count':   populated_count,
+            'percentage':  100.0,
+        }]
+
+    bucket_width = (max_val - min_val) / n_buckets
+
+    # Index raw SQL results by bucket index for O(1) lookup.
+    bucket_map: dict[int, int] = {}
+    for idx, count in raw_buckets:
+        try:
+            i = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < n_buckets:
+            bucket_map[i] = bucket_map.get(i, 0) + int(count)
+
+    result = []
+    for i in range(n_buckets):
+        count = bucket_map.get(i, 0)
+        result.append({
+            'lower_bound': min_val + i * bucket_width,
+            'upper_bound': min_val + (i + 1) * bucket_width,
+            'row_count':   count,
+            'percentage':  calculate_percentage(count, populated_count),
+        })
+    return result
+
+
+def classify_distribution_shape(
+    *,
+    distinct_count: int | None,
+    populated_count: int | None,
+    null_percentage: float | None,
+    p25_value: str | None,
+    p50_value: str | None,
+    p75_value: str | None,
+) -> str | None:
+    """Classify the distribution shape of a numeric column from stored statistics.
+
+    Uses no SQL — reuses already-computed percentiles and cardinality stats.
+
+    Returns one of: 'constant', 'sparse', 'highly_skewed', 'right_skewed',
+    'left_skewed', 'symmetric', or None when insufficient data is available.
+
+    Skewness is measured via Bowley's quartile coefficient:
+        Q = (P75 - 2*P50 + P25) / (P75 - P25)
+    which is symmetric around zero and robust to extreme outliers.
+    """
+    if populated_count is None or populated_count == 0:
+        return None
+
+    # Constant: only one distinct value in the column.
+    if distinct_count is not None and distinct_count <= 1:
+        return 'constant'
+
+    # Sparse: column is heavily null (> 80% of total rows).
+    if null_percentage is not None and null_percentage > 80.0:
+        return 'sparse'
+
+    # Parse quartile strings; bail if not all available.
+    try:
+        p25 = float(p25_value) if p25_value is not None else None
+        p50 = float(p50_value) if p50_value is not None else None
+        p75 = float(p75_value) if p75_value is not None else None
+    except (ValueError, TypeError):
+        return None
+
+    if p25 is None or p50 is None or p75 is None:
+        return None
+
+    iqr = p75 - p25
+    if iqr == 0.0:
+        # All quartiles identical → constant-like distribution.
+        return 'constant'
+
+    # Bowley quartile skewness: range [-1, +1].
+    skewness = (p75 - 2.0 * p50 + p25) / iqr
+
+    if abs(skewness) > 0.5:
+        return 'highly_skewed'
+    if skewness > 0.1:
+        return 'right_skewed'
+    if skewness < -0.1:
+        return 'left_skewed'
+    return 'symmetric'

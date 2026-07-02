@@ -811,10 +811,14 @@ def init_db() -> None:
         for row in cursor.execute("PRAGMA table_info(profiling_column_profiles)").fetchall()
     }
     _pcp_migrations = [
+        # Phase 1A — deep statistical profiling (percentile quartiles + blank rate)
         ("p25_value",        "ALTER TABLE profiling_column_profiles ADD COLUMN p25_value TEXT"),
         ("p50_value",        "ALTER TABLE profiling_column_profiles ADD COLUMN p50_value TEXT"),
         ("p75_value",        "ALTER TABLE profiling_column_profiles ADD COLUMN p75_value TEXT"),
         ("blank_percentage", "ALTER TABLE profiling_column_profiles ADD COLUMN blank_percentage REAL"),
+        # Phase 1B — distribution intelligence (histogram + shape classification)
+        ("histogram_json",    "ALTER TABLE profiling_column_profiles ADD COLUMN histogram_json TEXT"),
+        ("distribution_shape","ALTER TABLE profiling_column_profiles ADD COLUMN distribution_shape TEXT"),
     ]
     for _col, _stmt in _pcp_migrations:
         if _col not in _pcp_existing:

@@ -37,6 +37,16 @@ class _MySQLProfilingQueryBuilder(ProfilingQueryBuilder):
     def build_percentile_query(self, table_fqn: str, column_name: str) -> str:
         raise NotImplementedError(self._MSG)
 
+    def build_histogram_query(
+        self,
+        table_fqn: str,
+        column_name: str,
+        min_val: float,
+        max_val: float,
+        n_buckets: int = 10,
+    ) -> str:
+        raise NotImplementedError(self._MSG)
+
     def build_null_count_query(self, table_fqn: str, column_name: str) -> str:
         raise NotImplementedError(self._MSG)
 

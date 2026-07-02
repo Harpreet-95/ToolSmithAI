@@ -175,6 +175,10 @@ class ColumnProfile:
     blank_percentage:      float | None = None   # TEXT: empty_string_count / total_rows * 100
     variance:              float | None = None   # NUMERIC: std_deviation ** 2; not persisted
 
+    # Distribution intelligence — Phase 1B; STATISTICAL depth and above, numeric only
+    histogram_json:        str | None   = None   # JSON array of {lower_bound, upper_bound, row_count, percentage}
+    distribution_shape:    str | None   = None   # symmetric|left_skewed|right_skewed|constant|sparse|highly_skewed
+
     # Pattern detection — FULL depth only
     dominant_pattern:      str | None   = None
     pattern_coverage:      float | None = None
