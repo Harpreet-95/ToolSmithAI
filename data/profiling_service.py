@@ -628,7 +628,13 @@ def get_table_profile_detail(
                 semantic_type, semantic_confidence,
                 pii_name_heuristic, pii_confirmed, pii_signals_json,
                 dominant_pattern, pattern_coverage, top_values_coverage,
-                profiling_depth, profiling_status
+                profiling_depth, profiling_status,
+                p5_value, p25_value, p50_value, p75_value, p95_value,
+                histogram_json, distribution_shape,
+                blank_percentage,
+                completeness_score, format_consistency_score,
+                invalid_count, invalid_percentage,
+                quality_score, quality_grade, quality_summary_json
             FROM profiling_column_profiles
             WHERE profiling_snapshot_id = ? AND table_fqn = ?
             ORDER BY ordinal_position

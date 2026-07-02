@@ -161,7 +161,13 @@ _SCHEMA = """
         mean_value              REAL,
         std_deviation           REAL,
         p5_value                TEXT,
+        p25_value               TEXT,
+        p50_value               TEXT,
+        p75_value               TEXT,
         p95_value               TEXT,
+        blank_percentage        REAL,
+        histogram_json          TEXT,
+        distribution_shape      TEXT,
         dominant_pattern        TEXT,
         pattern_coverage        REAL,
         email_match_rate        REAL,
@@ -177,12 +183,21 @@ _SCHEMA = """
         pii_name_heuristic      INTEGER NOT NULL DEFAULT 0,
         pii_confirmed           INTEGER NOT NULL DEFAULT 0,
         pii_signals_json        TEXT,
-        top_values_coverage     REAL,
-        profiling_depth         TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
-        profiling_duration_ms   INTEGER,
-        profiling_status        TEXT    NOT NULL DEFAULT 'COMPLETE',
-        created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+        top_values_coverage         REAL,
+        completeness_score          REAL,
+        format_consistency_score    REAL,
+        valid_count                 INTEGER,
+        invalid_count               INTEGER,
+        invalid_percentage          REAL,
+        validation_status           TEXT,
+        quality_score               REAL,
+        quality_grade               TEXT,
+        quality_summary_json        TEXT,
+        profiling_depth             TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
+        profiling_duration_ms       INTEGER,
+        profiling_status            TEXT    NOT NULL DEFAULT 'COMPLETE',
+        created_at                  TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at                  TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 """
 
@@ -605,3 +620,127 @@ def test_two_sources_isolated_by_user(db):
     # user-A cannot read source owned by user-B
     assert get_column_profiles(src_b, "user-A") is None
     assert get_table_profile_detail(src_b, "user-A", "dbo.t") is None
+
+
+# ── 11. Phase 1A/1B/1C deep-profiling fields in table detail column response ───
+
+def _seed_column_deep(
+    db,
+    snap_id: int,
+    source_id: int,
+    fqn: str,
+    col_name: str,
+    ordinal: int,
+    *,
+    p5_value: str | None = None,
+    p25_value: str | None = None,
+    p50_value: str | None = None,
+    p75_value: str | None = None,
+    p95_value: str | None = None,
+    histogram_json: str | None = None,
+    distribution_shape: str | None = None,
+    blank_percentage: float | None = None,
+    completeness_score: float | None = None,
+    format_consistency_score: float | None = None,
+    invalid_count: int | None = None,
+    invalid_percentage: float | None = None,
+    quality_score: float | None = None,
+    quality_grade: str | None = None,
+    quality_summary_json: str | None = None,
+) -> None:
+    db.execute(
+        """INSERT INTO profiling_column_profiles
+           (profiling_snapshot_id, source_id, table_fqn, column_name,
+            data_type, raw_type, is_nullable, is_primary_key, is_identity,
+            ordinal_position, semantic_type, semantic_confidence,
+            pii_name_heuristic, pii_confirmed,
+            p5_value, p25_value, p50_value, p75_value, p95_value,
+            histogram_json, distribution_shape, blank_percentage,
+            completeness_score, format_consistency_score,
+            invalid_count, invalid_percentage,
+            quality_score, quality_grade, quality_summary_json,
+            profiling_depth, profiling_status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,0,0,0,?,'ID',0.9,0,0,
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                   'STATISTICAL','COMPLETE',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""",
+        (snap_id, source_id, fqn, col_name,
+         'INTEGER', 'integer', ordinal,
+         p5_value, p25_value, p50_value, p75_value, p95_value,
+         histogram_json, distribution_shape, blank_percentage,
+         completeness_score, format_consistency_score,
+         invalid_count, invalid_percentage,
+         quality_score, quality_grade, quality_summary_json),
+    )
+    db.commit()
+
+
+def test_table_detail_column_shape_includes_deep_fields(db):
+    """All Phase 1A/1B/1C keys must be present in the column response, even when null."""
+    src  = _seed_source(db, "user-1")
+    snap = _seed_snapshot(db, src)
+    _seed_table(db, snap, src, "dbo.sales")
+    _seed_column(db, snap, src, "dbo.sales", "amount", 1)
+
+    result = get_table_profile_detail(src, "user-1", "dbo.sales")
+    col = result["columns"][0]
+
+    deep_keys = {
+        "p5_value", "p25_value", "p50_value", "p75_value", "p95_value",
+        "histogram_json", "distribution_shape",
+        "blank_percentage",
+        "completeness_score", "format_consistency_score",
+        "invalid_count", "invalid_percentage",
+        "quality_score", "quality_grade", "quality_summary_json",
+    }
+    for key in deep_keys:
+        assert key in col, f"Expected key '{key}' in table detail column response"
+
+
+def test_table_detail_column_deep_fields_populated(db):
+    """Stored Phase 1A/1B/1C values must be returned correctly by get_table_profile_detail."""
+    import json as _json
+
+    src  = _seed_source(db, "user-1")
+    snap = _seed_snapshot(db, src)
+    _seed_table(db, snap, src, "dbo.orders")
+
+    hist = _json.dumps([{"lower_bound": 0.0, "upper_bound": 100.0, "row_count": 50, "percentage": 100.0}])
+    summary = _json.dumps({"strengths": ["No nulls"], "issues": [], "recommendations": []})
+
+    _seed_column_deep(
+        db, snap, src, "dbo.orders", "total_amount", 1,
+        p5_value="5.0", p25_value="25.0", p50_value="50.0",
+        p75_value="75.0", p95_value="95.0",
+        histogram_json=hist,
+        distribution_shape="symmetric",
+        blank_percentage=0.0,
+        completeness_score=98.5,
+        format_consistency_score=99.0,
+        invalid_count=2,
+        invalid_percentage=2.0,
+        quality_score=97.5,
+        quality_grade="A",
+        quality_summary_json=summary,
+    )
+
+    result = get_table_profile_detail(src, "user-1", "dbo.orders")
+    col = result["columns"][0]
+
+    assert col["p5_value"]               == "5.0"
+    assert col["p25_value"]              == "25.0"
+    assert col["p50_value"]              == "50.0"
+    assert col["p75_value"]              == "75.0"
+    assert col["p95_value"]              == "95.0"
+    assert col["distribution_shape"]     == "symmetric"
+    assert col["blank_percentage"]       == pytest.approx(0.0)
+    assert col["completeness_score"]     == pytest.approx(98.5)
+    assert col["format_consistency_score"] == pytest.approx(99.0)
+    assert col["invalid_count"]          == 2
+    assert col["invalid_percentage"]     == pytest.approx(2.0)
+    assert col["quality_score"]          == pytest.approx(97.5)
+    assert col["quality_grade"]          == "A"
+    hist_parsed = _json.loads(col["histogram_json"])
+    assert len(hist_parsed) == 1
+    assert hist_parsed[0]["row_count"] == 50
+    summary_parsed = _json.loads(col["quality_summary_json"])
+    assert "strengths" in summary_parsed

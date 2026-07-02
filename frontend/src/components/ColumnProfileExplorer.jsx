@@ -363,6 +363,169 @@ function ColumnDetailDrawer({ col, colBkg, onClose, C }) {
             </>
           )}
 
+          {/* Statistical Distribution */}
+          {(() => {
+            const p5  = col.p5_value
+            const p25 = col.p25_value
+            const p50 = col.p50_value
+            const p75 = col.p75_value
+            const p95 = col.p95_value
+            const histogram = parseMaybeJson(col.histogram_json)
+            const distShape = col.distribution_shape
+
+            const hasPercentiles = p5 != null || p25 != null || p50 != null || p75 != null || p95 != null
+            const histBins       = Array.isArray(histogram) ? histogram : []
+            const hasHistogram   = histBins.length > 0
+
+            if (!hasPercentiles && !hasHistogram && !distShape) return null
+
+            const SHAPE_COLOR = {
+              symmetric: success, left_skewed: warn, right_skewed: warn,
+              constant: muted, sparse: muted, highly_skewed: danger,
+            }
+            const maxBinPct = hasHistogram ? Math.max(...histBins.map(b => b.percentage ?? 0)) : 1
+
+            const fmtVal = (v) => {
+              if (v == null) return '—'
+              const s = String(v)
+              if (s.length > 10) { const n = Number(v); if (!isNaN(n)) return n.toExponential(2) }
+              return s
+            }
+
+            return (
+              <>
+                <div style={{ fontSize: '0.64rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '6px', marginTop: '14px' }}>Statistical Distribution</div>
+
+                {hasPercentiles && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px', padding: '8px 10px', borderRadius: '8px', background: `${accent}06`, border: `1px solid ${border}25`, marginBottom: distShape || hasHistogram ? '8px' : '0' }}>
+                    {[['P5', p5], ['P25', p25], ['Median', p50], ['P75', p75], ['P95', p95]].map(([label, val]) => (
+                      <div key={label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+                        <span style={{ fontSize: '0.56rem', color: muted, fontWeight: '700', letterSpacing: '0.04em', textTransform: 'uppercase', fontFamily: FONT }}>{label}</span>
+                        <span style={{ fontSize: '0.7rem', fontFamily: MONO, color: val != null ? textSec : `${muted}40` }}>{fmtVal(val)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {distShape && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 0', borderBottom: `1px solid ${border}18` }}>
+                    <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, minWidth: '130px', flexShrink: 0 }}>Shape</span>
+                    <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '6px', fontSize: '0.66rem', fontWeight: '700', letterSpacing: '0.04em', color: SHAPE_COLOR[distShape] ?? muted, background: `${SHAPE_COLOR[distShape] ?? muted}15`, border: `1px solid ${SHAPE_COLOR[distShape] ?? muted}35`, fontFamily: FONT }}>
+                      {distShape.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                )}
+
+                {hasHistogram && (
+                  <div style={{ marginTop: '8px' }}>
+                    <div style={{ fontSize: '0.62rem', color: muted, fontFamily: FONT, marginBottom: '5px' }}>Distribution</div>
+                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '2px', height: '52px', borderBottom: `1px solid ${border}30`, paddingBottom: '2px' }}>
+                      {histBins.map((bin, i) => {
+                        const pct = bin.percentage ?? 0
+                        const h = maxBinPct > 0 ? Math.max(2, Math.round((pct / maxBinPct) * 48)) : 2
+                        return (
+                          <div
+                            key={i}
+                            title={`${bin.lower_bound ?? ''}–${bin.upper_bound ?? ''}: ${pct.toFixed(1)}% (${(bin.row_count ?? 0).toLocaleString()} rows)`}
+                            style={{ flex: 1, height: `${h}px`, background: `${accent}70`, borderRadius: '2px 2px 0 0', cursor: 'default' }}
+                          />
+                        )
+                      })}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '3px' }}>
+                      <span style={{ fontSize: '0.58rem', color: `${muted}60`, fontFamily: MONO }}>{histBins[0]?.lower_bound != null ? String(histBins[0].lower_bound).slice(0, 9) : ''}</span>
+                      <span style={{ fontSize: '0.58rem', color: `${muted}60`, fontFamily: MONO }}>{histBins[histBins.length - 1]?.upper_bound != null ? String(histBins[histBins.length - 1].upper_bound).slice(0, 9) : ''}</span>
+                    </div>
+                  </div>
+                )}
+              </>
+            )
+          })()}
+
+          {/* Data Quality */}
+          {(() => {
+            const qualScore      = col.quality_score
+            const qualGrade      = col.quality_grade
+            const compScore      = col.completeness_score
+            const fmtConsistency = col.format_consistency_score
+            const invalPct       = col.invalid_percentage
+            const qualSum        = parseMaybeJson(col.quality_summary_json)
+
+            const hasMetrics = qualScore != null || qualGrade || compScore != null || fmtConsistency != null || invalPct != null
+            const hasNarrative = qualSum && (
+              (Array.isArray(qualSum.strengths)       && qualSum.strengths.length > 0) ||
+              (Array.isArray(qualSum.issues)          && qualSum.issues.length > 0) ||
+              (Array.isArray(qualSum.recommendations) && qualSum.recommendations.length > 0)
+            )
+
+            if (!hasMetrics && !hasNarrative) return null
+
+            const GRADE_COLOR = { A: success, B: '#2dd4bf', C: warn, D: '#fb923c', F: danger }
+            const gradeColor  = GRADE_COLOR[qualGrade] ?? muted
+            const scoreColor  = qualScore != null
+              ? qualScore >= 80 ? success : qualScore >= 60 ? warn : danger
+              : muted
+
+            return (
+              <>
+                <div style={{ fontSize: '0.64rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: '6px', marginTop: '14px' }}>Data Quality</div>
+
+                {(qualGrade || qualScore != null) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '10px 14px', borderRadius: '8px', background: `${scoreColor}08`, border: `1px solid ${scoreColor}25`, marginBottom: '8px' }}>
+                    {qualGrade && (
+                      <span style={{ fontSize: '1.8rem', fontWeight: '900', lineHeight: 1, color: gradeColor, fontFamily: MONO }}>{qualGrade}</span>
+                    )}
+                    {qualScore != null && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1px' }}>
+                        <span style={{ fontSize: '0.6rem', color: muted, fontFamily: FONT, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: '700' }}>Quality Score</span>
+                        <span style={{ fontSize: '1.1rem', fontWeight: '700', color: scoreColor, fontFamily: MONO }}>
+                          {qualScore}<span style={{ fontSize: '0.72rem', color: muted }}>/100</span>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {compScore      != null && row('Completeness',       `${(compScore * 100).toFixed(1)}%`)}
+                {fmtConsistency != null && row('Format Consistency', `${(fmtConsistency * 100).toFixed(1)}%`)}
+                {invalPct       != null && row('Validity',           `${(100 - invalPct).toFixed(1)}%`)}
+
+                {Array.isArray(qualSum?.strengths) && qualSum.strengths.length > 0 && (
+                  <div style={{ padding: '6px 0', borderBottom: `1px solid ${border}18` }}>
+                    <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, marginBottom: '4px' }}>Strengths</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      {qualSum.strengths.map((s, i) => (
+                        <span key={i} style={{ fontSize: '0.72rem', color: success, fontFamily: FONT, paddingLeft: '8px', borderLeft: `2px solid ${success}30` }}>✓ {s}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(qualSum?.issues) && qualSum.issues.length > 0 && (
+                  <div style={{ padding: '6px 0', borderBottom: `1px solid ${border}18` }}>
+                    <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, marginBottom: '4px' }}>Issues</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      {qualSum.issues.map((s, i) => (
+                        <span key={i} style={{ fontSize: '0.72rem', color: warn, fontFamily: FONT, paddingLeft: '8px', borderLeft: `2px solid ${warn}30` }}>⚠ {s}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(qualSum?.recommendations) && qualSum.recommendations.length > 0 && (
+                  <div style={{ padding: '6px 0', borderBottom: `1px solid ${border}18` }}>
+                    <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, marginBottom: '4px' }}>Recommendations</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      {qualSum.recommendations.map((s, i) => (
+                        <span key={i} style={{ fontSize: '0.72rem', color: accent, fontFamily: FONT, paddingLeft: '8px', borderLeft: `2px solid ${accent}30` }}>→ {s}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )
+          })()}
+
           {/* Patterns */}
           {(col.dominant_pattern || col.email_match_rate != null) && (
             <>
