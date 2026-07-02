@@ -180,6 +180,13 @@ _SCHEMA = """
         profiling_depth       TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
         profiling_duration_ms INTEGER,
         profiling_status      TEXT    NOT NULL DEFAULT 'COMPLETE',
+        blank_percentage      REAL,
+        distribution_shape    TEXT,
+        completeness_score    REAL,
+        format_consistency_score REAL,
+        invalid_percentage    REAL,
+        quality_score         REAL,
+        quality_grade         TEXT,
         created_at            TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at            TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -379,6 +386,44 @@ def _dict_col(db, source_id: int, fqn: str, col: str, business_label: str, appro
         "business_label, is_approved, created_at, updated_at) "
         "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
         (source_id, fqn, col, business_label, approved),
+    )
+    db.commit()
+
+
+def _qcol(
+    db,
+    snap_id: int,
+    source_id: int,
+    fqn: str,
+    col: str,
+    *,
+    quality_grade: str | None = None,
+    quality_score: float | None = None,
+    invalid_percentage: float | None = None,
+    completeness_score: float | None = None,
+    format_consistency_score: float | None = None,
+    distribution_shape: str | None = None,
+    blank_percentage: float | None = None,
+) -> None:
+    """Insert a column profile row with quality metric fields."""
+    db.execute(
+        """INSERT INTO profiling_column_profiles
+           (profiling_snapshot_id, source_id, table_fqn, column_name,
+            data_type, ordinal_position,
+            pii_name_heuristic, pii_confirmed,
+            profiling_depth, profiling_status,
+            quality_grade, quality_score, invalid_percentage,
+            completeness_score, format_consistency_score,
+            distribution_shape, blank_percentage,
+            created_at, updated_at)
+           VALUES (?,?,?,?,'TEXT',1,0,0,'STRUCTURAL_ONLY','COMPLETE',
+                   ?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""",
+        (
+            snap_id, source_id, fqn, col,
+            quality_grade, quality_score, invalid_percentage,
+            completeness_score, format_consistency_score,
+            distribution_shape, blank_percentage,
+        ),
     )
     db.commit()
 
@@ -868,3 +913,175 @@ def test_summary_pii_pending_zero_when_no_pii_tasks(db):
 
     result = get_profile_review_tasks(src, "u1")
     assert result["summary"]["pii_pending"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 15. Quality-driven review tasks (Phase 1E)
+# ---------------------------------------------------------------------------
+
+def test_quality_grade_f_generates_critical_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Status", quality_grade="F", quality_score=30.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    qtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Quality"]
+    assert len(qtasks) == 1
+    t = qtasks[0]
+    assert t["severity"] == "CRITICAL"
+    assert t["column_name"] == "Status"
+    assert "F" in t["reason"]
+    assert t["nav_target"]["tab"] == "profile"
+    assert t["status"] == "OPEN"
+
+
+def test_quality_grade_d_generates_high_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Amount", quality_grade="D", quality_score=45.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    qtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Quality"]
+    assert len(qtasks) == 1
+    assert qtasks[0]["severity"] == "HIGH"
+    assert "D" in qtasks[0]["reason"]
+
+
+def test_quality_score_below_50_no_grade_generates_high_task(db):
+    """quality_score < 50 with no grade still triggers a HIGH task."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Amount", quality_grade=None, quality_score=45.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    qtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Quality"]
+    assert len(qtasks) == 1
+    assert qtasks[0]["severity"] == "HIGH"
+
+
+def test_invalid_percentage_above_25_generates_critical_validity_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Email", invalid_percentage=30.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    vtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Validity"]
+    assert len(vtasks) == 1
+    assert vtasks[0]["severity"] == "CRITICAL"
+    assert "30.0" in vtasks[0]["reason"]
+    assert vtasks[0]["column_name"] == "Email"
+
+
+def test_invalid_percentage_between_10_and_25_generates_medium_validity_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Phone", invalid_percentage=15.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    vtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Validity"]
+    assert len(vtasks) == 1
+    assert vtasks[0]["severity"] == "MEDIUM"
+    assert "15.0" in vtasks[0]["reason"]
+
+
+def test_completeness_score_below_70_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _qcol(db, snap, src, "dbo.Customers", "Address", completeness_score=55.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    ctasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Completeness"]
+    assert len(ctasks) == 1
+    assert ctasks[0]["severity"] == "MEDIUM"
+    assert "55" in ctasks[0]["reason"]
+    assert ctasks[0]["column_name"] == "Address"
+
+
+def test_format_consistency_below_70_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _qcol(db, snap, src, "dbo.Customers", "PhoneNumber", format_consistency_score=60.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    ftasks = [t for t in result["tasks"] if t["task_type"] == "Review Format Consistency"]
+    assert len(ftasks) == 1
+    assert ftasks[0]["severity"] == "MEDIUM"
+    assert "60" in ftasks[0]["reason"]
+    assert ftasks[0]["column_name"] == "PhoneNumber"
+
+
+def test_highly_skewed_distribution_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Sales")
+    _qcol(db, snap, src, "dbo.Sales", "Revenue", distribution_shape="highly_skewed")
+
+    result = get_profile_review_tasks(src, "u1")
+    stasks = [t for t in result["tasks"] if t["task_type"] == "Review Distribution Skew"]
+    assert len(stasks) == 1
+    assert stasks[0]["severity"] == "MEDIUM"
+    assert stasks[0]["column_name"] == "Revenue"
+    assert "highly skewed" in stasks[0]["reason"]
+
+
+def test_non_skewed_distribution_generates_no_skew_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Sales")
+    _qcol(db, snap, src, "dbo.Sales", "Revenue", distribution_shape="symmetric")
+
+    result = get_profile_review_tasks(src, "u1")
+    stasks = [t for t in result["tasks"] if t["task_type"] == "Review Distribution Skew"]
+    assert len(stasks) == 0
+
+
+def test_blank_percentage_above_30_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Notes", blank_percentage=45.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    btasks = [t for t in result["tasks"] if t["task_type"] == "Review Blank Rate"]
+    assert len(btasks) == 1
+    assert btasks[0]["severity"] == "MEDIUM"
+    assert "45.0" in btasks[0]["reason"]
+    assert btasks[0]["column_name"] == "Notes"
+
+
+def test_good_quality_column_generates_no_quality_tasks(db):
+    """A column with all quality metrics in healthy ranges produces no quality tasks."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _domain(db, src, snap, "dbo.Orders", "Finance")
+    _entity(db, src, snap, "dbo.Orders", "Order")
+    _qcol(
+        db, snap, src, "dbo.Orders", "OrderID",
+        quality_grade="A",
+        quality_score=95.0,
+        invalid_percentage=1.0,
+        completeness_score=98.0,
+        format_consistency_score=99.0,
+        distribution_shape="symmetric",
+        blank_percentage=2.0,
+    )
+
+    result = get_profile_review_tasks(src, "u1")
+    quality_task_types = {
+        "Review Data Quality",
+        "Review Data Validity",
+        "Review Data Completeness",
+        "Review Format Consistency",
+        "Review Distribution Skew",
+        "Review Blank Rate",
+    }
+    quality_tasks = [t for t in result["tasks"] if t["task_type"] in quality_task_types]
+    assert quality_tasks == [], f"Expected no quality tasks but got: {quality_tasks}"

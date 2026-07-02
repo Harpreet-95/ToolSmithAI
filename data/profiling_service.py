@@ -1398,6 +1398,214 @@ def get_profile_review_tasks(
                 created_at=r["dict_ts"] or snap_ts,
             ))
 
+        # ── 8. Quality grade F (CRITICAL), D (HIGH), or score < 60 (var) ─────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.quality_grade, pcp.quality_score
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND (
+                     pcp.quality_grade IN ('D', 'F')
+                  OR (pcp.quality_score IS NOT NULL AND pcp.quality_score < 60
+                      AND (pcp.quality_grade IS NULL OR pcp.quality_grade NOT IN ('D', 'F')))
+                 )""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            grade = r["quality_grade"]
+            score = r["quality_score"]
+            score_disp = f"{score:.0f}" if score is not None else "N/A"
+            if grade == "F" or (score is not None and score < 40):
+                sev = "CRITICAL"
+                action = "Immediately audit all quality dimensions and trace root-cause data issues."
+            elif grade == "D" or (score is not None and score < 50):
+                sev = "HIGH"
+                action = "Review null rates, format patterns, and validation failures; prioritise remediation."
+            else:
+                sev = "MEDIUM"
+                action = "Inspect the quality summary and address the lowest-scoring dimension."
+            tasks.append(_make_review_task(
+                task_type="Review Data Quality",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has quality grade "
+                    f"{grade or 'N/A'} (score: {score_disp}/100). {action}"
+                ),
+                severity=sev,
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 9. Invalid percentage > 10% — CRITICAL above 25%, MEDIUM 10–25% ──
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.invalid_percentage
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.invalid_percentage > 10""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            pct = r["invalid_percentage"]
+            sev = "CRITICAL" if pct > 25 else "MEDIUM"
+            action = (
+                "Identify the source of invalid values and apply upstream data validation."
+                if pct > 25
+                else "Investigate invalid value patterns and consider adding validation constraints."
+            )
+            tasks.append(_make_review_task(
+                task_type="Review Data Validity",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has "
+                    f"{pct:.1f}% invalid values (threshold: 10%). {action}"
+                ),
+                severity=sev,
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 10. Completeness score < 70 (MEDIUM) ─────────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.completeness_score
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.completeness_score IS NOT NULL
+                 AND pcp.completeness_score < 70""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            score = r["completeness_score"]
+            tasks.append(_make_review_task(
+                task_type="Review Data Completeness",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has a completeness score of "
+                    f"{score:.0f}/100 (threshold: 70). Reduce null and blank rates in the source system."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 11. Format consistency score < 70 (MEDIUM) ────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.format_consistency_score
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.format_consistency_score IS NOT NULL
+                 AND pcp.format_consistency_score < 70""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            score = r["format_consistency_score"]
+            tasks.append(_make_review_task(
+                task_type="Review Format Consistency",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has a format consistency score of "
+                    f"{score:.0f}/100 (threshold: 70). Standardise values to a single dominant format."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 12. Highly skewed distribution (MEDIUM) ───────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.distribution_shape = 'highly_skewed'""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Review Distribution Skew",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has a highly skewed distribution. "
+                    "Review for outliers, data entry errors, or business logic issues causing imbalance."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 13. Blank percentage > 30% (MEDIUM) ──────────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.blank_percentage
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.blank_percentage IS NOT NULL
+                 AND pcp.blank_percentage > 30""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            pct = r["blank_percentage"]
+            tasks.append(_make_review_task(
+                task_type="Review Blank Rate",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has {pct:.1f}% blank (empty string) "
+                    "values (threshold: 30%). Replace blanks with NULL or a canonical sentinel value."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
     finally:
         conn.close()
 
