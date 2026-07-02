@@ -12,7 +12,8 @@ from core.connectors.schema import (
 from core.profiling.engine import (
     ProfilingRunResult, run_profiling,
     _build_referenced_by_index, _classify_columns, _classify_table,
-    _profile_table_structural, _run_statistical_pass, _score_table_priority,
+    _enrich_quality_columns, _profile_table_structural,
+    _run_statistical_pass, _score_table_priority,
 )
 from core.profiling.models import (
     ProfilingBatchState, ProfilingConfig, ProfilingMode, ProfilingStatus,
@@ -103,9 +104,12 @@ _COL_INSERT = """
         semantic_type, semantic_confidence, semantic_evidence_json, semantic_rule_version,
         pii_name_heuristic, pii_confirmed, pii_signals_json,
         top_values_coverage,
+        completeness_score, format_consistency_score,
+        valid_count, invalid_count, invalid_percentage, validation_status,
+        quality_score, quality_grade, quality_summary_json,
         profiling_depth, profiling_duration_ms, profiling_status,
         created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 """
 
 
@@ -176,6 +180,9 @@ def _col_row_params(cp, snap_id: int, rule_version: str, now: str) -> tuple:
         int(cp.pii_name_heuristic), int(cp.pii_confirmed),
         json.dumps(cp.pii_signals) if cp.pii_signals else None,
         cp.top_values_coverage,
+        cp.completeness_score, cp.format_consistency_score,
+        cp.valid_count, cp.invalid_count, cp.invalid_percentage, cp.validation_status,
+        cp.quality_score, cp.quality_grade, cp.quality_summary_json,
         pd, cp.profiling_duration_ms, ps,
         now, now,
     )
@@ -990,6 +997,7 @@ def continue_batch_profiling(
                 struct_count += 1
 
             _classify_columns(tp)
+            _enrich_quality_columns(tp)
             batch_profiles.append(tp)
     finally:
         if live_conn is not None:

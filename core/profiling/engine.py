@@ -227,6 +227,17 @@ def _classify_columns(tp: TableProfile) -> None:
         cp.semantic_evidence   = list(result.evidence)
 
 
+def _enrich_quality_columns(tp: TableProfile) -> None:
+    """Compute Phase 1C data quality metrics for every column in-place.
+
+    Must run after _classify_columns so semantic_type is available for
+    validity resolution.  No SQL is executed.
+    """
+    from core.profiling.quality import enrich_column_quality
+    for cp in tp.column_profiles:
+        enrich_column_quality(cp)
+
+
 # ── Statistical profiling pass ────────────────────────────────────────────────
 
 def _run_statistical_pass(
@@ -344,6 +355,8 @@ def run_profiling(
             _classify_table(tp)
         # Column classification runs once, after any statistical enrichment.
         _classify_columns(tp)
+        # Phase 1C: quality metrics derived from statistics + classification.
+        _enrich_quality_columns(tp)
         table_profiles.append(tp)
 
     duration_ms = int((time.monotonic() - t0) * 1000)

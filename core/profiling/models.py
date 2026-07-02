@@ -204,6 +204,22 @@ class ColumnProfile:
     sample_values:        list[str]   = field(default_factory=list)
     top_values_coverage:  float | None = None
 
+    # Quality Intelligence — Phase 1C; computed from existing stats, no extra SQL
+    completeness_score:        float | None = None  # 0-100; 100 - null_pct - blank_pct
+    format_consistency_score:  float | None = None  # 0-100; = pattern_coverage; <50 → mixed format
+    valid_count:               int | None   = None
+    invalid_count:             int | None   = None
+    invalid_percentage:        float | None = None
+    validation_status:         str | None   = None  # valid|partially_valid|invalid|unknown
+    quality_score:             float | None = None  # 0-100; weighted composite
+    quality_grade:             str | None   = None  # A/B/C/D/F
+    quality_summary_json:      str | None   = None  # JSON {strengths, issues, recommendations}
+
+    # In-memory derived (not persisted to DB) — Phase 1C
+    dominant_value_percentage: float | None = None  # top_values[0].percentage
+    duplicate_count:           int | None   = None  # populated - distinct; not persisted
+    duplicate_percentage:      float | None = None  # dup_count / populated * 100; not persisted
+
     # Execution metadata
     profiling_depth:       ProfilingDepth  = ProfilingDepth.STRUCTURAL_ONLY
     profiling_duration_ms: int | None      = None

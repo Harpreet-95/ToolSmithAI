@@ -819,6 +819,16 @@ def init_db() -> None:
         # Phase 1B — distribution intelligence (histogram + shape classification)
         ("histogram_json",    "ALTER TABLE profiling_column_profiles ADD COLUMN histogram_json TEXT"),
         ("distribution_shape","ALTER TABLE profiling_column_profiles ADD COLUMN distribution_shape TEXT"),
+        # Phase 1C — data quality intelligence (completeness, consistency, validity, quality score)
+        ("completeness_score",       "ALTER TABLE profiling_column_profiles ADD COLUMN completeness_score REAL"),
+        ("format_consistency_score", "ALTER TABLE profiling_column_profiles ADD COLUMN format_consistency_score REAL"),
+        ("valid_count",              "ALTER TABLE profiling_column_profiles ADD COLUMN valid_count INTEGER"),
+        ("invalid_count",            "ALTER TABLE profiling_column_profiles ADD COLUMN invalid_count INTEGER"),
+        ("invalid_percentage",       "ALTER TABLE profiling_column_profiles ADD COLUMN invalid_percentage REAL"),
+        ("validation_status",        "ALTER TABLE profiling_column_profiles ADD COLUMN validation_status TEXT"),
+        ("quality_score",            "ALTER TABLE profiling_column_profiles ADD COLUMN quality_score REAL"),
+        ("quality_grade",            "ALTER TABLE profiling_column_profiles ADD COLUMN quality_grade TEXT"),
+        ("quality_summary_json",     "ALTER TABLE profiling_column_profiles ADD COLUMN quality_summary_json TEXT"),
     ]
     for _col, _stmt in _pcp_migrations:
         if _col not in _pcp_existing:
