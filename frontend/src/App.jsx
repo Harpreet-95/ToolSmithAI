@@ -93,6 +93,13 @@ function _fmtDuration(ms) {
   return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
+function _resolveTheme(t) {
+  if (t === 'system') {
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  }
+  return t || 'dark'
+}
+
 // ─── Shared style primitives ───────────────────────────────────────────────────
 function makeS(C) {
   return {
@@ -5698,11 +5705,16 @@ function App() {
     try { return JSON.parse(localStorage.getItem('ts_user')) } catch { return null }
   })
   const [sessionExpired, setSessionExpired] = useState(false)
-  const [theme,          setThemeState]     = useState(() => localStorage.getItem('ts_theme') || 'dark')
+  const [theme,          setThemeState]     = useState(() => {
+    const t = localStorage.getItem('ts_theme') || 'dark'
+    document.documentElement.dataset.theme = _resolveTheme(t)
+    return t
+  })
 
   function handleThemeChange(t) {
     setThemeState(t)
     localStorage.setItem('ts_theme', t)
+    document.documentElement.dataset.theme = _resolveTheme(t)
   }
 
   function handleSignIn(newToken, newUser) {
