@@ -39,10 +39,12 @@ function fmtRelative(iso) {
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
   if (mins < 2)  return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 60) return `${mins} min ago`
   const hrs = Math.floor(mins / 60)
-  if (hrs < 24)  return `${hrs}h ago`
-  return `${Math.floor(hrs / 24)}d ago`
+  if (hrs < 24)  return hrs === 1 ? '1 hour ago' : `${hrs} hours ago`
+  const days = Math.floor(hrs / 24)
+  if (days === 1) return 'Yesterday'
+  return `${days} days ago`
 }
 
 function fmtDateTime(iso) {
@@ -1485,10 +1487,10 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       const actItems = []
       if (src?.last_tested_at) actItems.push({ label: src.last_test_status === 'success' ? 'Connection verified' : 'Connection test failed', ts: src.last_tested_at, col: src.last_test_status === 'success' ? success : danger })
       if (src?.last_snapshot_at && hasSchema) actItems.push({ label: kpiTables != null ? `Schema discovered · ${kpiTables.toLocaleString()} tables` : 'Schema discovered', ts: src.last_snapshot_at, col: success })
-      if (profComplete) actItems.push({ label: profSnap?.tables_profiled != null ? `Profile completed · ${profSnap.tables_profiled} assets` : 'Profile completed', ts: null, col: success })
-      if (dictCount > 0) actItems.push({ label: `Dictionary generated · ${dictCount.toLocaleString()} terms`, ts: null, col: accent })
-      if (domAssigned > 0) actItems.push({ label: `Domains assigned · ${domAssigned} tables`, ts: null, col: accent })
-      if (entAssigned > 0) actItems.push({ label: `Entities mapped · ${entAssigned} tables`, ts: null, col: accent })
+      if (profComplete) actItems.push({ label: profSnap?.tables_profiled != null ? `Profile completed · ${profSnap.tables_profiled} assets` : 'Profile completed', ts: profSnap?.created_at ?? null, col: success })
+      if (dictCount > 0) actItems.push({ label: `Dictionary generated · ${dictCount.toLocaleString()} terms`, ts: dictTables?.reduce((max, t) => (t.created_at ?? '') > (max ?? '') ? t.created_at : max, null) ?? null, col: accent })
+      if (domAssigned > 0) actItems.push({ label: `Domains assigned · ${domAssigned} tables`, ts: domSummary?.last_generated_at ?? null, col: accent })
+      if (entAssigned > 0) actItems.push({ label: `Entities mapped · ${entAssigned} tables`, ts: entSummary?.last_generated_at ?? null, col: accent })
       actItems.sort((a, b) => {
         if (a.ts && b.ts) return new Date(b.ts) - new Date(a.ts)
         return a.ts ? -1 : b.ts ? 1 : 0
@@ -1617,7 +1619,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       }
 
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', minWidth: 0, overflowX: 'hidden' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', minWidth: 0 }}>
 
             {/* KPI Row */}
             {kpiDefs.length > 0 && (
@@ -1764,17 +1766,14 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
               {actItems.length === 0 ? (
                 <p style={{ margin: 0, fontSize: '0.7rem', color: muted, fontFamily: FONT }}>No activity recorded yet.</p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {actItems.slice(0, 6).map((item, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '9px', alignItems: 'flex-start' }}>
-                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.col, flexShrink: 0, marginTop: '5px' }} />
-                      <div>
-                        <div style={{ fontSize: '0.7rem', color: textSec, fontFamily: FONT, lineHeight: 1.35 }}>{item.label}</div>
-                        {item.ts
-                          ? <div style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT, marginTop: '1px' }}>{fmtRelative(item.ts)}</div>
-                          : <div style={{ fontSize: '0.61rem', color: `${muted}60`, fontFamily: FONT, marginTop: '1px' }}>This session</div>
-                        }
-                      </div>
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.col, flexShrink: 0 }} />
+                      <span style={{ flex: 1, minWidth: 0, fontSize: '0.7rem', color: textSec, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.label}</span>
+                      <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                        {item.ts ? fmtRelative(item.ts) : 'Unknown'}
+                      </span>
                     </div>
                   ))}
                 </div>
