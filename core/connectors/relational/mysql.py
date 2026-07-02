@@ -34,6 +34,9 @@ class _MySQLProfilingQueryBuilder(ProfilingQueryBuilder):
     ) -> str:
         raise NotImplementedError(self._MSG)
 
+    def build_percentile_query(self, table_fqn: str, column_name: str) -> str:
+        raise NotImplementedError(self._MSG)
+
     def build_null_count_query(self, table_fqn: str, column_name: str) -> str:
         raise NotImplementedError(self._MSG)
 

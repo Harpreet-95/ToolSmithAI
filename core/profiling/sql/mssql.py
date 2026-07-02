@@ -210,3 +210,32 @@ def build_sample_values_query(
         f"WHERE {c} IS NOT NULL\n"
         f"ORDER BY NEWID()"
     )
+
+
+def build_percentile_query(
+    table_fqn: str,
+    column_name: str,
+    use_nolock: bool = True,
+) -> str:
+    """Return a query computing P5/P25/P50/P75/P95 for a numeric column.
+
+    Uses PERCENTILE_CONT window functions (SQL Server 2012+), which are
+    deterministic ordered-set aggregates.  Returns a single row via TOP (1)
+    because the window function repeats the same value on every row.
+    NULLs are excluded from the ordered set by the WHERE clause.
+    All percentile values are NVARCHAR-cast for uniform string handling.
+    """
+    t       = _fqn(table_fqn)
+    c       = _q(column_name)
+    nl      = _nolock(use_nolock)
+    cast_c  = f"CAST({c} AS FLOAT)"
+    return (
+        f"SELECT TOP (1)\n"
+        f"    CAST(PERCENTILE_CONT(0.05) WITHIN GROUP (ORDER BY {cast_c}) OVER () AS NVARCHAR(100)) AS p5_value,\n"
+        f"    CAST(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {cast_c}) OVER () AS NVARCHAR(100)) AS p25_value,\n"
+        f"    CAST(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {cast_c}) OVER () AS NVARCHAR(100)) AS p50_value,\n"
+        f"    CAST(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {cast_c}) OVER () AS NVARCHAR(100)) AS p75_value,\n"
+        f"    CAST(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY {cast_c}) OVER () AS NVARCHAR(100)) AS p95_value\n"
+        f"FROM {t}{nl}\n"
+        f"WHERE {c} IS NOT NULL"
+    )

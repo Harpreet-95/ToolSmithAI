@@ -66,6 +66,16 @@ class ProfilingQueryBuilder(ABC):
         ...
 
     @abstractmethod
+    def build_percentile_query(self, table_fqn: str, column_name: str) -> str:
+        """Return a query computing P5/P25/P50/P75/P95 for a numeric column.
+
+        Must return a single row with columns: p5_value, p25_value, p50_value,
+        p75_value, p95_value.  All values must be string-cast.
+        Called for INTEGER and DECIMAL columns only; NULL rows must be excluded.
+        """
+        ...
+
+    @abstractmethod
     def quote_identifier(self, identifier: str) -> str:
         """Return the identifier wrapped in dialect-appropriate quotes."""
         ...

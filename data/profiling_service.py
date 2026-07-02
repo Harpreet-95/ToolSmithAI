@@ -95,7 +95,8 @@ _COL_INSERT = """
         empty_string_count, zero_count,
         distinct_count, distinct_percentage, uniqueness_score, cardinality_tier,
         min_value, max_value, min_length, max_length_observed, avg_length,
-        mean_value, std_deviation, p5_value, p95_value,
+        mean_value, std_deviation, p5_value, p25_value, p50_value, p75_value, p95_value,
+        blank_percentage,
         dominant_pattern, pattern_coverage,
         email_match_rate, phone_match_rate, guid_match_rate,
         date_string_rate, numeric_string_rate, masked_value_rate,
@@ -104,7 +105,7 @@ _COL_INSERT = """
         top_values_coverage,
         profiling_depth, profiling_duration_ms, profiling_status,
         created_at, updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 """
 
 
@@ -164,7 +165,8 @@ def _col_row_params(cp, snap_id: int, rule_version: str, now: str) -> tuple:
         cp.empty_string_count, cp.zero_count,
         cp.distinct_count, cp.distinct_percentage, cp.uniqueness_score, ct,
         cp.min_value, cp.max_value, cp.min_length, cp.max_length_observed, cp.avg_length,
-        cp.mean_value, cp.std_deviation, cp.p5_value, cp.p95_value,
+        cp.mean_value, cp.std_deviation, cp.p5_value, cp.p25_value, cp.p50_value, cp.p75_value, cp.p95_value,
+        cp.blank_percentage,
         cp.dominant_pattern, cp.pattern_coverage,
         cp.email_match_rate, cp.phone_match_rate, cp.guid_match_rate,
         cp.date_string_rate, cp.numeric_string_rate, cp.masked_value_rate,

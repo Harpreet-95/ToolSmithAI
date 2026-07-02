@@ -166,7 +166,14 @@ class ColumnProfile:
     mean_value:            float | None = None   # NUMERIC only
     std_deviation:         float | None = None   # NUMERIC only
     p5_value:              str | None   = None
+    p25_value:             str | None   = None
+    p50_value:             str | None   = None   # median
+    p75_value:             str | None   = None
     p95_value:             str | None   = None
+
+    # Derived numeric stats — computed in-memory; blank_percentage is stored, variance is not
+    blank_percentage:      float | None = None   # TEXT: empty_string_count / total_rows * 100
+    variance:              float | None = None   # NUMERIC: std_deviation ** 2; not persisted
 
     # Pattern detection — FULL depth only
     dominant_pattern:      str | None   = None

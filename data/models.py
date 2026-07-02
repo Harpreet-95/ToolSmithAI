@@ -804,6 +804,23 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # Idempotent migrations for profiling_column_profiles: Phase 1A deep profiling.
+    # Adds percentile quartile columns and blank_percentage derived metric.
+    _pcp_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(profiling_column_profiles)").fetchall()
+    }
+    _pcp_migrations = [
+        ("p25_value",        "ALTER TABLE profiling_column_profiles ADD COLUMN p25_value TEXT"),
+        ("p50_value",        "ALTER TABLE profiling_column_profiles ADD COLUMN p50_value TEXT"),
+        ("p75_value",        "ALTER TABLE profiling_column_profiles ADD COLUMN p75_value TEXT"),
+        ("blank_percentage", "ALTER TABLE profiling_column_profiles ADD COLUMN blank_percentage REAL"),
+    ]
+    for _col, _stmt in _pcp_migrations:
+        if _col not in _pcp_existing:
+            cursor.execute(_stmt)
+    conn.commit()
+
     # profiling_value_samples — top-N and random sample values per column.
     # value is NULL for PII columns; never stores actual sensitive data.
     cursor.executescript("""

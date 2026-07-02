@@ -153,10 +153,16 @@ def profile_column_statistics(
             cp.min_length          = _int(d.get('min_length'))
             cp.max_length_observed = _int(d.get('max_length_observed'))
             cp.empty_string_count  = _int(d.get('empty_string_count'))
+            # Derive blank_percentage from stored counts (no extra query)
+            if cp.empty_string_count is not None and total:
+                cp.blank_percentage = (cp.empty_string_count / total) * 100.0
         elif dt in ('INTEGER', 'DECIMAL'):
             cp.mean_value    = safe_float(d.get('mean_value'))
             cp.std_deviation = safe_float(d.get('std_deviation'))
             cp.zero_count    = _int(d.get('zero_count'))
+            # Derive variance from std_deviation (not persisted to DB)
+            if cp.std_deviation is not None:
+                cp.variance = cp.std_deviation ** 2
         elif dt == 'BOOLEAN':
             cp.zero_count = _int(d.get('zero_count'))
 
@@ -202,6 +208,45 @@ def profile_top_values(
 
     except Exception:
         logger.error("Top values query failed for %s.%s", cp.table_fqn, cp.column_name)
+    finally:
+        cp.profiling_duration_ms = (cp.profiling_duration_ms or 0) + int((time.monotonic() - t0) * 1000)
+
+    return cp
+
+
+def profile_column_percentiles(
+    conn,
+    cp: ColumnProfile,
+    config: ProfilingConfig,
+    builder: ProfilingQueryBuilder,
+) -> ColumnProfile:
+    """Execute the percentile query for numeric columns; update ColumnProfile in-place.
+
+    Populates p5_value, p25_value, p50_value (median), p75_value, p95_value.
+    Skipped for non-numeric types and columns with no populated rows so we
+    never issue a query that would return no useful result.
+    Must be called after profile_column_statistics so populated_count is known.
+    """
+    dt = cp.data_type.upper()
+    if dt not in ('INTEGER', 'DECIMAL'):
+        return cp
+    if not cp.populated_count:
+        return cp
+
+    t0 = time.monotonic()
+    try:
+        sql = builder.build_percentile_query(cp.table_fqn, cp.column_name)
+        cur = conn.execute(sql)
+        row = cur.fetchone()
+        if row:
+            d = _row_to_dict(cur, row)
+            cp.p5_value  = _str(d.get('p5_value'))
+            cp.p25_value = _str(d.get('p25_value'))
+            cp.p50_value = _str(d.get('p50_value'))
+            cp.p75_value = _str(d.get('p75_value'))
+            cp.p95_value = _str(d.get('p95_value'))
+    except Exception:
+        logger.error("Percentile query failed for %s.%s", cp.table_fqn, cp.column_name)
     finally:
         cp.profiling_duration_ms = (cp.profiling_duration_ms or 0) + int((time.monotonic() - t0) * 1000)
 
