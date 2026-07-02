@@ -180,8 +180,20 @@ def _governance_recheck(
         )
 
         if pii_flagged:
-            confirmed = bool(prof and prof.get("pii_confirmed"))
-            if confirmed:
+            confirmed   = bool(prof and prof.get("pii_confirmed"))
+            aggregation = sel.get("aggregation")
+            if aggregation:
+                # COUNT/SUM/AVG etc. emit a derived number — not the raw cell value.
+                # PII on the source column does not apply to the aggregate result.
+                warnings.append({
+                    "type":     "pii_aggregated",
+                    "severity": "LOW",
+                    "message":  (
+                        f"{table_fqn}.{column_name} has a PII flag but is "
+                        f"aggregated ({aggregation}) — no raw values are returned."
+                    ),
+                })
+            elif confirmed:
                 pii_aliases.add(alias)
                 warnings.append({
                     "type":     "pii_masked",

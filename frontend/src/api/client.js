@@ -1139,3 +1139,12 @@ export async function bulkGovernanceReject(filter, token) {
   })
   return parseResponse(res)
 }
+
+export async function executeDataSourceQuery(sourceId, question, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/execute-query`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({ question }),
+  })
+  return parseResponse(res)
+}

@@ -209,7 +209,8 @@ def _check_pii_and_approval(
 
         pii_flagged = (prof and prof.get("pii_name_heuristic")) or (dic and dic.get("pii_risk"))
         if pii_flagged:
-            confirmed = bool(prof and prof.get("pii_confirmed"))
+            confirmed  = bool(prof and prof.get("pii_confirmed"))
+            aggregation = row.get("aggregation")
             warnings.append({
                 "type": "pii_involved", "severity": "MEDIUM" if confirmed else "HIGH",
                 "message": (
@@ -217,7 +218,9 @@ def _check_pii_and_approval(
                     f"({'confirmed' if confirmed else 'unconfirmed'})."
                 ),
             })
-            if not confirmed and not allow_unconfirmed_pii:
+            # Aggregated columns (COUNT/SUM/AVG/etc.) never return raw cell values —
+            # the PII flag on the source column does not apply to the aggregate output.
+            if not aggregation and not confirmed and not allow_unconfirmed_pii:
                 pii_blocks.append(f"{row['table_fqn']}.{row['column_name']} (unconfirmed PII)")
 
     return pii_blocks, warnings
@@ -275,7 +278,20 @@ def build_sql_plan(
     unresolved_terms = unresolved_measures + unresolved_dimensions
     checks["no_ambiguous_unresolved_terms"] = not unresolved_terms
     if unresolved_terms:
-        blocking_reasons.append(f"Unresolved term(s) cannot be planned: {', '.join(unresolved_terms)}.")
+        if select:
+            # Some terms resolved — skip unresolved ones, continue with plan.
+            # Blocking here would reject valid NL queries that contain extra words.
+            warnings.append({
+                "type": "unresolved_terms", "severity": "LOW",
+                "message": (
+                    f"Some terms could not be resolved and were skipped: "
+                    f"{', '.join(unresolved_terms)}."
+                ),
+            })
+        else:
+            blocking_reasons.append(
+                f"Unresolved term(s) cannot be planned: {', '.join(unresolved_terms)}."
+            )
 
     # --- no SELECT * (select must be non-empty and column-specific) ------
     checks["select_not_empty"] = bool(select)

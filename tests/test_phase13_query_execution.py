@@ -39,6 +39,19 @@ from data.query_execution_service import execute_generated_query
 
 
 # ---------------------------------------------------------------------------
+# Isolation fixture — prevent real DB rate-limit state from leaking between tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_rate_limits(monkeypatch):
+    """Patch all operational-safeguard DB helpers so tests are isolated."""
+    monkeypatch.setattr(svc, "_check_user_rate_limit", lambda uid: False)
+    monkeypatch.setattr(svc, "_check_daily_limit",     lambda uid: 0)
+    monkeypatch.setattr(svc, "_check_source_rate",     lambda sid: 0)
+    monkeypatch.setattr(svc, "log_query_execution",    lambda *a, **kw: None)
+
+
+# ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
 

@@ -4854,10 +4854,44 @@ def generate_sql_route(
 # Safe Read-Only Query Execution  (/v1/sources/{id}/execute-query)
 # ---------------------------------------------------------------------------
 
+_NL_STOP = frozenset({
+    "show", "me", "the", "a", "an", "of", "for", "how", "many", "what",
+    "is", "are", "from", "in", "on", "at", "with", "and", "or", "give",
+    "get", "list", "display", "find", "tell", "which", "per", "each", "all",
+    "their", "its", "using", "across", "among", "between",
+})
+
+
+def _extract_query_terms(question: str) -> tuple[list[str], list[str], list[str]]:
+    """Split a NL question into (concepts, measure_terms, dimension_terms).
+
+    Words after "by" are treated as dimension hints.  All remaining
+    content words (minus stop words) are returned as both concepts and
+    measure candidates.  No AI/ML — deterministic token heuristic only.
+    """
+    raw = "".join(c if c.isalnum() or c == " " else " " for c in question.lower()).split()
+    try:
+        by_idx = raw.index("by")
+        after  = [w for w in raw[by_idx + 1:] if w not in _NL_STOP]
+        before = [w for w in raw[:by_idx]      if w not in _NL_STOP]
+    except ValueError:
+        after  = []
+        before = [w for w in raw if w not in _NL_STOP]
+
+    concepts   = list(dict.fromkeys(before + after))
+    measures   = list(dict.fromkeys(before))
+    dimensions = list(dict.fromkeys(after))
+    return concepts, measures, dimensions
+
+
+class ExecuteQueryRequest(BaseModel):
+    question: str
+
+
 @router.post("/sources/{source_id}/execute-query")
 def execute_query_route(
     source_id: int,
-    request: SqlPlanRequest,
+    request: ExecuteQueryRequest,
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> dict:
     if not request.question or not request.question.strip():
@@ -4868,12 +4902,13 @@ def execute_query_route(
         from data.sql_generation_service import detect_dialect, generate_sql
         from data.query_execution_service import execute_generated_query
 
+        concepts, measure_terms, dimension_terms = _extract_query_terms(request.question.strip())
         user_input = {
             "question":   request.question.strip(),
-            "concepts":   request.concepts,
-            "measures":   request.measures,
-            "dimensions": request.dimensions,
-            "filters":    request.filters,
+            "concepts":   concepts,
+            "measures":   measure_terms,
+            "dimensions": dimension_terms,
+            "filters":    [],
         }
 
         query_plan = plan_business_query(source_id, user.user_id, user_input)
@@ -4882,7 +4917,7 @@ def execute_query_route(
 
         sql_plan = build_sql_plan(
             source_id, user.user_id, query_plan,
-            allow_unconfirmed_pii=request.allow_unconfirmed_pii,
+            allow_unconfirmed_pii=False,
         )
 
         sql_generation = generate_sql(
