@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, bulkGovernanceApprove, bulkGovernanceDryRun, bulkGovernanceReject, continueBatchProfile, createDataSource, deleteDataSource, discoverDataSourceSchema, explainTable, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getDownstreamLineage, getEntityRules, getEntitySummary, getGovernanceAssignments, getGovernanceAssignmentSummary, getGovernanceBottlenecks, getGovernanceDashboard, getGovernanceExplanation, getGovernancePolicies, getGovernanceRecommendations, getImpactAnalysis, getKnowledgeGraphSummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, getRelatedTables, getSemanticSummary, getSemanticTableProfile, getUpstreamLineage, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, startBatchProfile, testDataSource } from '../api/client'
+import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, bulkGovernanceApprove, bulkGovernanceDryRun, bulkGovernanceReject, continueBatchProfile, createDataSource, deleteDataSource, discoverDataSourceSchema, executeDataSourceQuery, explainTable, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getDownstreamLineage, getEntityRules, getEntitySummary, getGovernanceAssignments, getGovernanceAssignmentSummary, getGovernanceBottlenecks, getGovernanceDashboard, getGovernanceExplanation, getGovernancePolicies, getGovernanceRecommendations, getImpactAnalysis, getKnowledgeGraphSummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, getRelatedTables, getSemanticSummary, getSemanticTableProfile, getUpstreamLineage, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, startBatchProfile, testDataSource } from '../api/client'
 import DictionaryReview from './DictionaryReview'
 import ColumnProfileExplorer from './ColumnProfileExplorer'
 
@@ -135,6 +135,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [bulkResult,        setBulkResult]        = useState({})  // { [srcId]: { loading, dryRun, approveResult, rejectResult, error, confirmAction } }
   const [explainForm,       setExplainForm]       = useState({})  // { [srcId]: { object_type, table_fqn, column_name, rule_id, suggestion_id, tool_id } }
   const [explainState,      setExplainState]      = useState({})  // { [srcId]: { loading, data, error } }
+  const [queryState,        setQueryState]        = useState({})  // { [srcId]: { question, loading, result, error } }
 
   function notify(msg, ok = true) {
     setToast({ text: msg, ok })
@@ -236,6 +237,17 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       if (bkFqn) ensureBkSection(id, bkFqn, 'overview')
     }
   }, [dsActiveTab, dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear query results whenever the user navigates to a different source.
+  // Satisfies the "do not cache result rows" requirement.
+  useEffect(() => {
+    if (dsSelectedSourceId == null) return
+    setQueryState(s => {
+      const cur = s[dsSelectedSourceId]
+      if (!cur?.result && !cur?.error) return s
+      return { ...s, [dsSelectedSourceId]: { question: cur.question ?? '', loading: false, result: null, error: null } }
+    })
+  }, [dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleTypeChange(value) {
     const st = SOURCE_TYPES.find(t => t.value === value)
@@ -992,6 +1004,19 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     })
   }
 
+  async function handleQueryRun(sourceId) {
+    const q = (queryState[sourceId]?.question ?? '').trim()
+    if (!q || queryState[sourceId]?.loading) return
+    setQueryState(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: true, result: null, error: null } }))
+    try {
+      const resp = await executeDataSourceQuery(sourceId, q, token)
+      setQueryState(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: false, result: resp?.data ?? null, error: null } }))
+    } catch (err) {
+      const msg = (err?.message ?? '').replace(/^\d+:\s*/, '') || 'Query failed. Please try again.'
+      setQueryState(s => ({ ...s, [sourceId]: { ...(s[sourceId] ?? {}), loading: false, result: null, error: msg } }))
+    }
+  }
+
   // ── Shared style helpers ───────────────────────────────────────────────────
   const card    = (x = {}) => ({ background: surface, border: `1px solid ${border}`, borderRadius: '12px', padding: '16px 18px', ...x })
   const inp     = (x = {}) => ({ width: '100%', boxSizing: 'border-box', background: bg, border: `1px solid ${border}`, borderRadius: '8px', color: text, fontSize: '0.88rem', padding: '9px 13px', outline: 'none', fontFamily: MONO, letterSpacing: '0.02em', ...x })
@@ -1214,6 +1239,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       { id: 'business-knowledge', label: 'Knowledge' },
       { id: 'lineage',    label: 'Lineage'    },
       { id: 'runs',       label: 'Runs'       },
+      { id: 'query',      label: 'Query'      },
     ]
     const activeTab = dsActiveTab ?? 'overview'
 
@@ -1591,24 +1617,24 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       }
 
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', width: '100%', minWidth: 0, overflowX: 'hidden' }}>
 
             {/* KPI Row */}
             {kpiDefs.length > 0 && (
-              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(kpiDefs.length, 6)}, 1fr)`, gap: '14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(kpiDefs.length, 6)}, minmax(0, 1fr))`, gap: '10px' }}>
                 {kpiDefs.map(k => (
                   <div key={k.label}
                     onClick={k.tab ? () => setDsActiveTab(k.tab) : undefined}
-                    style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '14px 14px 12px', cursor: k.tab ? 'pointer' : 'default' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                      <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 'calc(100% - 32px)' }}>{k.label}</span>
-                      <div style={{ width: '26px', height: '26px', borderRadius: '7px', background: `${k.iconCol}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '10px 12px 8px', cursor: k.tab ? 'pointer' : 'default' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                      <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 'calc(100% - 28px)' }}>{k.label}</span>
+                      <div style={{ width: '22px', height: '22px', borderRadius: '6px', background: `${k.iconCol}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                         <span style={{ color: k.iconCol, display: 'flex', alignItems: 'center' }}>{k.icon}</span>
                       </div>
                     </div>
-                    <div style={{ fontSize: '1.7rem', fontWeight: '800', color: k.valueColor ?? text, fontFamily: FONT, lineHeight: 1, letterSpacing: '-0.5px' }}>{k.value}</div>
+                    <div style={{ fontSize: '1.5rem', fontWeight: '800', color: k.valueColor ?? text, fontFamily: FONT, lineHeight: 1, letterSpacing: '-0.5px' }}>{k.value}</div>
                     {(k.lines ?? []).map((line, i) => (
-                      <div key={i} style={{ fontSize: '0.62rem', color: line.color, fontFamily: FONT, marginTop: i === 0 ? '5px' : '2px', lineHeight: 1.3 }}>{line.text}</div>
+                      <div key={i} style={{ fontSize: '0.62rem', color: line.color, fontFamily: FONT, marginTop: i === 0 ? '3px' : '2px', lineHeight: 1.3 }}>{line.text}</div>
                     ))}
                   </div>
                 ))}
@@ -1616,8 +1642,8 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             )}
 
             {/* Governance Readiness */}
-            <div style={{ background: surface, border: `1px solid ${readinessColor}40`, borderLeft: `3px solid ${readinessColor}`, borderRadius: '10px', padding: '14px 18px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+            <div style={{ background: surface, border: `1px solid ${readinessColor}40`, borderLeft: `3px solid ${readinessColor}`, borderRadius: '10px', padding: '10px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={readinessColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                   <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Governance Readiness</span>
@@ -1627,18 +1653,18 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                   {readinessLabel}
                 </span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '8px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '6px' }}>
                 {readinessChecks.map(check => {
                   const col = rcStatusCol[check.status] ?? muted
                   return (
                     <div key={check.key}
                       onClick={check.tab ? () => setDsActiveTab(check.tab) : undefined}
-                      style={{ background: `${col}08`, border: `1px solid ${col}30`, borderRadius: '8px', padding: '10px 10px 8px', cursor: check.tab ? 'pointer' : 'default' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
+                      style={{ background: `${col}08`, border: `1px solid ${col}30`, borderRadius: '8px', padding: '7px 8px 6px', cursor: check.tab ? 'pointer' : 'default' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
                         <span style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>{check.label}</span>
                         <span style={{ color: col, display: 'flex', alignItems: 'center' }}>{rcStatusIcon[check.status]}</span>
                       </div>
-                      <div style={{ fontSize: '0.72rem', color: col, fontWeight: '600', fontFamily: FONT, lineHeight: 1.3 }}>{check.detail}</div>
+                      <div style={{ fontSize: '0.68rem', color: col, fontWeight: '600', fontFamily: FONT, lineHeight: 1.3 }}>{check.detail}</div>
                     </div>
                   )
                 })}
@@ -1646,8 +1672,8 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             </div>
 
             {/* Metadata Intelligence Pipeline */}
-            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px 16px 14px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '18px' }}>
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '12px 16px 10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '10px' }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
                 <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Metadata Intelligence Pipeline</span>
               </div>
@@ -1661,17 +1687,17 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                   return (
                     <div key={stage.num} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative', opacity: isLock ? 0.4 : 1 }}>
                       {!isLast && (
-                        <div style={{ position: 'absolute', top: '17px', left: 'calc(50% + 18px)', width: 'calc(100% - 36px)', height: '2px', background: isDone ? `${success}70` : border, zIndex: 0 }} />
+                        <div style={{ position: 'absolute', top: '14px', left: 'calc(50% + 15px)', width: 'calc(100% - 30px)', height: '2px', background: isDone ? `${success}70` : border, zIndex: 0 }} />
                       )}
-                      <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: `${col}18`, border: `2px solid ${col}`, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, position: 'relative', flexShrink: 0 }}>
+                      <div style={{ width: '30px', height: '30px', borderRadius: '50%', background: `${col}18`, border: `2px solid ${col}`, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1, position: 'relative', flexShrink: 0 }}>
                         {isRun ? <Spinner size={14} /> : <span style={{ color: col, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{stage.icon}</span>}
                       </div>
-                      <div style={{ marginTop: '8px', textAlign: 'center', padding: '0 2px', width: '100%' }}>
+                      <div style={{ marginTop: '5px', textAlign: 'center', padding: '0 2px', width: '100%' }}>
                         <div style={{ fontSize: '0.6rem', fontWeight: '600', color: isLock ? muted : text, lineHeight: 1.3, fontFamily: FONT }}>{stage.label}</div>
                         <div style={{ marginTop: '3px', fontSize: '0.55rem', fontWeight: '700', color: col, fontFamily: FONT, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{stgLbl(stage.status)}</div>
                         {stage.ts && <div style={{ marginTop: '2px', fontSize: '0.54rem', color: muted, fontFamily: FONT }}>{fmtDate(stage.ts)}</div>}
                         {stage.metrics.length > 0 && (
-                          <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '1px', alignItems: 'center' }}>
+                          <div style={{ marginTop: '3px', display: 'flex', flexDirection: 'column', gap: '1px', alignItems: 'center' }}>
                             {stage.metrics.map((m, i) => (
                               <span key={i} style={{ fontSize: '0.54rem', color: muted, fontFamily: FONT, lineHeight: 1.2 }}>{m}</span>
                             ))}
@@ -1687,7 +1713,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             {/* Recent Pipeline Runs */}
             {profHist.data && Array.isArray(profHist.data) && profHist.data.length > 0 && (
               <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', overflow: 'hidden' }}>
-                <div style={{ padding: '11px 16px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ padding: '8px 16px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Recent Pipeline Runs</span>
                   <button onClick={() => setDsActiveTab('runs')} style={{ background: 'none', border: 'none', color: accent, fontSize: '0.72rem', fontFamily: FONT, cursor: 'pointer', padding: 0 }}>View all →</button>
                 </div>
@@ -1699,8 +1725,8 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                 {profHist.data.slice(0, 4).map((run, i) => {
                   const runCol = run.status === 'COMPLETE' ? success : run.status === 'RUNNING' ? accent : danger
                   return (
-                    <div key={run.id ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 150px 110px', padding: '8px 16px', borderBottom: i < Math.min(profHist.data.length, 4) - 1 ? `1px solid ${border}20` : 'none', background: i % 2 === 0 ? 'transparent' : `${bg}50` }}>
-                      <span style={{ fontSize: '0.75rem', color: textSec, fontFamily: FONT }}>Full Pipeline Run</span>
+                    <div key={run.id ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 150px 110px', padding: '6px 16px', borderBottom: i < Math.min(profHist.data.length, 4) - 1 ? `1px solid ${border}20` : 'none', background: i % 2 === 0 ? 'transparent' : `${bg}50` }}>
+                      <span style={{ fontSize: '0.72rem', color: textSec, fontFamily: FONT }}>Full Pipeline Run</span>
                       <span style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', gap: '3px', padding: '1px 7px', borderRadius: '5px', fontSize: '0.62rem', fontWeight: '700', background: `${runCol}15`, color: runCol, border: `1px solid ${runCol}35`, fontFamily: FONT }}>{run.status ?? '—'}</span>
                       <span style={{ fontSize: '0.73rem', color: muted, fontFamily: FONT }}>{run.created_at ? fmtDate(run.created_at) : '—'}</span>
                       <span style={{ fontSize: '0.73rem', color: textSec, fontFamily: FONT }}>{run.tables_profiled != null ? `${run.tables_profiled} / ${run.tables_total ?? '?'}` : '—'}</span>
@@ -1711,19 +1737,19 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             )}
 
             {/* Action Required · Recent Activity · Source Configuration */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '14px', alignItems: 'start' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '10px', alignItems: 'start' }}>
 
             {/* Next Best Action */}
-            <div style={{ background: surface, border: `1px solid ${nba.urgencyColor}50`, borderLeft: `3px solid ${nba.urgencyColor}`, borderRadius: '10px', padding: '16px' }}>
-              <div style={{ marginBottom: '10px' }}>
+            <div style={{ background: surface, border: `1px solid ${nba.urgencyColor}50`, borderLeft: `3px solid ${nba.urgencyColor}`, borderRadius: '10px', padding: '12px' }}>
+              <div style={{ marginBottom: '7px' }}>
                 <span style={{ fontSize: '0.58rem', fontWeight: '800', color: nba.urgencyColor, letterSpacing: '0.09em', textTransform: 'uppercase', fontFamily: FONT }}>{nba.urgency}</span>
               </div>
-              <div style={{ fontSize: '0.86rem', fontWeight: '700', color: text, fontFamily: FONT, marginBottom: '8px', lineHeight: 1.3 }}>{nba.title}</div>
-              <p style={{ margin: '0 0 14px', fontSize: '0.73rem', color: muted, fontFamily: FONT, lineHeight: 1.6 }}>{nba.desc}</p>
+              <div style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT, marginBottom: '6px', lineHeight: 1.3 }}>{nba.title}</div>
+              <p style={{ margin: '0 0 10px', fontSize: '0.7rem', color: muted, fontFamily: FONT, lineHeight: 1.5 }}>{nba.desc}</p>
               {nba.cta && (
                 <button
                   onClick={() => { if (nba.act) nba.act(); if (nba.tab) setDsActiveTab(nba.tab) }}
-                  style={{ width: '100%', background: nba.urgencyColor === danger ? danger : accent, color: '#fff', border: 'none', borderRadius: '7px', padding: '8px 14px', fontSize: '0.78rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
+                  style={{ width: '100%', background: nba.urgencyColor === danger ? danger : accent, color: '#fff', border: 'none', borderRadius: '7px', padding: '7px 12px', fontSize: '0.76rem', fontWeight: '600', cursor: 'pointer', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
                 >
                   {nba.cta} →
                 </button>
@@ -1731,19 +1757,19 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             </div>
 
             {/* Recent Activity */}
-            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px' }}>
-              <div style={{ marginBottom: '12px' }}>
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '12px' }}>
+              <div style={{ marginBottom: '8px' }}>
                 <span style={{ fontSize: '0.62rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Recent Activity</span>
               </div>
               {actItems.length === 0 ? (
-                <p style={{ margin: 0, fontSize: '0.73rem', color: muted, fontFamily: FONT }}>No activity recorded yet.</p>
+                <p style={{ margin: 0, fontSize: '0.7rem', color: muted, fontFamily: FONT }}>No activity recorded yet.</p>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
                   {actItems.slice(0, 6).map((item, i) => (
                     <div key={i} style={{ display: 'flex', gap: '9px', alignItems: 'flex-start' }}>
                       <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.col, flexShrink: 0, marginTop: '5px' }} />
                       <div>
-                        <div style={{ fontSize: '0.73rem', color: textSec, fontFamily: FONT, lineHeight: 1.35 }}>{item.label}</div>
+                        <div style={{ fontSize: '0.7rem', color: textSec, fontFamily: FONT, lineHeight: 1.35 }}>{item.label}</div>
                         {item.ts
                           ? <div style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT, marginTop: '1px' }}>{fmtRelative(item.ts)}</div>
                           : <div style={{ fontSize: '0.61rem', color: `${muted}60`, fontFamily: FONT, marginTop: '1px' }}>This session</div>
@@ -1756,18 +1782,18 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
             </div>
 
             {/* Source Configuration */}
-            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '16px' }}>
-              <div style={{ marginBottom: '12px' }}>
+            <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '12px' }}>
+              <div style={{ marginBottom: '8px' }}>
                 <span style={{ fontSize: '0.62rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Source Configuration</span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {cfgRows.map(row => (
                   <div key={row.label} style={{ display: 'grid', gridTemplateColumns: '78px 1fr', gap: '8px', alignItems: 'flex-start' }}>
                     <span style={{ fontSize: '0.64rem', color: muted, fontFamily: FONT, paddingTop: '1px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                       <span style={{ color: muted, display: 'flex', flexShrink: 0 }}>{row.icon}</span>
                       {row.label}
                     </span>
-                    <span style={{ fontSize: '0.73rem', color: row.color ?? textSec, fontFamily: FONT, wordBreak: 'break-word' }}>{row.value}</span>
+                    <span style={{ fontSize: '0.7rem', color: row.color ?? textSec, fontFamily: FONT, wordBreak: 'break-word' }}>{row.value}</span>
                   </div>
                 ))}
               </div>
@@ -2879,7 +2905,238 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       </div>
     )
 
-    const TAB_CONTENT = { overview: overviewTab, schema: schemaTab, profile: profileTab, domains: domainsTab, entities: entitiesTab, governance: governanceTab, 'business-knowledge': bkTab, lineage: lineageTab, runs: runsTab }
+    // ── Query tab ─────────────────────────────────────────────────────────────
+    // Safe fields only. sql_generation.sql is never accessed or rendered.
+    const qryState     = queryState[dsSelectedSourceId] ?? { question: '', loading: false, result: null, error: null }
+    const qryResult    = qryState.result                                     // { query_plan, sql_plan, sql_generation, execution }
+    const qryExec      = qryResult?.execution ?? null
+    const qryStatus    = qryExec?.status ?? null
+    const qryRows      = qryExec?.rows ?? []
+    const qryCols      = qryRows.length > 0 ? Object.keys(qryRows[0]) : []
+    const qryExpl      = qryResult?.sql_generation?.explanation ?? null      // natural-language explanation, not SQL
+    const qryGovWarns  = [
+      ...(qryResult?.sql_generation?.governance_warnings ?? []),
+      ...(qryResult?.sql_plan?.warnings ?? []),
+    ]
+    const qryExecWarns = qryExec?.warnings ?? []
+    const _QSTATUS = {
+      governance_block: { col: warn,   title: 'Access Denied',      body: 'This query requires access to governed or restricted data. Contact your data administrator to request access.' },
+      rate_limited:     { col: warn,   title: 'Rate Limit Reached', body: 'You are querying too quickly. Please wait a moment before running another query.' },
+      failed:           { col: danger, title: 'Query Failed',       body: qryExec?.error_code ? `Query could not be completed (${qryExec.error_code}). Try rephrasing your question or verify the data source is reachable.` : 'Query could not be completed. Try rephrasing your question.' },
+      timeout:          { col: danger, title: 'Query Timed Out',    body: 'The query took too long to complete. Try a more specific question or add filters to narrow your result set.' },
+    }
+    const qrySm = qryStatus ? _QSTATUS[qryStatus] : null
+
+    const queryTab = (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+        {/* ── Discovery gate ── */}
+        {src?.last_snapshot_id == null ? (
+          <div style={{ ...card({ padding: '48px 24px' }), textAlign: 'center' }}>
+            <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke={muted} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block', margin: '0 auto 14px' }}>
+              <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+            <p style={{ margin: '0 0 6px', fontSize: '0.9rem', color: textSec, fontWeight: '600', fontFamily: FONT }}>Schema discovery required</p>
+            <p style={{ margin: '0 0 18px', fontSize: '0.78rem', color: muted, fontFamily: FONT, lineHeight: 1.6, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>
+              Run Scan Metadata first to discover this source's tables and columns. The Query panel uses that schema to plan safe, governance-aware queries.
+            </p>
+            <button
+              onClick={() => src && handleDiscoverAndProfile(src)}
+              style={{ ...btnMain, display: 'inline-flex', alignItems: 'center', gap: '7px' }}
+            >
+              Scan Metadata
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* ── Input card ── */}
+            <div style={card()}>
+              <label style={lbl}>Ask a question about your data</label>
+              <textarea
+                value={qryState.question}
+                onChange={e => setQueryState(s => ({ ...s, [dsSelectedSourceId]: { ...(s[dsSelectedSourceId] ?? {}), question: e.target.value } }))}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleQueryRun(dsSelectedSourceId) } }}
+                disabled={qryState.loading}
+                placeholder="e.g. What are the top 10 customers by total revenue this year?"
+                rows={3}
+                style={{ ...inp({ fontFamily: FONT, lineHeight: 1.6, resize: 'vertical', minHeight: '72px', marginBottom: '12px', letterSpacing: '0' }) }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.7rem', color: muted, fontFamily: FONT }}>
+                  Ctrl+Enter to run · Natural language only · SQL is never shown
+                </span>
+                <button
+                  onClick={() => handleQueryRun(dsSelectedSourceId)}
+                  disabled={qryState.loading || !(qryState.question ?? '').trim()}
+                  style={{
+                    ...btnMain,
+                    display: 'inline-flex', alignItems: 'center', gap: '7px',
+                    opacity: (qryState.loading || !(qryState.question ?? '').trim()) ? 0.6 : 1,
+                    cursor:  (qryState.loading || !(qryState.question ?? '').trim()) ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {qryState.loading && <Spinner size={12} />}
+                  {qryState.loading ? 'Querying…' : 'Run Query'}
+                </button>
+              </div>
+            </div>
+
+            {/* ── Loading state ── */}
+            {qryState.loading && (
+              <div style={{ ...card({ padding: '24px' }), display: 'flex', alignItems: 'center', gap: '14px' }}>
+                <Spinner size={18} />
+                <div>
+                  <div style={{ fontSize: '0.84rem', fontWeight: '600', color: text, fontFamily: FONT, marginBottom: '3px' }}>
+                    Analyzing your question…
+                  </div>
+                  <div style={{ fontSize: '0.73rem', color: muted, fontFamily: FONT }}>
+                    Planning query, checking governance rules, and retrieving results
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Thrown-exception error ── */}
+            {!qryState.loading && qryState.error && (
+              <div style={{ ...card({ padding: '16px 18px' }), borderColor: `${danger}50`, background: `${danger}08` }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={danger} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  <div>
+                    <div style={{ fontSize: '0.84rem', fontWeight: '600', color: danger, fontFamily: FONT, marginBottom: '4px' }}>
+                      Query Error
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT, lineHeight: 1.5 }}>
+                      {qryState.error}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Non-success execution status ── */}
+            {!qryState.loading && !qryState.error && qryExec && qryStatus !== 'success' && qrySm && (
+              <div style={{ ...card({ padding: '16px 18px' }), borderColor: `${qrySm.col}50`, background: `${qrySm.col}08` }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={qrySm.col} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  <div>
+                    <div style={{ fontSize: '0.84rem', fontWeight: '600', color: qrySm.col, fontFamily: FONT, marginBottom: '4px' }}>
+                      {qrySm.title}
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT, lineHeight: 1.5 }}>
+                      {qrySm.body}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Success result ── */}
+            {!qryState.loading && !qryState.error && qryExec && qryStatus === 'success' && (
+              <>
+                {/* AI Interpretation block — explanation only, never SQL */}
+                {qryExpl && (
+                  <div style={{ ...card({ padding: '14px 18px' }), borderColor: `${accent}35`, background: `${accent}07` }}>
+                    <div style={{ fontSize: '0.6rem', fontWeight: '800', color: accent, letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '7px' }}>
+                      AI Interpretation
+                    </div>
+                    <p style={{ margin: 0, fontSize: '0.82rem', color: textSec, fontFamily: FONT, lineHeight: 1.6, fontStyle: 'italic' }}>
+                      {qryExpl}
+                    </p>
+                  </div>
+                )}
+
+                {/* Governance / trust warning chips */}
+                {qryGovWarns.length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {qryGovWarns.map((w, i) => (
+                      <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '4px 12px', borderRadius: '20px', fontSize: '0.72rem', fontWeight: '600', background: `${warn}14`, color: warn, border: `1px solid ${warn}40`, fontFamily: FONT }}>
+                        ⚠ {typeof w === 'string' ? w : (w.message ?? w.warning ?? String(w))}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Execution warnings (e.g. repeated_query) */}
+                {qryExecWarns.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {qryExecWarns.map((w, i) => {
+                      const sev = (w.severity ?? '').toUpperCase()
+                      const wc  = (sev === 'HIGH' || sev === 'MEDIUM') ? warn : '#38bdf8'
+                      return (
+                        <div key={i} style={{ ...card({ padding: '10px 14px' }), borderColor: `${wc}35`, background: `${wc}08`, fontSize: '0.78rem', color: textSec, fontFamily: FONT }}>
+                          {w.message ?? String(w)}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Metadata row: row count · duration · truncation */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '20px', fontSize: '0.72rem', fontWeight: '600', background: `${success}14`, color: success, border: `1px solid ${success}35`, fontFamily: FONT }}>
+                    {(qryExec.row_count ?? qryRows.length).toLocaleString()} row{(qryExec.row_count ?? qryRows.length) !== 1 ? 's' : ''}
+                  </span>
+                  {qryExec.duration_ms != null && (
+                    <span style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT }}>
+                      {qryExec.duration_ms < 1000 ? `${qryExec.duration_ms}ms` : `${(qryExec.duration_ms / 1000).toFixed(1)}s`}
+                    </span>
+                  )}
+                  {qryExec.truncated && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '20px', fontSize: '0.72rem', fontWeight: '600', background: `${warn}14`, color: warn, border: `1px solid ${warn}35`, fontFamily: FONT }}>
+                      ⚠ Truncated at 500 rows · refine your question to narrow results
+                    </span>
+                  )}
+                </div>
+
+                {/* Result table */}
+                {qryRows.length === 0 ? (
+                  <div style={{ ...card({ padding: '36px 24px' }), textAlign: 'center' }}>
+                    <p style={{ margin: 0, fontSize: '0.84rem', color: muted, fontFamily: FONT }}>No rows returned for this question.</p>
+                  </div>
+                ) : (
+                  <div style={{ ...card({ padding: 0 }), overflow: 'hidden' }}>
+                    <div style={{ overflowX: 'auto', maxHeight: '480px', overflowY: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                        <thead>
+                          <tr style={{ background: bg }}>
+                            {qryCols.map(h => (
+                              <th key={h} style={{ position: 'sticky', top: 0, background: bg, padding: '9px 14px', textAlign: 'left', fontSize: '0.67rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}`, whiteSpace: 'nowrap', zIndex: 1 }}>
+                                {h}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {qryRows.map((row, ri) => (
+                            <tr key={ri} style={{ background: ri % 2 === 0 ? 'transparent' : `${bg}80` }}>
+                              {qryCols.map(h => (
+                                <td key={h} style={{ padding: '7px 14px', color: textSec, fontFamily: MONO, borderBottom: `1px solid ${border}18`, verticalAlign: 'top', maxWidth: '300px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {row[h] == null
+                                    ? <span style={{ color: muted, fontStyle: 'italic', fontFamily: FONT }}>null</span>
+                                    : String(row[h])
+                                  }
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    )
+
+    const TAB_CONTENT = { overview: overviewTab, schema: schemaTab, profile: profileTab, domains: domainsTab, entities: entitiesTab, governance: governanceTab, 'business-knowledge': bkTab, lineage: lineageTab, runs: runsTab, query: queryTab }
 
     return (
       <div style={{ fontFamily: FONT, color: text }}>
