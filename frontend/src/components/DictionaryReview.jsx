@@ -348,9 +348,13 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
                   </span>
                 </div>
 
+                {/* Horizontally scrollable grid area — header + rows scroll together */}
+                <div style={{ overflowX: 'auto' }}>
+
                 {/* Grid header */}
                 <div style={{
                   display: 'grid', gridTemplateColumns: COLS_HDR.join(' '),
+                  minWidth: '760px',
                   padding: '7px 14px', borderBottom: `1px solid ${border}`,
                   fontSize: '0.6rem', fontWeight: '700', color: muted,
                   letterSpacing: '0.06em', textTransform: 'uppercase', background: `${bg}80`,
@@ -378,6 +382,7 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
                         key={col.column_name}
                         style={{
                           display: 'grid', gridTemplateColumns: COLS_HDR.join(' '),
+                          minWidth: '760px',
                           padding: '6px 14px', alignItems: 'center',
                           background: isPii
                             ? '#ef44440a'
@@ -442,6 +447,7 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
                     )
                   })}
                 </div>
+                </div>{/* end overflowX scroll wrapper */}
               </div>
             </>
           )
