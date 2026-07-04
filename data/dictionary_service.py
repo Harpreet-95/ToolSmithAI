@@ -121,7 +121,36 @@ def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
     snapshot_id = snap_row["id"]
     snapshot = _reconstruct_snapshot(json.loads(snap_row["snapshot_json"]), source_id)
 
-    result = generate_dictionary(snapshot, snapshot_id)
+    # Load the latest profiling snapshot column profiles, if one exists.
+    profiling_context: dict[tuple[str, str], dict] | None = None
+    conn = get_connection()
+    try:
+        prof_snap = conn.execute(
+            "SELECT id FROM profiling_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if prof_snap is not None:
+            col_rows = conn.execute(
+                """SELECT table_fqn, column_name,
+                          semantic_type, semantic_confidence,
+                          pii_name_heuristic, pii_confirmed,
+                          cardinality_tier, uniqueness_score,
+                          null_percentage, blank_percentage,
+                          quality_score, quality_grade,
+                          dominant_pattern, pattern_coverage
+                   FROM profiling_column_profiles
+                   WHERE profiling_snapshot_id = ?""",
+                (prof_snap["id"],),
+            ).fetchall()
+            profiling_context = {
+                (r["table_fqn"], r["column_name"]): dict(r)
+                for r in col_rows
+            }
+    finally:
+        conn.close()
+
+    result = generate_dictionary(snapshot, snapshot_id, profiling_context=profiling_context)
     _upsert_dictionary(result)
 
     return {
