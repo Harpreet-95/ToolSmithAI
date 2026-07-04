@@ -84,6 +84,37 @@ _PII_PERSON_ENTITIES: tuple[str, ...] = ("Student", "Employee", "User", "Applica
 # Entities that are typically referenced by many other tables (high fan-in).
 _HIGH_FANIN_ENTITIES: tuple[str, ...] = ("Department", "Program", "Employee")
 
+# ---------------------------------------------------------------------------
+# Deep profiling signal sets
+# ---------------------------------------------------------------------------
+
+_METRIC_SEMANTIC_TYPES = frozenset({
+    "amount", "currency", "price", "revenue", "balance", "cost", "quantity",
+})
+
+_CONTACT_SEMANTIC_TYPES = frozenset({
+    "email", "phone", "name", "ssn", "address",
+})
+
+_TIMESTAMP_SEMANTIC_TYPES = frozenset({
+    "timestamp", "date", "datetime",
+})
+
+_LOW_CARDINALITY_TIERS = frozenset({"CONSTANT", "BINARY", "LOW"})
+_HIGH_CARDINALITY_TIERS = frozenset({"UNIQUE", "HIGH"})
+
+# Person-type entities boosted by PII/contact column signals
+_PERSON_SIGNAL_ENTITIES: tuple[str, ...] = ("Student", "Applicant", "User", "Employee")
+
+# Reference-type entities boosted by low-cardinality lookup signals
+_REFERENCE_SIGNAL_ENTITIES: tuple[str, ...] = ("Department", "Course", "Program")
+
+# Event-type entities boosted by timestamp/sequential signals
+_EVENT_SIGNAL_ENTITIES: tuple[str, ...] = ("Event", "Campaign")
+
+# Master data entities boosted by high-uniqueness identifier signals
+_MASTER_SIGNAL_ENTITIES: tuple[str, ...] = ("Student", "Employee", "User", "Vendor")
+
 
 # ---------------------------------------------------------------------------
 # Tokenizer (identical strategy to domain rules)
@@ -103,12 +134,218 @@ def _hits(keyword: str, tokens: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Deep profiling boosts
+# ---------------------------------------------------------------------------
+
+def _apply_deep_profiling_entity_boosts(
+    column_profiles: list[dict],
+    raw: dict[str, float],
+    evidence: dict[str, list[str]],
+) -> tuple[float, list[str]]:
+    """Apply deep profiling column signals as additional entity score boosts.
+
+    Mutates raw and evidence in-place.
+    Returns (quality_confidence_multiplier, quality_evidence_strings).
+    The multiplier is applied to the winner's confidence after threshold selection;
+    it does not affect which entity wins.
+    """
+    n = len(column_profiles)
+    if n == 0:
+        return 1.0, []
+
+    metric_cols        = 0
+    skewed_cols        = 0
+    timestamp_cols     = 0
+    contact_cols       = 0
+    pii_confirmed_cols = 0
+    low_card_cols      = 0
+    id_like_cols       = 0
+    quality_vals: list[float] = []
+
+    for cp in column_profiles:
+        sem      = (cp.get("semantic_type")      or "").lower()
+        card     = (cp.get("cardinality_tier")   or "").upper()
+        shape    = (cp.get("distribution_shape") or "").lower()
+        pii_json = (cp.get("pii_signals_json")   or "").lower()
+        pii_conf = cp.get("pii_confirmed")
+        qs       = cp.get("quality_score")
+        uniq     = cp.get("uniqueness_score")
+
+        if sem in _METRIC_SEMANTIC_TYPES:
+            metric_cols += 1
+
+        if shape in {"highly_skewed", "right_skewed"}:
+            skewed_cols += 1
+
+        if sem in _TIMESTAMP_SEMANTIC_TYPES:
+            timestamp_cols += 1
+
+        if sem in _CONTACT_SEMANTIC_TYPES:
+            contact_cols += 1
+        elif pii_json and any(k in pii_json for k in ("email", "phone", "contact")):
+            contact_cols += 1
+
+        if pii_conf and str(pii_conf).lower() not in ("", "false", "0", "none"):
+            pii_confirmed_cols += 1
+
+        if card in _LOW_CARDINALITY_TIERS:
+            low_card_cols += 1
+
+        if card in _HIGH_CARDINALITY_TIERS and uniq is not None:
+            try:
+                if float(uniq) >= 0.9:
+                    id_like_cols += 1
+            except (TypeError, ValueError):
+                pass
+
+        if qs is not None:
+            try:
+                quality_vals.append(float(qs))
+            except (TypeError, ValueError):
+                pass
+
+    # -- Transaction Entity (Payment): metric/amount + skewed distributions ---
+    finance_signals = metric_cols + skewed_cols
+    if finance_signals >= 4:
+        transaction_boost = 0.7
+    elif finance_signals >= 2:
+        transaction_boost = 0.4
+    elif finance_signals >= 1:
+        transaction_boost = 0.15
+    else:
+        transaction_boost = 0.0
+
+    if transaction_boost > 0.0:
+        parts: list[str] = []
+        if metric_cols:
+            parts.append(f"{metric_cols} metric-like numeric column(s)")
+        if skewed_cols:
+            parts.append(f"{skewed_cols} skewed numeric distribution(s)")
+        raw["Payment"] += transaction_boost
+        evidence["Payment"].append(
+            "Deep profiling detected metric-heavy transaction structure: "
+            + " and ".join(parts)
+        )
+
+    # Timestamp + amount combination is a strong payment record indicator.
+    if timestamp_cols >= 1 and metric_cols >= 1:
+        raw["Payment"] += 0.2
+        evidence["Payment"].append(
+            "Timestamp + amount combination suggests payment/transaction records"
+        )
+
+    # -- Person Entity: contact / PII columns ---------------------------------
+    if contact_cols >= 3:
+        contact_boost = 0.6
+    elif contact_cols >= 2:
+        contact_boost = 0.4
+    elif contact_cols >= 1:
+        contact_boost = 0.2
+    else:
+        contact_boost = 0.0
+
+    if contact_boost > 0.0:
+        msg = (
+            f"Contact-related semantic types dominate "
+            f"({contact_cols} contact column(s) detected)"
+        )
+        for entity in _PERSON_SIGNAL_ENTITIES:
+            raw[entity] += contact_boost
+            evidence[entity].append(msg)
+
+    if pii_confirmed_cols >= 2:
+        for entity in _PERSON_SIGNAL_ENTITIES:
+            raw[entity] += 0.2
+            evidence[entity].append(
+                f"PII-confirmed columns detected ({pii_confirmed_cols} confirmed), "
+                "suggesting person-level entity"
+            )
+
+    # -- Reference Entity: low-cardinality lookup patterns --------------------
+    low_card_ratio = low_card_cols / n
+    if low_card_ratio >= 0.7:
+        ref_boost = 0.6
+    elif low_card_ratio >= 0.5:
+        ref_boost = 0.4
+    elif low_card_cols >= 3:
+        ref_boost = 0.25
+    else:
+        ref_boost = 0.0
+
+    if ref_boost > 0.0:
+        for entity in _REFERENCE_SIGNAL_ENTITIES:
+            raw[entity] += ref_boost
+            evidence[entity].append(
+                f"Low-cardinality reference patterns detected "
+                f"({low_card_cols}/{n} low-cardinality columns)"
+            )
+
+    # -- Event Entity: timestamp-heavy + sequential identifiers ---------------
+    if timestamp_cols >= 3:
+        event_boost = 0.65
+    elif timestamp_cols >= 2:
+        event_boost = 0.3
+    elif timestamp_cols >= 1:
+        event_boost = 0.15
+    else:
+        event_boost = 0.0
+
+    if event_boost > 0.0:
+        parts = [f"{timestamp_cols} timestamp/date column(s)"]
+        if id_like_cols >= 1 and timestamp_cols >= 2:
+            event_boost += 0.3
+            parts.append(f"{id_like_cols} sequential identifier(s)")
+        for entity in _EVENT_SIGNAL_ENTITIES:
+            raw[entity] += event_boost
+            evidence[entity].append(
+                "Timestamp-heavy append-like structure detected: " + ", ".join(parts)
+            )
+
+    # -- Master Entity: multiple unique business key identifiers --------------
+    if id_like_cols >= 3 and low_card_ratio < 0.5:
+        master_boost = 0.65
+    elif id_like_cols >= 2:
+        master_boost = 0.25
+    elif id_like_cols >= 1:
+        master_boost = 0.1
+    else:
+        master_boost = 0.0
+
+    if master_boost > 0.0:
+        for entity in _MASTER_SIGNAL_ENTITIES:
+            raw[entity] += master_boost
+            evidence[entity].append(
+                f"Deep profiling detected multiple unique identifiers "
+                f"({id_like_cols} high-uniqueness column(s))"
+            )
+
+    # -- Quality confidence multiplier ----------------------------------------
+    quality_evidence: list[str] = []
+    quality_multiplier = 1.0
+    if quality_vals:
+        avg_qs = sum(quality_vals) / len(quality_vals)
+        if avg_qs >= 75.0:
+            quality_multiplier = 1.15
+            quality_evidence.append(
+                f"High data quality (avg score {avg_qs:.0f}/100) increased confidence"
+            )
+        elif avg_qs < 40.0:
+            quality_multiplier = 0.80
+            quality_evidence.append(
+                f"Low data quality (avg score {avg_qs:.0f}/100) — classification less reliable"
+            )
+
+    return quality_multiplier, quality_evidence
+
+
+# ---------------------------------------------------------------------------
 # Entity detection
 # ---------------------------------------------------------------------------
 
 def detect_table_entity(
     table_profile: dict,
     semantic_types: list[str] | None = None,
+    column_profiles: list[dict] | None = None,
 ) -> TableEntityAssignment:
     """Classify a profiled table into a business entity type.
 
@@ -119,6 +356,11 @@ def detect_table_entity(
             fk_count, referenced_by_count.
         semantic_types: Semantic type strings from profiling_column_profiles
             (e.g. ['EMAIL', 'AMOUNT', 'STATUS']).  Case-insensitive.
+        column_profiles: Optional full column profile row dicts from
+            profiling_column_profiles.  When provided, deep profiling signals
+            (cardinality_tier, distribution_shape, quality_score, pii_confirmed,
+            pii_signals_json, uniqueness_score, etc.) improve entity classification
+            and confidence.  If None, behaviour is identical to pre-deep-profiling.
 
     Returns:
         TableEntityAssignment with entity, confidence [0–1], evidence list, and
@@ -185,6 +427,14 @@ def detect_table_entity(
                     f"column semantic types include {sorted(matched)}"
                 )
 
+    # -- Deep profiling column-level boosts -------------------------------
+    quality_multiplier = 1.0
+    quality_evidence: list[str] = []
+    if column_profiles:
+        quality_multiplier, quality_evidence = _apply_deep_profiling_entity_boosts(
+            column_profiles, raw, evidence
+        )
+
     # -- Winner selection -------------------------------------------------
     winner = max(raw, key=lambda e: raw[e])
     top_score = raw[winner]
@@ -198,7 +448,9 @@ def detect_table_entity(
             competing_entities=[],
         )
 
-    confidence = round(min(1.0, top_score / _CONFIDENCE_DENOMINATOR), 3)
+    confidence = round(
+        min(1.0, (top_score / _CONFIDENCE_DENOMINATOR) * quality_multiplier), 3
+    )
 
     competing = [
         EntityScore(
@@ -214,6 +466,6 @@ def detect_table_entity(
         table_fqn=table_fqn,
         entity=winner,
         confidence=confidence,
-        evidence=evidence[winner],
+        evidence=evidence[winner] + quality_evidence,
         competing_entities=competing,
     )
