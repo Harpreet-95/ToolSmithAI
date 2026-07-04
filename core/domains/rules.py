@@ -88,6 +88,26 @@ _SEMANTIC_TYPE_BOOSTS: list[tuple[frozenset[str], str, float]] = [
     (frozenset({"email", "template"}),               "Communications",    0.2),
 ]
 
+# ---------------------------------------------------------------------------
+# Deep profiling signal sets
+# ---------------------------------------------------------------------------
+
+# Semantic types strongly associated with financial/metric data
+_METRIC_SEMANTIC_TYPES = frozenset({
+    "amount", "currency", "price", "revenue", "balance", "cost", "quantity",
+})
+
+# Semantic types strongly associated with PII / contact data
+_CONTACT_SEMANTIC_TYPES = frozenset({
+    "email", "phone", "name", "ssn", "address",
+})
+
+# Cardinality tiers that indicate few distinct values (reference / lookup tables)
+_LOW_CARDINALITY_TIERS = frozenset({"CONSTANT", "BINARY", "LOW"})
+
+# Cardinality tiers that indicate many distinct values (entity / ID columns)
+_HIGH_CARDINALITY_TIERS = frozenset({"UNIQUE", "HIGH"})
+
 
 # ---------------------------------------------------------------------------
 # Tokenizer
@@ -107,12 +127,167 @@ def _hits(keyword: str, tokens: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Deep profiling boosts
+# ---------------------------------------------------------------------------
+
+def _apply_deep_profiling_boosts(
+    column_profiles: list[dict],
+    raw: dict[str, float],
+    evidence: dict[str, list[str]],
+) -> tuple[float, list[str]]:
+    """Apply deep profiling column signals as additional domain score boosts.
+
+    Mutates raw and evidence in-place.
+    Returns (quality_confidence_multiplier, quality_evidence_strings).
+    quality_confidence_multiplier is applied to the winner's confidence after
+    Unknown-threshold selection; it does not affect which domain wins.
+    """
+    n = len(column_profiles)
+    if n == 0:
+        return 1.0, []
+
+    metric_cols = 0      # amount/currency/price semantic types
+    skewed_cols = 0      # right_skewed or highly_skewed distributions
+    contact_cols = 0     # email/phone/name PII-signal columns
+    low_card_cols = 0    # CONSTANT/BINARY/LOW cardinality
+    id_like_cols = 0     # UNIQUE/HIGH cardinality with uniqueness_score >= 0.9
+    quality_vals: list[float] = []
+
+    for cp in column_profiles:
+        sem = (cp.get("semantic_type") or "").lower()
+        card = (cp.get("cardinality_tier") or "").upper()
+        shape = (cp.get("distribution_shape") or "").lower()
+        pii_json = (cp.get("pii_signals_json") or "").lower()
+        qs = cp.get("quality_score")
+        uniqueness = cp.get("uniqueness_score")
+
+        if sem in _METRIC_SEMANTIC_TYPES:
+            metric_cols += 1
+
+        if shape in {"highly_skewed", "right_skewed"}:
+            skewed_cols += 1
+
+        if sem in _CONTACT_SEMANTIC_TYPES:
+            contact_cols += 1
+        elif pii_json and any(k in pii_json for k in ("email", "phone", "contact")):
+            contact_cols += 1
+
+        if card in _LOW_CARDINALITY_TIERS:
+            low_card_cols += 1
+
+        if card in _HIGH_CARDINALITY_TIERS and uniqueness is not None:
+            try:
+                if float(uniqueness) >= 0.9:
+                    id_like_cols += 1
+            except (TypeError, ValueError):
+                pass
+
+        if qs is not None:
+            try:
+                quality_vals.append(float(qs))
+            except (TypeError, ValueError):
+                pass
+
+    # -- Finance / Payments: metric-like and skewed numeric columns ----------
+    finance_signals = metric_cols + skewed_cols
+    if finance_signals >= 4:
+        finance_boost = 0.7
+    elif finance_signals >= 2:
+        finance_boost = 0.4
+    elif finance_signals >= 1:
+        finance_boost = 0.15
+    else:
+        finance_boost = 0.0
+
+    if finance_boost > 0.0:
+        parts: list[str] = []
+        if metric_cols:
+            parts.append(f"{metric_cols} metric-like numeric column(s)")
+        if skewed_cols:
+            parts.append(f"{skewed_cols} skewed numeric distribution(s)")
+        raw["Finance"] += finance_boost
+        evidence["Finance"].append("Deep profiling found " + " and ".join(parts))
+
+    # -- Contact / PII: email/phone/name/PII signal columns ------------------
+    if contact_cols >= 3:
+        contact_boost = 0.7
+    elif contact_cols >= 2:
+        contact_boost = 0.45
+    elif contact_cols == 1:
+        contact_boost = 0.2
+    else:
+        contact_boost = 0.0
+
+    if contact_boost > 0.0:
+        msg = (
+            f"PII/contact signals suggest student/contact domain "
+            f"({contact_cols} contact column(s))"
+        )
+        for d in ("Student Lifecycle", "Identity & Access"):
+            raw[d] += contact_boost
+            evidence[d].append(msg)
+
+    # -- Reference / Lookup: majority low-cardinality columns ----------------
+    low_card_ratio = low_card_cols / n
+    if low_card_ratio >= 0.7:
+        ref_boost = 0.7
+    elif low_card_ratio >= 0.5:
+        ref_boost = 0.45
+    elif low_card_cols >= 3:
+        ref_boost = 0.25
+    else:
+        ref_boost = 0.0
+
+    if ref_boost > 0.0:
+        raw["Reference Data"] += ref_boost
+        evidence["Reference Data"].append(
+            f"Majority low-cardinality columns ({low_card_cols}/{n}) indicate reference/lookup data"
+        )
+
+    # -- Master Data / Entity-oriented: unique/high-cardinality ID columns ---
+    if id_like_cols >= 3:
+        id_boost = 0.4
+    elif id_like_cols >= 2:
+        id_boost = 0.25
+    elif id_like_cols >= 1:
+        id_boost = 0.1
+    else:
+        id_boost = 0.0
+
+    if id_boost > 0.0:
+        for d in ("Identity & Access", "Student Lifecycle"):
+            raw[d] += id_boost
+            evidence[d].append(
+                f"Deep profiling found {id_like_cols} unique/high-cardinality ID-like column(s)"
+            )
+
+    # -- Quality confidence multiplier ---------------------------------------
+    quality_evidence: list[str] = []
+    quality_multiplier = 1.0
+    if quality_vals:
+        avg_qs = sum(quality_vals) / len(quality_vals)
+        if avg_qs >= 75.0:
+            quality_multiplier = 1.15
+            quality_evidence.append(
+                f"High data quality (avg score {avg_qs:.0f}/100) increased confidence"
+            )
+        elif avg_qs < 40.0:
+            quality_multiplier = 0.80
+            quality_evidence.append(
+                f"Low data quality (avg score {avg_qs:.0f}/100) — classification less reliable"
+            )
+
+    return quality_multiplier, quality_evidence
+
+
+# ---------------------------------------------------------------------------
 # Domain detection
 # ---------------------------------------------------------------------------
 
 def detect_table_domain(
     table_profile: dict,
     column_semantic_types: list[str] | None = None,
+    column_profiles: list[dict] | None = None,
 ) -> TableDomainAssignment:
     """Classify a profiled table into a business domain.
 
@@ -123,6 +298,12 @@ def detect_table_domain(
             fk_count, referenced_by_count.
         column_semantic_types: Semantic type strings from profiling_column_profiles
             (e.g. ['EMAIL', 'AMOUNT', 'STATUS']).  Case-insensitive.
+        column_profiles: Optional full column profile row dicts from
+            profiling_column_profiles.  When provided, deep profiling signals
+            (cardinality_tier, distribution_shape, quality_score, pii_signals_json,
+            uniqueness_score, etc.) are used to improve domain classification and
+            confidence.  If None, behaviour is identical to the pre-deep-profiling
+            logic.
 
     Returns:
         TableDomainAssignment with domain, confidence [0–1], evidence list, and
@@ -188,6 +369,14 @@ def detect_table_domain(
                     f"column semantic types include {sorted(matched)}"
                 )
 
+    # -- Deep profiling column-level boosts -------------------------------
+    quality_multiplier = 1.0
+    quality_evidence: list[str] = []
+    if column_profiles:
+        quality_multiplier, quality_evidence = _apply_deep_profiling_boosts(
+            column_profiles, raw, evidence
+        )
+
     # -- Winner selection -------------------------------------------------
     winner = max(raw, key=lambda d: raw[d])
     top_score = raw[winner]
@@ -201,7 +390,9 @@ def detect_table_domain(
             competing_domains=[],
         )
 
-    confidence = round(min(1.0, top_score / _CONFIDENCE_DENOMINATOR), 3)
+    confidence = round(
+        min(1.0, (top_score / _CONFIDENCE_DENOMINATOR) * quality_multiplier), 3
+    )
 
     competing = [
         DomainScore(
@@ -217,6 +408,6 @@ def detect_table_domain(
         table_fqn=table_fqn,
         domain=winner,
         confidence=confidence,
-        evidence=evidence[winner],
+        evidence=evidence[winner] + quality_evidence,
         competing_domains=competing,
     )

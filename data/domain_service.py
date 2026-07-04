@@ -79,18 +79,30 @@ def generate_domain_assignments(source_id: int, user_id: str) -> dict | None:
             (snap_id,),
         ).fetchall()
 
-        # Semantic types per table: table_fqn → [semantic_type, ...]
-        sem_rows = conn.execute(
-            "SELECT table_fqn, semantic_type FROM profiling_column_profiles "
-            "WHERE profiling_snapshot_id = ? AND semantic_type IS NOT NULL",
+        # Full column profiles per table: used for deep profiling domain intelligence.
+        # Fetches all columns (not just those with semantic_type) to use cardinality,
+        # quality, distribution, and PII signals.
+        col_rows = conn.execute(
+            "SELECT table_fqn, semantic_type, cardinality_tier, uniqueness_score, "
+            "null_percentage, blank_percentage, quality_score, quality_grade, "
+            "distribution_shape, pii_signals_json, dominant_pattern, pattern_coverage, "
+            "semantic_confidence "
+            "FROM profiling_column_profiles "
+            "WHERE profiling_snapshot_id = ?",
             (snap_id,),
         ).fetchall()
     finally:
         conn.close()
 
     sem_map: dict[str, list[str]] = {}
-    for row in sem_rows:
-        sem_map.setdefault(row["table_fqn"], []).append(row["semantic_type"])
+    col_profiles_map: dict[str, list[dict]] = {}
+    for row in col_rows:
+        row_dict = dict(row)
+        fqn = row_dict["table_fqn"]
+        col_profiles_map.setdefault(fqn, []).append(row_dict)
+        sem = row_dict.get("semantic_type")
+        if sem is not None:
+            sem_map.setdefault(fqn, []).append(sem)
 
     # Load APPROVED active learned rules for this source.
     # Scoped to source_id — rules from other sources are never loaded.
@@ -136,7 +148,11 @@ def generate_domain_assignments(source_id: int, user_id: str) -> dict | None:
         if a is not None:
             learned_matches += 1
         else:
-            a = detect_table_domain(profile, sem_types)
+            a = detect_table_domain(
+                profile,
+                sem_types,
+                column_profiles=col_profiles_map.get(profile["table_fqn"]),
+            )
             if a.domain != "Unknown":
                 generic_matches += 1
 
