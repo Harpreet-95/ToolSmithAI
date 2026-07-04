@@ -3835,7 +3835,31 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
 
         {/* ── Tab content ── */}
         {activeTab === 'dictionary'
-          ? <DictionaryReview C={C} token={token} sourceId={dsSelectedSourceId} embedded hideSourceSelector />
+          ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {dictCount > 0 && (
+                <div style={{ ...card({ padding: '14px 18px' }), display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: '0.78rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>{dictCount.toLocaleString()} terms · {dictApproved} approved</div>
+                    <div style={{ fontSize: '0.72rem', color: muted, fontFamily: FONT, marginTop: '3px' }}>Regenerate after profiling to refresh meanings using the latest profiling signals.</div>
+                  </div>
+                  <button
+                    onClick={() => handleGenerateDictionary(dsSelectedSourceId)}
+                    disabled={dict.generating}
+                    style={{ ...btnGhost({ padding: '6px 14px', fontSize: '0.78rem' }), color: textSec, flexShrink: 0 }}
+                  >
+                    {dict.generating ? 'Regenerating…' : 'Regenerate Dictionary'}
+                  </button>
+                </div>
+              )}
+              {dict.error && (
+                <div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}>
+                  <span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{dict.error}</span>
+                </div>
+              )}
+              <DictionaryReview C={C} token={token} sourceId={dsSelectedSourceId} embedded hideSourceSelector />
+            </div>
+          )
           : (TAB_CONTENT[activeTab] ?? null)
         }
 
