@@ -955,6 +955,7 @@ export default function ColumnProfileExplorer({
   hasSchema,
   onRunProfile,
   profileRunning,
+  refreshKey = 0,
 }) {
   const bg      = C.bg       ?? '#07091a'
   const surface = C.surface  ?? '#0d1128'
@@ -1005,7 +1006,7 @@ export default function ColumnProfileExplorer({
       .then(resp => setBkgData(resp?.data ?? null))
       .catch(() => setBkgData(null))
       .finally(() => setBkgLoading(false))
-  }, [selectedFqn, sourceId, token])
+  }, [selectedFqn, sourceId, token, refreshKey])
 
   // Fetch column business context when a column drawer opens
   useEffect(() => {

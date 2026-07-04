@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
-import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, bulkGovernanceApprove, bulkGovernanceDryRun, bulkGovernanceReject, continueBatchProfile, createDataSource, deleteDataSource, discoverDataSourceSchema, executeDataSourceQuery, explainTable, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getDownstreamLineage, getEntityRules, getEntitySummary, getGovernanceAssignments, getGovernanceAssignmentSummary, getGovernanceBottlenecks, getGovernanceDashboard, getGovernanceExplanation, getGovernancePolicies, getGovernanceRecommendations, getImpactAnalysis, getKnowledgeGraphSummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, getRelatedTables, getSemanticSummary, getSemanticTableProfile, getUpstreamLineage, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, startBatchProfile, testDataSource } from '../api/client'
+import { useState, useEffect, useRef } from 'react'
+import { analyzeDomainRefinements, approveDomainRefinement, approveDomainRule, approveEntityRule, bulkGovernanceApprove, bulkGovernanceDryRun, bulkGovernanceReject, createDataSource, deleteDataSource, discoverDataSourceSchema, executeDataSourceQuery, explainTable, generateDictionaryForSource, generateDomainRuleSuggestions, generateDomains, generateEntities, generateEntityRuleSuggestions, getDomainRefinements, getDomainRules, getDomainSummary, getDataSourceSchema, getDownstreamLineage, getEntityRules, getEntitySummary, getGovernanceAssignments, getGovernanceAssignmentSummary, getGovernanceBottlenecks, getGovernanceDashboard, getGovernanceExplanation, getGovernancePolicies, getGovernanceRecommendations, getImpactAnalysis, getKnowledgeGraphSummary, getMetadataJob, getProfile, getProfileHistory, getProfileReviewTasks, getRelatedTables, getSemanticSummary, getSemanticTableProfile, getUpstreamLineage, listDataSources, listDictionaryTables, listDomainAssignments, listEntityAssignments, rejectDomainRefinement, rejectDomainRule, rejectEntityRule, runMetadataJob, testDataSource } from '../api/client'
+import { useProfilingJob } from '../context/ProfilingJobContext'
 import DictionaryReview from './DictionaryReview'
 import ColumnProfileExplorer from './ColumnProfileExplorer'
 
@@ -120,7 +121,13 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
   const [domAssignState,  setDomAssignState]  = useState({})  // { [srcId]: { loading, data, error } }
   const [entAssignState,  setEntAssignState]  = useState({})  // { [srcId]: { loading, data, error } }
   const [profileHistState,setProfileHistState]= useState({})  // { [srcId]: { loading, data, error } }
-  const [fullProfState,    setFullProfState]    = useState({})  // { [id]: { loading, snapshotId, progress, total, error } }
+  const [runsFilter,       setRunsFilter]       = useState('all')  // 'all' | 'running' | 'completed' | 'failed' | 'cancelled'
+  const [runsExpandedId,   setRunsExpandedId]   = useState(null)   // id of the expanded run row
+  const [profilingModal,   setProfilingModal]   = useState({})  // { [id]: { open, mode, topN } }
+
+  // ── Global profiling context (state + polling live here, not in this component) ──
+  const profCtx = useProfilingJob()
+  const { jobs: fullProfState, lastCompleted, profileRefreshKey, cancelRequestedRef, recoveredJobRef } = profCtx
   const [reviewTaskState,  setReviewTaskState]  = useState({})  // { [id]: { loading, data, error } }
   const [reviewPage,       setReviewPage]       = useState({})  // { [id]: number } 0-indexed current page
   const [srcMenu,          setSrcMenu]          = useState({})  // { [id]: bool } per-source three-dot menu
@@ -251,6 +258,34 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       return { ...s, [dsSelectedSourceId]: { question: cur.question ?? '', loading: false, result: null, error: null } }
     })
   }, [dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // On source select, recover any profiling job that survived a page refresh.
+  // The context owns the polling loop — we just trigger it here.
+  useEffect(() => {
+    if (dsSelectedSourceId == null || !token) return
+    const id  = dsSelectedSourceId
+    const src = sources.find(s => s.id === id)
+    profCtx.recoverActiveJob(id, src?.display_name ?? `Source #${id}`)
+  }, [dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Register post-completion callbacks so the context can refresh local state
+  // (profile data, history) when profiling finishes while this component is mounted.
+  useEffect(() => {
+    if (dsSelectedSourceId == null) return
+    const id = dsSelectedSourceId
+    profCtx.registerCompletionCallback(id, () => {
+      loadProfile(id)
+      loadProfileHistory(id)
+    })
+    return () => profCtx.unregisterCompletionCallback(id)
+  }, [dsSelectedSourceId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Register local toast function so the context can notify the user while
+  // this component is mounted.
+  useEffect(() => {
+    profCtx.registerNotify(notify)
+    return () => profCtx.unregisterNotify()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleTypeChange(value) {
     const st = SOURCE_TYPES.find(t => t.value === value)
@@ -686,32 +721,10 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
     loadReviewTasks(src.id)
   }
 
-  async function handleRunDataProfile(src) {
-    const id = src.id
-    setFullProfState(s => ({ ...s, [id]: { loading: true, snapshotId: null, progress: 0, total: 0, error: null } }))
-    try {
-      const startResp = await startBatchProfile(id, token)
-      const snap = startResp?.data
-      const snapshotId = snap?.profiling_snapshot_id
-      const total = snap?.total_tables ?? 0
-      setFullProfState(s => ({ ...s, [id]: { loading: true, snapshotId, progress: 0, total, error: null } }))
-      let isComplete = total === 0 || (snap?.next_table_index != null && snap.next_table_index >= total)
-      while (!isComplete) {
-        // eslint-disable-next-line no-await-in-loop
-        const contResp = await continueBatchProfile(id, snapshotId, token)
-        const cont = contResp?.data
-        isComplete = cont?.is_complete ?? false
-        setFullProfState(s => ({ ...s, [id]: { loading: !isComplete, snapshotId, progress: cont?.completed_tables ?? 0, total: cont?.total_tables ?? total, error: null } }))
-      }
-      await loadProfile(id)
-      await loadProfileHistory(id)
-      loadReviewTasks(id)
-      notify('Data profile complete.')
-    } catch (e) {
-      const msg = e?.message ?? 'Data profiling failed.'
-      setFullProfState(s => ({ ...s, [id]: { ...(s[id] ?? {}), loading: false, error: msg } }))
-      notify(msg, false)
-    }
+  function handleRunDataProfile(src, profileMode = 'FULL', max_tables = 0) {
+    setProfilingModal(s => ({ ...s, [src.id]: { ...(s[src.id] ?? {}), open: false } }))
+    notify('Profiling started.')
+    profCtx.startProfiling(src, profileMode, max_tables)
   }
 
   async function handleGenerateDictionary(id) {
@@ -1713,32 +1726,6 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
               </div>
             </div>
 
-            {/* Recent Pipeline Runs */}
-            {profHist.data && Array.isArray(profHist.data) && profHist.data.length > 0 && (
-              <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', overflow: 'hidden' }}>
-                <div style={{ padding: '8px 16px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ fontSize: '0.8rem', fontWeight: '700', color: text, fontFamily: FONT }}>Recent Pipeline Runs</span>
-                  <button onClick={() => setDsActiveTab('runs')} style={{ background: 'none', border: 'none', color: accent, fontSize: '0.72rem', fontFamily: FONT, cursor: 'pointer', padding: 0 }}>View all →</button>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px 150px 110px', padding: '6px 16px', borderBottom: `1px solid ${border}`, background: bg }}>
-                  {['Run Type', 'Status', 'Started', 'Assets'].map(h => (
-                    <span key={h} style={{ fontSize: '0.58rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT }}>{h}</span>
-                  ))}
-                </div>
-                {profHist.data.slice(0, 4).map((run, i) => {
-                  const runCol = run.status === 'COMPLETE' ? success : run.status === 'RUNNING' ? accent : danger
-                  return (
-                    <div key={run.id ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 90px 150px 110px', padding: '6px 16px', borderBottom: i < Math.min(profHist.data.length, 4) - 1 ? `1px solid ${border}20` : 'none', background: i % 2 === 0 ? 'transparent' : `${bg}50` }}>
-                      <span style={{ fontSize: '0.72rem', color: textSec, fontFamily: FONT }}>Full Pipeline Run</span>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', width: 'fit-content', gap: '3px', padding: '1px 7px', borderRadius: '5px', fontSize: '0.62rem', fontWeight: '700', background: `${runCol}15`, color: runCol, border: `1px solid ${runCol}35`, fontFamily: FONT }}>{run.status ?? '—'}</span>
-                      <span style={{ fontSize: '0.73rem', color: muted, fontFamily: FONT }}>{run.created_at ? fmtDate(run.created_at) : '—'}</span>
-                      <span style={{ fontSize: '0.73rem', color: textSec, fontFamily: FONT }}>{run.tables_profiled != null ? `${run.tables_profiled} / ${run.tables_total ?? '?'}` : '—'}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
             {/* Action Required · Recent Activity · Source Configuration */}
             <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '10px', alignItems: 'start' }}>
 
@@ -1895,74 +1882,96 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       const colGrid = hasFkData ? '1fr 136px 64px 36px 36px' : '1fr 136px 64px 36px'
 
       return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+
+          <style>{`
+            .tsm-tbl-row:hover:not([data-sel="true"]) { background: rgba(99,102,241,0.07) !important; }
+            .tsm-col-row:hover { background: rgba(99,102,241,0.08) !important; }
+          `}</style>
 
           {/* Error banner */}
           {sc.error && (
-            <div style={{ padding: '10px 14px', marginBottom: '10px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}>
+            <div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}>
               <span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{sc.error}</span>
             </div>
           )}
 
-          <div style={{ ...card({ padding: '0' }), overflow: 'hidden' }}>
+          {/* ── Enterprise workspace card ── */}
+          <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: '14px', overflow: 'hidden', boxShadow: '0 4px 32px rgba(0,0,0,0.38)' }}>
 
-            {/* ── Header ─────────────────────────────────────────────────── */}
-            <div style={{ padding: '11px 16px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                <span style={{ fontSize: '0.88rem', fontWeight: '700', color: text, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {sc.data.database_name ?? 'Database'}
-                </span>
-                <span style={{ fontSize: '0.66rem', fontWeight: '600', padding: '2px 8px', borderRadius: '20px', background: `${accent}14`, color: accent, fontFamily: FONT, flexShrink: 0 }}>
-                  {allSchemas.length} schema{allSchemas.length !== 1 ? 's' : ''}
-                </span>
-                {sc.data.discovery_duration_ms != null && (
-                  <span style={{ fontSize: '0.69rem', color: muted, fontFamily: FONT, flexShrink: 0 }}>
-                    discovered in {sc.data.discovery_duration_ms.toLocaleString()}ms
-                  </span>
-                )}
+            {/* ── L1 header: database icon + name + global stat chips + refresh ── */}
+            <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px', background: `linear-gradient(135deg, ${border}30 0%, transparent 70%)` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: '34px', height: '34px', borderRadius: '9px', background: `${accent}18`, border: `1px solid ${accent}30`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <svg width="17" height="17" viewBox="0 0 17 17" fill="none">
+                    <ellipse cx="8.5" cy="4.8" rx="5.8" ry="2.3" stroke={accent} strokeWidth="1.4"/>
+                    <path d="M2.7 4.8v7.4c0 1.27 2.6 2.3 5.8 2.3s5.8-1.03 5.8-2.3V4.8" stroke={accent} strokeWidth="1.4"/>
+                    <path d="M2.7 8.5c0 1.27 2.6 2.3 5.8 2.3s5.8-1.03 5.8-2.3" stroke={accent} strokeWidth="1.4"/>
+                  </svg>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.96rem', fontWeight: '700', color: text, fontFamily: FONT, lineHeight: 1.1 }}>{sc.data.database_name ?? 'Database'}</div>
+                  {sc.data.discovery_duration_ms != null && (
+                    <div style={{ fontSize: '0.65rem', color: muted, fontFamily: FONT, marginTop: '2px' }}>discovered in {sc.data.discovery_duration_ms.toLocaleString()}ms</div>
+                  )}
+                </div>
               </div>
-              <button
-                onClick={() => loadSchema(dsSelectedSourceId)}
-                disabled={sc.loading}
-                style={{ ...btnGhost({ padding: '4px 12px', fontSize: '0.74rem' }), color: textSec, display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}
-              >
-                {sc.loading ? <><Spinner size={10} /> Refreshing</> : 'Refresh'}
-              </button>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                {[
+                  { label: 'Schemas', v: allSchemas.length,               col: accent },
+                  { label: 'Tables',  v: totalTables,                     col: accent },
+                  totalViews  > 0 ? { label: 'Views',   v: totalViews,               col: muted }   : null,
+                  totalCols   > 0 ? { label: 'Columns', v: totalCols.toLocaleString(), col: textSec } : null,
+                  tablesWithPk > 0 ? { label: 'w/ PK',  v: tablesWithPk,             col: success } : null,
+                  (tablesWithFk != null && tablesWithFk > 0) ? { label: 'w/ FK', v: tablesWithFk, col: warn } : null,
+                ].filter(Boolean).map((chip, idx) => (
+                  <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 10px', borderRadius: '20px', background: `${chip.col}12`, border: `1px solid ${chip.col}28` }}>
+                    <span style={{ fontSize: '0.84rem', fontWeight: '700', color: chip.col, fontFamily: FONT, lineHeight: 1 }}>{chip.v}</span>
+                    <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT, textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: '600' }}>{chip.label}</span>
+                  </div>
+                ))}
+                <button
+                  onClick={() => loadSchema(dsSelectedSourceId)}
+                  disabled={sc.loading}
+                  style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.74rem' }), color: textSec, display: 'flex', alignItems: 'center', gap: '5px' }}
+                >
+                  {sc.loading ? <><Spinner size={10} /> Refreshing…</> : <>
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10.5 6A4.5 4.5 0 1 1 6 1.5a4.5 4.5 0 0 1 3.18 1.32L10.5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><path d="M10.5 1.5V4H8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Refresh
+                  </>}
+                </button>
+              </div>
             </div>
 
-            {/* ── Summary stat strip ──────────────────────────────────────── */}
-            <div style={{ padding: '10px 16px', borderBottom: `1px solid ${border}`, display: 'flex', gap: '7px', flexWrap: 'wrap', alignItems: 'center' }}>
-              {statCard('Tables',  totalTables.toLocaleString(), accent)}
-              {totalViews   > 0  && statCard('Views',    totalViews.toLocaleString(),    muted)}
-              {allSchemas.length > 0 && statCard('Schemas',  allSchemas.length.toString(),   textSec)}
-              {totalCols    > 0  && statCard('Columns',  totalCols.toLocaleString(),     textSec)}
-              {tablesWithPk > 0  && statCard('With PK',  tablesWithPk.toLocaleString(),  success)}
-              {tablesWithFk != null && tablesWithFk > 0 && statCard('With FK', tablesWithFk.toLocaleString(), warn)}
-            </div>
+            {/* ── Two-panel workspace ── */}
+            <div style={{ display: 'flex', height: '63vh', minHeight: '370px', overflow: 'hidden' }}>
 
-            {/* ── Two-panel workspace ─────────────────────────────────────── */}
-            <div style={{ display: 'flex', height: '62vh', minHeight: '360px', overflow: 'hidden' }}>
+              {/* ── LEFT: Table Explorer (Level 1 – bg, slightly offset from surface) ── */}
+              <div style={{ width: '262px', flexShrink: 0, borderRight: `1px solid ${border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: bg }}>
 
-              {/* Left: table explorer ───────────────────────────────────── */}
-              <div style={{ width: '256px', flexShrink: 0, borderRight: `1px solid ${border}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-                {/* Search */}
-                <div style={{ padding: '9px 10px 6px' }}>
-                  <input
-                    value={schemaUi.search ?? ''}
-                    onChange={e => setSchUi({ search: e.target.value })}
-                    placeholder="Search tables…"
-                    style={{ width: '100%', boxSizing: 'border-box', background: bg, border: `1px solid ${border}`, borderRadius: '7px', color: text, fontSize: '0.77rem', padding: '6px 10px', outline: 'none', fontFamily: FONT }}
-                  />
+                {/* Search with icon */}
+                <div style={{ padding: '10px 10px 5px' }}>
+                  <div style={{ position: 'relative' }}>
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ position: 'absolute', left: '9px', top: '50%', transform: 'translateY(-50%)', color: muted, pointerEvents: 'none' }}>
+                      <circle cx="5" cy="5" r="3.5" stroke="currentColor" strokeWidth="1.4"/>
+                      <path d="m8.5 8.5 2 2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                    </svg>
+                    <input
+                      value={schemaUi.search ?? ''}
+                      onChange={e => setSchUi({ search: e.target.value })}
+                      placeholder="Search tables…"
+                      style={{ width: '100%', boxSizing: 'border-box', background: `${border}22`, border: `1px solid ${border}`, borderRadius: '7px', color: text, fontSize: '0.77rem', padding: '6px 10px 6px 28px', outline: 'none', fontFamily: FONT }}
+                    />
+                  </div>
                 </div>
 
                 {/* Schema filter + type toggles */}
-                <div style={{ padding: '0 10px 7px', display: 'flex', gap: '5px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ padding: '0 10px 6px', display: 'flex', gap: '5px', alignItems: 'center', flexWrap: 'wrap' }}>
                   {allSchemas.length > 1 && (
                     <select
                       value={stSchFilter}
                       onChange={e => setSchUi({ schemaFilter: e.target.value })}
-                      style={{ flex: 1, minWidth: 0, background: bg, border: `1px solid ${border}`, borderRadius: '6px', color: textSec, fontSize: '0.72rem', padding: '4px 7px', outline: 'none', fontFamily: FONT }}
+                      style={{ flex: 1, minWidth: 0, background: `${border}22`, border: `1px solid ${border}`, borderRadius: '6px', color: textSec, fontSize: '0.72rem', padding: '4px 7px', outline: 'none', fontFamily: FONT }}
                     >
                       <option value=''>All schemas</option>
                       {allSchemas.map(sch => <option key={sch.schema_name} value={sch.schema_name}>{sch.schema_name}</option>)}
@@ -1976,110 +1985,191 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
                 </div>
 
                 {/* Result count */}
-                <div style={{ padding: '0 12px 5px', fontSize: '0.67rem', color: muted, fontFamily: FONT }}>
+                <div style={{ padding: '0 12px 5px', fontSize: '0.66rem', color: muted, fontFamily: FONT }}>
                   {filtered.length.toLocaleString()} of {allTables.length.toLocaleString()} objects
                 </div>
 
                 {/* Scrollable table list */}
                 <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
                   {filtered.length === 0 ? (
-                    <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: '0.76rem', color: muted, fontFamily: FONT }}>
-                      No tables match
-                    </div>
+                    <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: '0.76rem', color: muted, fontFamily: FONT }}>No tables match</div>
                   ) : filtered.map(t => {
-                    const isSel  = t.table_fqn === stSelectedFqn
-                    const isView = t.table_type === 'VIEW'
-                    const hasPk  = t.columns?.some(c => c.is_primary_key)
+                    const isSel    = t.table_fqn === stSelectedFqn
+                    const isView   = t.table_type === 'VIEW'
+                    const hasPk    = t.columns?.some(c => c.is_primary_key)
+                    const colCount = t.columns?.length ?? 0
                     return (
                       <div
                         key={t.table_fqn}
+                        className="tsm-tbl-row"
+                        data-sel={isSel ? 'true' : 'false'}
                         onClick={() => setSchUi({ selectedTable: t.table_fqn })}
                         style={{
-                          padding: '5px 12px 5px 10px',
+                          padding: '6px 10px 6px 9px',
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
-                          gap: '5px',
-                          background: isSel ? `${accent}14` : 'transparent',
-                          borderLeft: `2px solid ${isSel ? accent : 'transparent'}`,
+                          gap: '6px',
+                          background: isSel ? `${accent}1c` : 'transparent',
+                          borderLeft: `3px solid ${isSel ? accent : 'transparent'}`,
+                          boxShadow: isSel ? `inset 0 0 16px ${accent}0c` : 'none',
                           userSelect: 'none',
+                          transition: 'background 0.1s',
                         }}
                       >
-                        {isView && (
-                          <span style={{ fontSize: '0.57rem', padding: '1px 4px', borderRadius: '3px', background: `${muted}1a`, color: muted, border: `1px solid ${muted}28`, fontFamily: FONT, flexShrink: 0, fontWeight: '600' }}>V</span>
-                        )}
+                        {/* Table / View icon */}
+                        <div style={{ width: '20px', height: '20px', borderRadius: '5px', background: isSel ? `${accent}28` : `${border}35`, border: `1px solid ${isSel ? accent + '55' : border + '60'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          {isView ? (
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                              <path d="M1 5c1.5-3.2 6.5-3.2 8 0-1.5 3.2-6.5 3.2-8 0Z" stroke={muted} strokeWidth="1.2"/>
+                              <circle cx="5" cy="5" r="1.5" fill={muted}/>
+                            </svg>
+                          ) : (
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                              <rect x="1" y="1" width="8" height="8" rx="1.5" stroke={isSel ? accent : muted} strokeWidth="1.2"/>
+                              <line x1="1" y1="3.6" x2="9" y2="3.6" stroke={isSel ? accent : muted} strokeWidth="1"/>
+                              <line x1="3.8" y1="1" x2="3.8" y2="9" stroke={isSel ? accent : muted} strokeWidth="1"/>
+                            </svg>
+                          )}
+                        </div>
+
                         <span style={{ fontSize: '0.78rem', fontFamily: MONO, color: isSel ? text : textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                           {t.table_name}
                         </span>
-                        {hasPk && <span style={{ fontSize: '0.6rem', padding: '1px 4px', borderRadius: '3px', background: `${success}14`, color: success, border: `1px solid ${success}28`, fontFamily: FONT, flexShrink: 0 }}>PK</span>}
-                        <span style={{ fontSize: '0.64rem', color: muted, flexShrink: 0, fontFamily: FONT }}>{t.columns?.length ?? 0}</span>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+                          {hasPk && <span style={{ fontSize: '0.56rem', padding: '1px 4px', borderRadius: '3px', background: `${success}18`, color: success, border: `1px solid ${success}30`, fontFamily: FONT, fontWeight: '700' }}>PK</span>}
+                          <span style={{ fontSize: '0.63rem', color: isSel ? textSec : muted, fontFamily: FONT, minWidth: '16px', textAlign: 'right' }}>{colCount}</span>
+                        </div>
                       </div>
                     )
                   })}
                 </div>
               </div>
 
-              {/* Right: detail panel ────────────────────────────────────── */}
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              {/* ── RIGHT: Detail panel (Level 2 – surface) ── */}
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: surface }}>
                 {!selT ? (
-                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '8px' }}>
-                    <span style={{ fontSize: '0.8rem', color: muted, fontFamily: FONT }}>Select a table to inspect its columns</span>
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ width: '42px', height: '42px', borderRadius: '10px', background: `${border}28`, border: `1px solid ${border}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <rect x="2.5" y="2.5" width="15" height="15" rx="2.5" stroke={muted} strokeWidth="1.5"/>
+                        <line x1="2.5" y1="7" x2="17.5" y2="7" stroke={muted} strokeWidth="1.2"/>
+                        <line x1="7" y1="2.5" x2="7" y2="17.5" stroke={muted} strokeWidth="1.2"/>
+                      </svg>
+                    </div>
+                    <span style={{ fontSize: '0.82rem', color: muted, fontFamily: FONT }}>Select a table to inspect its columns</span>
                   </div>
                 ) : (
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-                    {/* Table detail header */}
-                    <div style={{ padding: '13px 16px', borderBottom: `1px solid ${border}`, flexShrink: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '7px' }}>
-                        <span style={{ fontSize: '0.96rem', fontWeight: '700', color: text, fontFamily: MONO }}>{selT.table_name}</span>
-                        <span style={{ fontSize: '0.63rem', padding: '2px 7px', borderRadius: '4px', background: selT.table_type === 'VIEW' ? `${muted}1a` : `${accent}14`, color: selT.table_type === 'VIEW' ? muted : accent, border: `1px solid ${selT.table_type === 'VIEW' ? muted : accent}28`, fontFamily: FONT, fontWeight: '600' }}>
-                          {selT.table_type}
-                        </span>
-                        <span style={{ fontSize: '0.71rem', color: muted, fontFamily: FONT }}>
-                          in <span style={{ color: textSec, fontFamily: MONO }}>{selT._schema}</span>
-                        </span>
+                    {/* ── Table Summary Card ── */}
+                    <div style={{ padding: '14px 18px 12px', borderBottom: `1px solid ${border}`, flexShrink: 0, background: `linear-gradient(180deg, ${border}20 0%, transparent 80%)` }}>
+
+                      {/* Row 1: icon + name + TABLE/VIEW badge + schema badge */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', flexWrap: 'wrap', marginBottom: '11px' }}>
+                        <div style={{ width: '34px', height: '34px', borderRadius: '8px', background: selT.table_type === 'VIEW' ? `${muted}18` : `${accent}18`, border: `1px solid ${selT.table_type === 'VIEW' ? muted + '35' : accent + '35'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          {selT.table_type === 'VIEW' ? (
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                              <path d="M1 7c2-4.2 10-4.2 12 0-2 4.2-10 4.2-12 0Z" stroke={muted} strokeWidth="1.5"/>
+                              <circle cx="7" cy="7" r="2" fill={muted}/>
+                            </svg>
+                          ) : (
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                              <rect x="1.5" y="1.5" width="11" height="11" rx="2" stroke={accent} strokeWidth="1.5"/>
+                              <line x1="1.5" y1="5.2" x2="12.5" y2="5.2" stroke={accent} strokeWidth="1.2"/>
+                              <line x1="5.2" y1="1.5" x2="5.2" y2="12.5" stroke={accent} strokeWidth="1.2"/>
+                            </svg>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '1.06rem', fontWeight: '700', color: text, fontFamily: MONO, lineHeight: 1 }}>{selT.table_name}</span>
+                        <span style={{ fontSize: '0.61rem', padding: '2px 8px', borderRadius: '20px', background: selT.table_type === 'VIEW' ? `${muted}18` : `${accent}16`, color: selT.table_type === 'VIEW' ? muted : accent, border: `1px solid ${selT.table_type === 'VIEW' ? muted + '30' : accent + '30'}`, fontFamily: FONT, fontWeight: '700', letterSpacing: '0.06em' }}>{selT.table_type}</span>
+                        <span style={{ fontSize: '0.61rem', padding: '2px 8px', borderRadius: '20px', background: `${border}30`, color: textSec, border: `1px solid ${border}`, fontFamily: MONO }}>{selT._schema}</span>
                       </div>
-                      <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
-                          <span style={{ color: textSec, fontWeight: '600' }}>{selT.columns?.length ?? 0}</span> columns
-                        </span>
+
+                      {/* Row 2: metric chips */}
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        {/* Columns */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '6px', background: `${accent}0d`, border: `1px solid ${accent}20` }}>
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><rect x="0.8" y="0.8" width="3.4" height="8.4" rx="0.8" stroke={accent} strokeWidth="1"/><rect x="5.8" y="0.8" width="3.4" height="8.4" rx="0.8" stroke={accent} strokeWidth="1"/></svg>
+                          <span style={{ fontSize: '0.82rem', fontWeight: '700', color: accent, fontFamily: FONT }}>{selT.columns?.length ?? 0}</span>
+                          <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT }}>columns</span>
+                        </div>
+                        {/* Estimated rows */}
                         {selT.row_count_estimate != null && (
-                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
-                            ~<span style={{ color: textSec, fontWeight: '600' }}>{selT.row_count_estimate.toLocaleString()}</span> rows
-                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '6px', background: `${textSec}0a`, border: `1px solid ${border}` }}>
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 3h8M1 5.5h8M1 8h8" stroke={muted} strokeWidth="1" strokeLinecap="round"/></svg>
+                            <span style={{ fontSize: '0.82rem', fontWeight: '700', color: textSec, fontFamily: FONT }}>~{selT.row_count_estimate.toLocaleString()}</span>
+                            <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT }}>rows est.</span>
+                          </div>
                         )}
+                        {/* Primary keys */}
                         {pkCols.length > 0 && (
-                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
-                            PK: <span style={{ color: success, fontFamily: MONO, fontWeight: '500' }}>{pkCols.map(c => c.column_name).join(', ')}</span>
-                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '6px', background: `${success}0d`, border: `1px solid ${success}25` }}>
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="3.8" cy="5" r="2.4" stroke={success} strokeWidth="1"/><path d="M6.2 5H9M7.8 3.5v3" stroke={success} strokeWidth="1" strokeLinecap="round"/></svg>
+                            <span style={{ fontSize: '0.82rem', fontWeight: '700', color: success, fontFamily: FONT }}>{pkCols.length}</span>
+                            <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT }}>primary key{pkCols.length !== 1 ? 's' : ''}</span>
+                          </div>
                         )}
+                        {/* Foreign keys */}
                         {hasFkData && fkCols.length > 0 && (
-                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>
-                            <span style={{ color: warn, fontWeight: '600' }}>{fkCols.length}</span> FK{fkCols.length !== 1 ? 's' : ''}
-                          </span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '6px', background: `${warn}0d`, border: `1px solid ${warn}25` }}>
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1 5h3.5" stroke={warn} strokeWidth="1" strokeLinecap="round"/><path d="M3 3l2 2-2 2" stroke={warn} strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"/><circle cx="7.5" cy="5" r="1.8" stroke={warn} strokeWidth="1"/></svg>
+                            <span style={{ fontSize: '0.82rem', fontWeight: '700', color: warn, fontFamily: FONT }}>{fkCols.length}</span>
+                            <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT }}>foreign key{fkCols.length !== 1 ? 's' : ''}</span>
+                          </div>
                         )}
+                        {/* Nullable count */}
+                        {(() => {
+                          const nullCount = selT.columns?.filter(c => c.is_nullable).length ?? 0
+                          return nullCount > 0 ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 10px', borderRadius: '6px', background: `${muted}0a`, border: `1px solid ${border}` }}>
+                              <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="3.5" stroke={muted} strokeWidth="1" strokeDasharray="2 1.5"/></svg>
+                              <span style={{ fontSize: '0.82rem', fontWeight: '700', color: muted, fontFamily: FONT }}>{nullCount}</span>
+                              <span style={{ fontSize: '0.61rem', color: muted, fontFamily: FONT }}>nullable</span>
+                            </div>
+                          ) : null
+                        })()}
                       </div>
                     </div>
 
-                    {/* Column grid — sticky header + scrollable rows */}
+                    {/* ── Column Grid (Level 3 – individual rows) ── */}
                     <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto' }}>
-                      <div style={{ minWidth: '400px' }}>
-                        {/* Sticky column header */}
-                        <div style={{ display: 'grid', gridTemplateColumns: colGrid, padding: '5px 16px', fontSize: '0.61rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}`, background: `${border}18`, position: 'sticky', top: 0, zIndex: 1 }}>
+                      <div style={{ minWidth: '440px' }}>
+                        {/* Sticky column header – slightly elevated */}
+                        <div style={{ display: 'grid', gridTemplateColumns: colGrid, padding: '8px 16px', fontSize: '0.59rem', fontWeight: '700', color: muted, letterSpacing: '0.09em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}`, background: `${border}30`, position: 'sticky', top: 0, zIndex: 1 }}>
                           <span>Column</span><span>Type</span><span>Nullable</span><span>PK</span>
                           {hasFkData && <span>FK</span>}
                         </div>
-                        {/* Column rows */}
+                        {/* Column rows – zebra + hover */}
                         {(selT.columns ?? []).map((c, i) => (
                           <div
                             key={c.column_name}
-                            style={{ display: 'grid', gridTemplateColumns: colGrid, padding: '5px 16px', fontSize: '0.77rem', fontFamily: MONO, borderBottom: `1px solid ${border}14`, background: i % 2 === 0 ? 'transparent' : `${border}09` }}
+                            className="tsm-col-row"
+                            style={{ display: 'grid', gridTemplateColumns: colGrid, padding: '7px 16px', fontSize: '0.77rem', fontFamily: MONO, borderBottom: `1px solid ${border}18`, background: i % 2 === 0 ? 'transparent' : `${border}14`, alignItems: 'center', transition: 'background 0.08s' }}
                           >
-                            <span style={{ color: c.is_primary_key ? success : text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: c.is_primary_key ? '600' : '400' }}>{c.column_name}</span>
-                            <span style={{ color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.data_type}</span>
-                            <span style={{ color: c.is_nullable ? `${muted}70` : `${danger}88` }}>{c.is_nullable ? 'yes' : 'no'}</span>
-                            <span>{c.is_primary_key ? <span style={{ fontSize: '0.59rem', padding: '1px 4px', borderRadius: '3px', background: `${success}1a`, color: success, border: `1px solid ${success}28`, fontFamily: FONT }}>PK</span> : null}</span>
-                            {hasFkData && <span>{c.is_foreign_key ? <span style={{ fontSize: '0.59rem', padding: '1px 4px', borderRadius: '3px', background: `${warn}1a`, color: warn, border: `1px solid ${warn}28`, fontFamily: FONT }}>FK</span> : null}</span>}
+                            {/* Column name with PK icon */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', overflow: 'hidden' }}>
+                              {c.is_primary_key ? (
+                                <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style={{ flexShrink: 0 }}>
+                                  <circle cx="4" cy="5.5" r="2.5" stroke={success} strokeWidth="1.3"/>
+                                  <path d="M6.5 5.5H10M8.5 4v3" stroke={success} strokeWidth="1.3" strokeLinecap="round"/>
+                                </svg>
+                              ) : <div style={{ width: '11px', flexShrink: 0 }}/>}
+                              <span title={c.column_name} style={{ color: c.is_primary_key ? success : text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: c.is_primary_key ? '600' : '400' }}>{c.column_name}</span>
+                            </div>
+                            {/* Data type */}
+                            <span title={c.data_type} style={{ color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.73rem' }}>{c.data_type}</span>
+                            {/* Nullable */}
+                            <span style={{ fontSize: '0.72rem', fontFamily: FONT }}>
+                              {c.is_nullable
+                                ? <span style={{ color: muted }}>yes</span>
+                                : <span style={{ color: danger, fontWeight: '600' }}>no</span>}
+                            </span>
+                            {/* PK badge */}
+                            <span>{c.is_primary_key && <span style={{ fontSize: '0.57rem', padding: '1px 5px', borderRadius: '4px', background: `${success}1a`, color: success, border: `1px solid ${success}30`, fontFamily: FONT, fontWeight: '700' }}>PK</span>}</span>
+                            {/* FK badge */}
+                            {hasFkData && <span>{c.is_foreign_key && <span style={{ fontSize: '0.57rem', padding: '1px 5px', borderRadius: '4px', background: `${warn}1a`, color: warn, border: `1px solid ${warn}30`, fontFamily: FONT, fontWeight: '700' }}>FK</span>}</span>}
                           </div>
                         ))}
                       </div>
@@ -2165,6 +2255,7 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           hasSchema={hasSchema}
           onRunProfile={() => src && handleDiscoverAndProfile(src)}
           profileRunning={js.running || discSt.loading}
+          refreshKey={profileRefreshKey[dsSelectedSourceId] ?? 0}
         />
       </div>
     )
@@ -2783,51 +2874,353 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
       </div>
     )
 
-    const runsTab = (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {src?.metadata_job_id && (
-          <div style={card({ padding: '14px 16px' })}>
-            <div style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Current Metadata Job</div>
-            {js.loading && <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Loading…</p>}
-            {job && (
-              <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Status</div><span style={{ padding: '2px 9px', borderRadius: '8px', fontSize: '0.72rem', fontWeight: '700', background: jobRunning ? `${accent}18` : job.status === 'COMPLETE' ? `${success}18` : `${danger}18`, color: jobRunning ? accent : job.status === 'COMPLETE' ? success : danger, border: `1px solid ${jobRunning ? accent : job.status === 'COMPLETE' ? success : danger}40`, fontFamily: FONT, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>{jobRunning && <Spinner size={9} />}{job.status}</span></div>
-                {job.progress_message && (<div><div style={{ fontSize: '0.62rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Progress</div><div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT }}>{job.progress_message}</div></div>)}
-                {job.error_message    && (<div><div style={{ fontSize: '0.62rem', color: danger, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Error</div><div style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{job.error_message}</div></div>)}
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
-                  {jobRunning && <button onClick={() => loadJobStatus(dsSelectedSourceId, src.metadata_job_id)} disabled={js.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: textSec }}>Refresh</button>}
-                  <button onClick={() => src && handleDiscoverAndProfile(src)} disabled={js.running || discSt.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>{js.running ? 'Running…' : 'Re-run'}</button>
-                </div>
-              </div>
-            )}
+    const runsTab = (() => {
+      const runs = (profHist.data && Array.isArray(profHist.data)) ? profHist.data : []
+
+      // Summary counts
+      const totalRuns    = runs.length
+      const completedCnt = runs.filter(r => r.status === 'COMPLETE').length
+      const runningCnt   = runs.filter(r => r.status === 'RUNNING' || r.status === 'PENDING').length
+      const failedCnt    = runs.filter(r => r.status === 'FAILED' || r.status === 'CANCELLED').length
+
+      // Filter
+      const filterFns = {
+        all:       () => true,
+        running:   r  => r.status === 'RUNNING' || r.status === 'PENDING',
+        completed: r  => r.status === 'COMPLETE',
+        failed:    r  => r.status === 'FAILED',
+        cancelled: r  => r.status === 'CANCELLED',
+      }
+      const visibleRuns = runs.filter(filterFns[runsFilter] ?? (() => true))
+
+      const runStatusColor = status => {
+        if (status === 'COMPLETE')  return success
+        if (status === 'RUNNING' || status === 'PENDING') return accent
+        if (status === 'CANCELLED') return warn
+        return danger
+      }
+      const runStatusLabel = status => ({ COMPLETE: 'Completed', RUNNING: 'Running', PENDING: 'Pending', FAILED: 'Failed', CANCELLED: 'Cancelled' }[status] ?? status ?? '—')
+      const runModeLabel   = mode => {
+        if (!mode) return '—'
+        return (mode || '').toUpperCase().includes('STRUCTURAL') ? 'Quick' : 'Deep'
+      }
+      const fmtSecs = secs => {
+        if (secs == null || isNaN(secs) || secs < 0) return null
+        if (secs < 60) return `${secs}s`
+        return `${Math.floor(secs / 60)}m ${secs % 60}s`
+      }
+
+      // Compute the best available duration string for a run row.
+      // Batch profiling never writes duration_seconds, so we derive from timestamps.
+      const getRunDuration = run => {
+        // Prefer stored duration_seconds (set by legacy non-batch runs)
+        if (run.duration_seconds != null) return fmtSecs(run.duration_seconds)
+
+        const startMs = run.started_at ? new Date(run.started_at).getTime() : null
+        if (!startMs || isNaN(startMs)) return null
+
+        if (run.status === 'COMPLETE' || run.status === 'CANCELLED' || run.status === 'FAILED') {
+          const endMs = run.completed_at ? new Date(run.completed_at).getTime() : null
+          if (endMs && !isNaN(endMs) && endMs >= startMs) {
+            return fmtSecs(Math.round((endMs - startMs) / 1000))
+          }
+          // completed_at missing — for COMPLETE this shouldn't happen; for FAILED/CANCELLED fall through
+        }
+
+        if (run.status === 'RUNNING' || run.status === 'PENDING') {
+          return fmtSecs(Math.round((Date.now() - startMs) / 1000))
+        }
+
+        return null
+      }
+
+      const detailField = (label, value, mono = false) => {
+        if (value == null || value === '') return null
+        return (
+          <div key={label}>
+            <div style={{ fontSize: '0.57rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '3px' }}>{label}</div>
+            <div style={{ fontSize: '0.8rem', fontWeight: '600', color: textSec, fontFamily: mono ? MONO : FONT }}>{value}</div>
           </div>
-        )}
-        {profHist.loading && (<div style={{ ...card({ padding: '16px' }), textAlign: 'center', color: muted, fontSize: '0.8rem', fontFamily: FONT, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}><Spinner size={11} /> Loading run history…</div>)}
-        {profHist.error   && (<div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}><span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{profHist.error}</span></div>)}
-        {!profHist.data && !profHist.loading && hasSchema && (<div style={{ ...card({ padding: '12px 16px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}><span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Load profiling run history for this source.</span><button onClick={() => loadProfileHistory(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>Load History</button></div>)}
-        {profHist.data && Array.isArray(profHist.data) && profHist.data.length === 0 && (<div style={{ ...card({ padding: '32px 24px' }), textAlign: 'center' }}><p style={{ margin: 0, fontSize: '0.82rem', color: muted, fontFamily: FONT }}>No profiling run history found for this source.</p></div>)}
-        {profHist.data && Array.isArray(profHist.data) && profHist.data.length > 0 && (
-          <div style={card({ overflow: 'hidden' })}>
-            <div style={{ padding: '8px 14px', borderBottom: `1px solid ${border}` }}><span style={{ fontSize: '0.7rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT }}>Profiling History</span></div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 120px 110px', padding: '6px 14px', fontSize: '0.6rem', fontWeight: '700', color: muted, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}` }}><span>Run ID</span><span>Status</span><span>Tables</span><span>Started</span></div>
-            <div style={{ maxHeight: '360px', overflowY: 'auto' }}>
-              {profHist.data.map((run, i) => {
-                const runColor = run.status === 'COMPLETE' ? success : run.status === 'RUNNING' ? accent : danger
+        )
+      }
+
+      const summaryKPIs = [
+        { label: 'Total Runs',          value: totalRuns,    color: text    },
+        { label: 'Completed',           value: completedCnt, color: success },
+        { label: 'Running / Pending',   value: runningCnt,   color: accent  },
+        { label: 'Failed / Cancelled',  value: failedCnt,    color: failedCnt > 0 ? danger : muted },
+      ]
+
+      const filterChips = [
+        { key: 'all',       label: 'All',       count: totalRuns },
+        { key: 'running',   label: 'Running',   count: runningCnt },
+        { key: 'completed', label: 'Completed', count: completedCnt },
+        { key: 'failed',    label: 'Failed',    count: runs.filter(r => r.status === 'FAILED').length },
+        { key: 'cancelled', label: 'Cancelled', count: runs.filter(r => r.status === 'CANCELLED').length },
+      ]
+
+      return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+          {/* ── Metadata Job card ── */}
+          {src?.metadata_job_id && (
+            <div style={card({ padding: '14px 16px' })}>
+              <div style={{ fontSize: '0.68rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '10px' }}>Current Metadata Job</div>
+              {js.loading && <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Loading…</p>}
+              {job && (
+                <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Status</div>
+                    <span style={{ padding: '2px 9px', borderRadius: '8px', fontSize: '0.72rem', fontWeight: '700', background: jobRunning ? `${accent}18` : job.status === 'COMPLETE' ? `${success}18` : `${danger}18`, color: jobRunning ? accent : job.status === 'COMPLETE' ? success : danger, border: `1px solid ${jobRunning ? accent : job.status === 'COMPLETE' ? success : danger}40`, fontFamily: FONT, display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                      {jobRunning && <Spinner size={9} />}{job.status}
+                    </span>
+                  </div>
+                  {job.progress_message && (
+                    <div>
+                      <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Progress</div>
+                      <div style={{ fontSize: '0.78rem', color: textSec, fontFamily: FONT }}>{job.progress_message}</div>
+                    </div>
+                  )}
+                  {job.error_message && (
+                    <div>
+                      <div style={{ fontSize: '0.6rem', color: danger, fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '4px' }}>Error</div>
+                      <div style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{job.error_message}</div>
+                    </div>
+                  )}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                    {jobRunning && <button onClick={() => loadJobStatus(dsSelectedSourceId, src.metadata_job_id)} disabled={js.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: textSec }}>Refresh</button>}
+                    <button onClick={() => src && handleDiscoverAndProfile(src)} disabled={js.running || discSt.loading} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>{js.running ? 'Running…' : 'Re-run'}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Loading ── */}
+          {profHist.loading && (
+            <div style={{ ...card({ padding: '28px' }), display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: muted, fontSize: '0.8rem', fontFamily: FONT }}>
+              <Spinner size={13} /> Loading run history…
+            </div>
+          )}
+
+          {/* ── Error ── */}
+          {profHist.error && (
+            <div style={{ padding: '10px 14px', borderRadius: '8px', background: `${danger}10`, border: `1px solid ${danger}30` }}>
+              <span style={{ fontSize: '0.78rem', color: danger, fontFamily: FONT }}>{profHist.error}</span>
+            </div>
+          )}
+
+          {/* ── Load prompt (schema exists but history not yet fetched) ── */}
+          {!profHist.data && !profHist.loading && hasSchema && (
+            <div style={{ ...card({ padding: '12px 16px' }), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <span style={{ fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Load profiling run history for this source.</span>
+              <button onClick={() => loadProfileHistory(dsSelectedSourceId)} style={{ ...btnGhost({ padding: '5px 12px', fontSize: '0.76rem' }), color: accent, borderColor: `${accent}50` }}>Load History</button>
+            </div>
+          )}
+
+          {/* ── No schema, no job ── */}
+          {!hasSchema && !src?.metadata_job_id && !profHist.loading && !profHist.data && (
+            <div style={{ ...card({ padding: '48px 24px' }), textAlign: 'center' }}>
+              <p style={{ margin: '0 0 6px', fontSize: '0.9rem', color: textSec, fontWeight: '600', fontFamily: FONT }}>No runs yet</p>
+              <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to start building a run history.</p>
+            </div>
+          )}
+
+          {/* ── Summary KPI cards ── */}
+          {runs.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+              {summaryKPIs.map(kpi => (
+                <div key={kpi.label} style={{ background: surface, border: `1px solid ${border}`, borderRadius: '10px', padding: '12px 16px' }}>
+                  <div style={{ fontSize: '0.57rem', color: muted, fontWeight: '700', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '5px' }}>{kpi.label}</div>
+                  <div style={{ fontSize: '1.5rem', fontWeight: '700', color: kpi.color, fontFamily: FONT, lineHeight: 1.1 }}>{kpi.value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── Filter chips ── */}
+          {runs.length > 0 && (
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {filterChips.map(chip => {
+                const isActive = runsFilter === chip.key
                 return (
-                  <div key={run.id ?? i} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 120px 110px', padding: '8px 14px', fontSize: '0.78rem', borderBottom: `1px solid ${border}20`, background: i % 2 === 0 ? 'transparent' : `${bg}60` }}>
-                    <span style={{ color: muted, fontFamily: MONO, fontSize: '0.72rem' }}>{run.id ?? '—'}</span>
-                    <span style={{ color: runColor, fontFamily: FONT, fontWeight: '600' }}>{run.status ?? '—'}</span>
-                    <span style={{ color: textSec }}>{run.tables_profiled != null ? `${run.tables_profiled} / ${run.tables_total ?? '?'} assets` : '—'}</span>
-                    <span style={{ color: muted, fontSize: '0.72rem' }}>{run.created_at ? fmtRelative(run.created_at) : '—'}</span>
+                  <button
+                    key={chip.key}
+                    onClick={() => setRunsFilter(chip.key)}
+                    style={{ background: isActive ? `${accent}18` : 'transparent', border: `1px solid ${isActive ? `${accent}60` : border}`, color: isActive ? accent : muted, borderRadius: '20px', padding: '3px 12px', fontSize: '0.7rem', fontWeight: isActive ? '700' : '400', cursor: 'pointer', fontFamily: FONT, display: 'inline-flex', alignItems: 'center', gap: '5px', transition: 'all 0.15s' }}
+                  >
+                    {chip.label}
+                    {chip.count > 0 && (
+                      <span style={{ background: isActive ? `${accent}30` : `${muted}18`, borderRadius: '10px', padding: '0 5px', fontSize: '0.62rem', color: isActive ? accent : muted, fontWeight: '600' }}>{chip.count}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {/* ── Empty state when data exists but filter shows nothing ── */}
+          {runs.length > 0 && visibleRuns.length === 0 && (
+            <div style={{ ...card({ padding: '28px 24px' }), textAlign: 'center' }}>
+              <p style={{ margin: 0, fontSize: '0.82rem', color: muted, fontFamily: FONT }}>No runs match the selected filter.</p>
+            </div>
+          )}
+
+          {/* ── Empty history ── */}
+          {profHist.data && runs.length === 0 && (
+            <div style={{ ...card({ padding: '48px 24px' }), textAlign: 'center' }}>
+              <p style={{ margin: '0 0 6px', fontSize: '0.9rem', color: textSec, fontWeight: '600', fontFamily: FONT }}>No profiling runs recorded</p>
+              <p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to start building a run history.</p>
+            </div>
+          )}
+
+          {/* ── Run list ── */}
+          {visibleRuns.length > 0 && (
+            <div style={{ ...card({ padding: 0 }), overflow: 'hidden' }}>
+
+              {/* Column headers */}
+              <div style={{ display: 'grid', gridTemplateColumns: '72px 100px 62px 1fr 88px 100px 28px', padding: '7px 16px', fontSize: '0.57rem', fontWeight: '700', color: muted, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: FONT, borderBottom: `1px solid ${border}`, background: `${bg}90` }}>
+                <span>Run #</span><span>Status</span><span>Mode</span><span>Progress</span><span>Duration</span><span>Started</span><span />
+              </div>
+
+              {/* Rows */}
+              {visibleRuns.map((run, i) => {
+                const isExpanded  = runsExpandedId === run.id
+                const statusCol   = runStatusColor(run.status)
+                const isRunning   = run.status === 'RUNNING' || run.status === 'PENDING'
+                const pct         = run.tables_total > 0 ? Math.round((run.tables_profiled / run.tables_total) * 100) : (run.status === 'COMPLETE' ? 100 : 0)
+                const mode        = runModeLabel(run.mode)
+                const modeColor   = mode === 'Deep' ? accent : '#38bdf8'
+                const duration    = getRunDuration(run)
+                const startedTs   = run.started_at || run.created_at
+
+                return (
+                  <div key={run.id ?? i} style={{ borderBottom: `1px solid ${border}20` }}>
+
+                    {/* Summary row */}
+                    <div
+                      onClick={() => setRunsExpandedId(isExpanded ? null : run.id)}
+                      style={{ display: 'grid', gridTemplateColumns: '72px 100px 62px 1fr 88px 100px 28px', padding: '10px 16px', background: isExpanded ? `${accent}07` : (i % 2 === 0 ? 'transparent' : `${bg}55`), cursor: 'pointer', alignItems: 'center' }}
+                      onMouseEnter={e => { if (!isExpanded) e.currentTarget.style.background = `${accent}06` }}
+                      onMouseLeave={e => { if (!isExpanded) e.currentTarget.style.background = i % 2 === 0 ? 'transparent' : `${bg}55` }}
+                    >
+                      {/* Run # */}
+                      <span style={{ fontSize: '0.72rem', fontFamily: MONO, color: muted }}>#{run.snapshot_version ?? run.id ?? '—'}</span>
+
+                      {/* Status badge */}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '10px', fontSize: '0.62rem', fontWeight: '700', background: `${statusCol}16`, color: statusCol, border: `1px solid ${statusCol}38`, fontFamily: FONT, width: 'fit-content' }}>
+                        {isRunning && <Spinner size={8} />}
+                        {runStatusLabel(run.status)}
+                      </span>
+
+                      {/* Mode */}
+                      <span style={{ fontSize: '0.65rem', fontWeight: '700', color: modeColor, fontFamily: FONT, letterSpacing: '0.03em' }}>{mode}</span>
+
+                      {/* Progress bar + count */}
+                      <div style={{ paddingRight: '16px' }}>
+                        {run.tables_total > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <div style={{ flex: 1, height: '3px', borderRadius: '2px', background: `${border}`, overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${pct}%`, background: statusCol, borderRadius: '2px', transition: 'width 0.4s ease' }} />
+                              </div>
+                              <span style={{ fontSize: '0.65rem', color: statusCol, fontWeight: '600', fontFamily: FONT, flexShrink: 0 }}>{pct}%</span>
+                            </div>
+                            <span style={{ fontSize: '0.63rem', color: muted, fontFamily: FONT }}>{run.tables_profiled ?? 0} / {run.tables_total} tables</span>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: '0.7rem', color: muted, fontFamily: FONT }}>—</span>
+                        )}
+                      </div>
+
+                      {/* Duration */}
+                      <span style={{ fontSize: '0.7rem', color: textSec, fontFamily: FONT }}>{duration ?? '—'}</span>
+
+                      {/* Started */}
+                      <span style={{ fontSize: '0.67rem', color: muted, fontFamily: FONT }}>{startedTs ? fmtRelative(startedTs) : '—'}</span>
+
+                      {/* Expand chevron */}
+                      <span style={{ fontSize: '0.65rem', color: muted, textAlign: 'right' }}>{isExpanded ? '▾' : '▸'}</span>
+                    </div>
+
+                    {/* Expanded detail panel */}
+                    {isExpanded && (
+                      <div style={{ background: `${surface}`, borderTop: `1px solid ${border}30`, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+                        {/* Run identity */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '14px' }}>
+                          {detailField('Snapshot ID', run.id, true)}
+                          {detailField('Run Version', run.snapshot_version != null ? `v${run.snapshot_version}` : null)}
+                          {detailField('Status', runStatusLabel(run.status))}
+                          {detailField('Profiling Mode', run.mode)}
+                          {detailField('Started', run.started_at ? fmtDateTime(run.started_at) : null)}
+                          {detailField('Completed', run.completed_at ? fmtDateTime(run.completed_at) : null)}
+                          {detailField(
+                            run.status === 'RUNNING' || run.status === 'PENDING' ? 'Elapsed' : 'Duration',
+                            getRunDuration(run) ?? 'Unknown'
+                          )}
+                          {detailField('Sample Rate', run.sample_rate != null ? `${Math.round(run.sample_rate * 100)}%` : null)}
+                        </div>
+
+                        {/* Tables breakdown */}
+                        {run.tables_total > 0 && (
+                          <div>
+                            <div style={{ fontSize: '0.57rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '8px', paddingBottom: '4px', borderBottom: `1px solid ${border}30` }}>Tables</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '12px' }}>
+                              {detailField('Total', run.tables_total)}
+                              {detailField('Profiled', run.tables_profiled)}
+                              {run.tables_skipped > 0 ? detailField('Skipped', run.tables_skipped) : null}
+                              {run.tables_failed > 0   ? detailField('Failed',  run.tables_failed) : null}
+                              {run.tables_timed_out > 0 ? detailField('Timed Out', run.tables_timed_out) : null}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Columns breakdown */}
+                        {run.columns_total > 0 && (
+                          <div>
+                            <div style={{ fontSize: '0.57rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '8px', paddingBottom: '4px', borderBottom: `1px solid ${border}30` }}>Columns</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: '12px' }}>
+                              {detailField('Total', run.columns_total)}
+                              {detailField('Profiled', run.columns_profiled)}
+                              {run.columns_skipped > 0 ? detailField('Skipped', run.columns_skipped) : null}
+                              {run.total_rows_profiled > 0 ? detailField('Rows Profiled', run.total_rows_profiled?.toLocaleString()) : null}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Intelligence */}
+                        {(run.pii_columns_found > 0 || run.classifications_complete > 0) && (
+                          <div>
+                            <div style={{ fontSize: '0.57rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '8px', paddingBottom: '4px', borderBottom: `1px solid ${border}30` }}>Intelligence</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px' }}>
+                              {run.pii_columns_found > 0    ? detailField('PII Columns Found', run.pii_columns_found) : null}
+                              {run.classifications_complete > 0 ? detailField('Classifications Done', run.classifications_complete) : null}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Batch config */}
+                        {(run.batch_size != null || run.next_table_index != null) && (
+                          <div>
+                            <div style={{ fontSize: '0.57rem', fontWeight: '700', color: muted, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: FONT, marginBottom: '8px', paddingBottom: '4px', borderBottom: `1px solid ${border}30` }}>Batch Config</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '12px' }}>
+                              {run.batch_size != null      ? detailField('Batch Size', run.batch_size) : null}
+                              {run.next_table_index != null ? detailField('Next Table Index', run.next_table_index) : null}
+                              {run.profiling_rules_version  ? detailField('Rules Version', run.profiling_rules_version, true) : null}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
               })}
             </div>
-          </div>
-        )}
-        {!hasSchema && !src?.metadata_job_id && (<div style={{ ...card({ padding: '40px 24px' }), textAlign: 'center' }}><p style={{ margin: '0 0 6px', fontSize: '0.88rem', color: textSec, fontWeight: '500', fontFamily: FONT }}>No runs yet</p><p style={{ margin: 0, fontSize: '0.78rem', color: muted, fontFamily: FONT }}>Run Discover & Profile to start building a run history.</p></div>)}
-      </div>
-    )
+          )}
+        </div>
+      )
+    })()
 
     // ── Business Knowledge tab: enterprise knowledge center for the selected table ──
     // Composes Relationship/Business Knowledge/Knowledge Graph/Lineage/Semantic
@@ -3405,17 +3798,28 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
               {(discSt.loading || js.running) ? 'Scanning…' : 'Scan Metadata'}
             </button>
             <button
-              onClick={() => src && !fullProfSt.loading && hasSchema && handleRunDataProfile(src)}
-              disabled={fullProfSt.loading || !hasSchema}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', background: 'transparent', border: `1px solid ${border}`, color: (fullProfSt.loading || !hasSchema) ? muted : textSec, fontSize: '0.82rem', fontWeight: '500', cursor: (fullProfSt.loading || !hasSchema) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: (fullProfSt.loading || !hasSchema) ? 0.6 : 1 }}
+              onClick={() => {
+                if (!src || fullProfSt.loading || !hasSchema || recoveredJobRef.current[dsSelectedSourceId]) return
+                setProfilingModal(s => ({
+                  ...s,
+                  [dsSelectedSourceId]: {
+                    open: true,
+                    mode:  s[dsSelectedSourceId]?.mode  ?? 'quick',
+                    topN:  s[dsSelectedSourceId]?.topN  ?? 10,
+                  },
+                }))
+              }}
+              disabled={fullProfSt.loading || !hasSchema || recoveredJobRef.current[dsSelectedSourceId]}
+              title={recoveredJobRef.current[dsSelectedSourceId] ? 'A profiling job is already running for this source.' : undefined}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', background: 'transparent', border: `1px solid ${border}`, color: (fullProfSt.loading || !hasSchema || recoveredJobRef.current[dsSelectedSourceId]) ? muted : textSec, fontSize: '0.82rem', fontWeight: '500', cursor: (fullProfSt.loading || !hasSchema || recoveredJobRef.current[dsSelectedSourceId]) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: (fullProfSt.loading || !hasSchema || recoveredJobRef.current[dsSelectedSourceId]) ? 0.6 : 1 }}
             >
               {fullProfSt.loading && <Spinner size={11} />}
-              {fullProfSt.loading
-                ? (fullProfSt.total > 0 ? `Profiling ${fullProfSt.progress}/${fullProfSt.total}…` : 'Profiling…')
-                : 'Run Data Profile'}
+              {fullProfSt.loading ? 'Profiling…' : 'Profile Data'}
             </button>
           </div>
         </div>
+
+        {/* Profiling job status is shown in the global floating ProfilingJobCenter */}
 
         {/* ── Tab bar ── */}
         <div style={{ display: 'flex', marginBottom: '20px', borderBottom: `1px solid ${border}` }}>
@@ -3434,6 +3838,133 @@ export default function DataSourceManager({ C = {}, token, setActiveNav, openSou
           ? <DictionaryReview C={C} token={token} sourceId={dsSelectedSourceId} embedded hideSourceSelector />
           : (TAB_CONTENT[activeTab] ?? null)
         }
+
+        {/* ── Profiling Options Modal ── */}
+        {profilingModal[dsSelectedSourceId]?.open && (() => {
+          const mState   = profilingModal[dsSelectedSourceId]
+          const setMode  = m => setProfilingModal(s => ({ ...s, [dsSelectedSourceId]: { ...s[dsSelectedSourceId], mode: m } }))
+          const setTopN  = n => setProfilingModal(s => ({ ...s, [dsSelectedSourceId]: { ...s[dsSelectedSourceId], topN: n } }))
+          const closeModal = () => setProfilingModal(s => ({ ...s, [dsSelectedSourceId]: { ...s[dsSelectedSourceId], open: false } }))
+
+          const handleConfirm = () => {
+            if (mState.mode === 'quick') {
+              handleRunDataProfile(src, 'STRUCTURAL_ONLY', 0)
+            } else if (mState.mode === 'deep_top_n') {
+              handleRunDataProfile(src, 'FULL', mState.topN ?? 10)
+            } else {
+              handleRunDataProfile(src, 'FULL', 0)
+            }
+          }
+
+          const OPTIONS = [
+            {
+              id: 'quick',
+              title: 'Quick Profile',
+              badge: 'Structural Only',
+              desc: 'Schema structure only — no row-level queries. Completes in seconds on any size database. Safe default.',
+              warn: null,
+            },
+            {
+              id: 'deep_top_n',
+              title: 'Deep Profile',
+              badge: `Top ${mState.topN ?? 10} Tables`,
+              desc: 'Full statistical analysis on the highest-priority tables. Balanced approach for large databases.',
+              warn: null,
+            },
+            {
+              id: 'full',
+              title: 'Full Deep Profile',
+              badge: 'All Tables',
+              desc: 'Statistical queries on every table. Captures complete row counts, distributions, and PII signals.',
+              warn: 'Not recommended for databases with hundreds of tables or very large row counts. May run for a long time.',
+            },
+          ]
+
+          return (
+            <>
+              <div onClick={closeModal} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1100 }} />
+              <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '500px', maxWidth: '92vw', background: surface, border: `1px solid ${border}`, borderRadius: '14px', zIndex: 1101, padding: '24px 24px 20px', boxShadow: '0 24px 80px rgba(0,0,0,0.65)' }}>
+
+                {/* Header */}
+                <div style={{ marginBottom: '18px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <h3 style={{ margin: 0, fontSize: '0.98rem', fontWeight: '700', color: text, fontFamily: FONT }}>Configure Profiling</h3>
+                    <button onClick={closeModal} style={{ background: 'transparent', border: 'none', color: muted, cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1, padding: '2px 6px' }}>×</button>
+                  </div>
+                  <p style={{ margin: 0, fontSize: '0.76rem', color: muted, fontFamily: FONT }}>
+                    Choose how deeply to profile <span style={{ color: textSec, fontWeight: '600' }}>{src?.display_name ?? 'this source'}</span>.
+                  </p>
+                </div>
+
+                {/* Option cards */}
+                {OPTIONS.map(opt => {
+                  const sel = mState.mode === opt.id
+                  return (
+                    <div
+                      key={opt.id}
+                      onClick={() => setMode(opt.id)}
+                      style={{
+                        border: `1px solid ${sel ? accent : border}`,
+                        borderRadius: '10px', padding: '12px 14px', marginBottom: '8px',
+                        cursor: 'pointer', background: sel ? `${accent}0d` : 'transparent',
+                        transition: 'border-color 0.12s, background 0.12s',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '5px' }}>
+                        {/* Radio dot */}
+                        <div style={{ width: '14px', height: '14px', borderRadius: '50%', border: `2px solid ${sel ? accent : muted}`, background: 'transparent', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          {sel && <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: accent }} />}
+                        </div>
+                        <span style={{ fontSize: '0.86rem', fontWeight: '700', color: sel ? accent : text, fontFamily: FONT }}>{opt.title}</span>
+                        <span style={{ fontSize: '0.68rem', fontWeight: '600', color: muted, fontFamily: FONT, letterSpacing: '0.04em', marginLeft: '2px' }}>{opt.badge}</span>
+                        {opt.id === 'quick' && (
+                          <span style={{ fontSize: '0.6rem', fontWeight: '700', letterSpacing: '0.07em', textTransform: 'uppercase', padding: '1px 6px', borderRadius: '4px', background: `${success}18`, color: success, border: `1px solid ${success}30`, fontFamily: FONT, marginLeft: 'auto' }}>Default</span>
+                        )}
+                      </div>
+                      <p style={{ margin: '0 0 0 24px', fontSize: '0.74rem', color: textSec, fontFamily: FONT, lineHeight: '1.5' }}>{opt.desc}</p>
+                      {/* Top-N input */}
+                      {opt.id === 'deep_top_n' && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: '24px', marginTop: '8px' }}>
+                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>Profile top</span>
+                          <input
+                            type="number" min="1" max="500"
+                            value={mState.topN ?? 10}
+                            onChange={e => setTopN(Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 10)))}
+                            onClick={e => { e.stopPropagation(); setMode('deep_top_n') }}
+                            style={{ width: '62px', background: bg, border: `1px solid ${sel ? accent : border}`, borderRadius: '6px', color: text, fontFamily: FONT, fontSize: '0.8rem', padding: '3px 7px', outline: 'none' }}
+                          />
+                          <span style={{ fontSize: '0.74rem', color: muted, fontFamily: FONT }}>tables by priority score</span>
+                        </div>
+                      )}
+                      {/* Full-profile warning */}
+                      {opt.warn && sel && (
+                        <div style={{ marginLeft: '24px', marginTop: '8px', padding: '6px 10px', borderRadius: '6px', background: `${danger}10`, border: `1px solid ${danger}28` }}>
+                          <span style={{ fontSize: '0.72rem', color: danger, fontFamily: FONT }}>⚠ {opt.warn}</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+
+                {/* Actions */}
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
+                  <button
+                    onClick={closeModal}
+                    style={{ padding: '8px 18px', borderRadius: '8px', background: 'transparent', border: `1px solid ${border}`, color: muted, fontSize: '0.82rem', fontFamily: FONT, cursor: 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirm}
+                    style={{ padding: '8px 22px', borderRadius: '8px', background: accent, border: 'none', color: '#fff', fontSize: '0.82rem', fontWeight: '600', fontFamily: FONT, cursor: 'pointer' }}
+                  >
+                    Start Profiling
+                  </button>
+                </div>
+              </div>
+            </>
+          )
+        })()}
 
         <Toast toast={toast} />
         <style>{`@keyframes dsm-spin { to { transform: rotate(360deg); } }`}</style>

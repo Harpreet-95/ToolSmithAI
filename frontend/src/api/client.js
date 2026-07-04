@@ -928,8 +928,12 @@ export async function getTableProfileDetail(sourceId, tableFqn, token) {
   return parseResponse(res)
 }
 
-export async function startBatchProfile(sourceId, token) {
-  const res = await fetch(`/v1/sources/${sourceId}/profile/batch/start`, {
+export async function startBatchProfile(sourceId, token, { mode = 'FULL', max_tables = 0 } = {}) {
+  const qs = new URLSearchParams()
+  if (mode !== 'FULL') qs.set('mode', mode)
+  if (max_tables !== 0) qs.set('max_tables', String(max_tables))
+  const base = `/v1/sources/${sourceId}/profile/batch/start`
+  const res = await fetch(qs.toString() ? `${base}?${qs}` : base, {
     method: 'POST',
     headers: AUTH_HEADERS(token),
   })
@@ -940,6 +944,22 @@ export async function continueBatchProfile(sourceId, snapshotId, token) {
   const res = await fetch(
     `/v1/sources/${sourceId}/profile/batch/${snapshotId}/continue`,
     { method: 'POST', headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function getActiveBatchProfile(sourceId, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/profile/batch/active`,
+    { headers: AUTH_HEADERS(token) },
+  )
+  return parseResponse(res)
+}
+
+export async function cancelBatchProfile(sourceId, snapshotId, token) {
+  const res = await fetch(
+    `/v1/sources/${sourceId}/profile/batch/${snapshotId}/cancel`,
+    { method: 'PATCH', headers: AUTH_HEADERS(token) },
   )
   return parseResponse(res)
 }

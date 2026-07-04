@@ -3,6 +3,9 @@ import { interpretTask, registerUser, loginUser, verifyEmail, registerAdmin, cha
   createDataSource, listDataSources, testDataSource, searchMetadata } from './api/client'
 import ErrorBoundary from './components/ErrorBoundary'
 import ChartSection from './components/ChartSection'
+import { ProfilingJobProvider } from './context/ProfilingJobContext'
+
+const ProfilingJobCenter = lazy(() => import('./components/ProfilingJobCenter'))
 
 const ReportWorkspace    = lazy(() => import('./components/ReportWorkspace'))
 const WorkflowResult     = lazy(() => import('./components/WorkflowResult'))
@@ -2977,6 +2980,7 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
   }
 
   return (
+    <ProfilingJobProvider token={token}>
     <div className="ts-dashboard" style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.text, display: 'flex' }}>
       <style>{`
         .ts-dashboard, .ts-dashboard * {
@@ -5250,7 +5254,14 @@ function DashboardView({ token, user, onLogout, onSessionExpired, theme, setThem
           </div>
         </main>
       </div>
+
+      {/* ── Global Profiling Job Center — always visible while a job exists ── */}
+      <Suspense fallback={null}>
+        <ProfilingJobCenter C={C} onNavigate={setActiveNav} onSetTab={setDsActiveTab} />
+      </Suspense>
+
     </div>
+    </ProfilingJobProvider>
   )
 }
 
