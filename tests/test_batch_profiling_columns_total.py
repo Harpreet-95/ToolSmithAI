@@ -35,8 +35,11 @@ os.environ.setdefault("JWT_SECRET",     "test-jwt-batch-columns-total-long-enoug
 os.environ.setdefault("USER_ID_SALT",   "test-salt-batch-columns-total")
 
 from core.connectors.schema import ColumnInfo, SchemaInfo, SchemaSnapshot, TableInfo
-from core.profiling.models import ProfilingStatus
+from core.profiling.models import ProfilingConfig, ProfilingMode, ProfilingStatus
 from data.profiling_service import (
+    cancel_batch_profiling,
+    continue_batch_profiling,
+    get_active_profiling_snapshot,
     get_latest_profile,
     run_structural_profiling,
     start_batch_profiling,
@@ -101,6 +104,7 @@ _SCHEMA = """
         resumable_state_json     TEXT,
         batch_size               INTEGER NOT NULL DEFAULT 50,
         next_table_index         INTEGER NOT NULL DEFAULT 0,
+        cancel_requested         INTEGER NOT NULL DEFAULT 0,
         created_at               TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -177,7 +181,13 @@ _SCHEMA = """
         mean_value              REAL,
         std_deviation           REAL,
         p5_value                TEXT,
+        p25_value               TEXT,
+        p50_value               TEXT,
+        p75_value               TEXT,
         p95_value               TEXT,
+        blank_percentage        REAL,
+        histogram_json          TEXT,
+        distribution_shape      TEXT,
         dominant_pattern        TEXT,
         pattern_coverage        REAL,
         email_match_rate        REAL,
@@ -194,6 +204,15 @@ _SCHEMA = """
         pii_confirmed           INTEGER NOT NULL DEFAULT 0,
         pii_signals_json        TEXT,
         top_values_coverage     REAL,
+        completeness_score      REAL,
+        format_consistency_score REAL,
+        valid_count             INTEGER,
+        invalid_count           INTEGER,
+        invalid_percentage      REAL,
+        validation_status       TEXT,
+        quality_score           REAL,
+        quality_grade           TEXT,
+        quality_summary_json    TEXT,
         profiling_depth         TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
         profiling_duration_ms   INTEGER,
         profiling_status        TEXT    NOT NULL DEFAULT 'COMPLETE',
@@ -560,3 +579,173 @@ def test_repair_leaves_empty_snapshots_at_zero(db):
     assert row_no_profiles["columns_total"] == 0
     # Row that was already non-zero is untouched (WHERE columns_total = 0 guard).
     assert row_correct["columns_total"] == 42
+
+
+# ── Tests 8–10: max_tables slicing fix (statistical_fqns bug) ─────────────────
+
+def test_max_tables_zero_statistical_fqns_equals_all_sorted_fqns(db):
+    """Regression: max_tables=0 (unlimited) must put ALL eligible tables into
+    statistical_fqns, not an empty list.
+
+    Old code: sorted_fqns[:0] == [] regardless of list length.
+    Fixed code: sorted_fqns if max_tables == 0 else sorted_fqns[:max_tables]
+    """
+    source_id = _seed_source(db)
+    tables = [_table("dbo", f"t{i}", [_col("id", 1)]) for i in range(15)]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    state = start_batch_profiling(source_id, "user-1")
+    assert state is not None
+
+    row = db.execute(
+        "SELECT resumable_state_json FROM profiling_snapshots WHERE id = ?",
+        (state.profiling_snapshot_id,),
+    ).fetchone()
+    plan = json.loads(row["resumable_state_json"])
+
+    sorted_fqns      = plan["sorted_fqns"]
+    statistical_fqns = plan["statistical_fqns"]
+
+    assert len(sorted_fqns) == 15
+    assert len(statistical_fqns) == 15, (
+        f"Expected all 15 tables in statistical_fqns but got {len(statistical_fqns)}. "
+        "This is the max_tables=0 slicing bug: sorted_fqns[:0] == []."
+    )
+    assert set(statistical_fqns) == set(sorted_fqns)
+
+
+def test_max_tables_nonzero_caps_statistical_fqns(db):
+    """max_tables=N must limit statistical_fqns to the first N sorted tables,
+    leaving the rest as structural-only."""
+    source_id = _seed_source(db)
+    tables = [_table("dbo", f"t{i}", [_col("id", 1)]) for i in range(20)]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    cap = 7
+    capped_config = ProfilingConfig(
+        mode=ProfilingMode.FULL,
+        max_tables=cap,
+        max_column_count=300,
+        excluded_prefixes=['stg_', 'tmp_', 'temp_', 'bak_', 'backup_', 'arc_', 'old_'],
+    )
+    with patch("data.profiling_service.ProfilingConfig", return_value=capped_config):
+        state = start_batch_profiling(source_id, "user-1")
+
+    assert state is not None
+
+    row = db.execute(
+        "SELECT resumable_state_json FROM profiling_snapshots WHERE id = ?",
+        (state.profiling_snapshot_id,),
+    ).fetchone()
+    plan = json.loads(row["resumable_state_json"])
+
+    assert len(plan["sorted_fqns"]) == 20
+    assert len(plan["statistical_fqns"]) == cap
+
+
+def test_statistical_fqns_not_empty_when_eligible_tables_exist(db):
+    """Guard: statistical_fqns must never be empty when eligible tables exist.
+
+    An empty statistical_fqns means needs_live=False in continue_batch_profiling,
+    so the live connection is never opened and _run_statistical_pass is never called.
+    All deep metrics (percentiles, histogram, quality score) would remain NULL.
+    """
+    source_id = _seed_source(db)
+    tables = [
+        _table("dbo", "customers", [_col("id", 1), _col("name", 2)]),
+        _table("dbo", "orders",    [_col("id", 1), _col("total", 2)]),
+    ]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    state = start_batch_profiling(source_id, "user-1")
+    assert state is not None
+
+    row = db.execute(
+        "SELECT resumable_state_json FROM profiling_snapshots WHERE id = ?",
+        (state.profiling_snapshot_id,),
+    ).fetchone()
+    plan = json.loads(row["resumable_state_json"])
+
+    assert len(plan["statistical_fqns"]) > 0, (
+        "statistical_fqns is empty — _run_statistical_pass will never execute "
+        "and all deep profiling metrics will remain NULL."
+    )
+
+
+# ── Cancel / recovery tests ────────────────────────────────────────────────────
+
+def test_get_active_profiling_snapshot_detects_running_job(db):
+    """get_active_profiling_snapshot returns the RUNNING snapshot for a source."""
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "t1", [_col("id", 1)])]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    state = start_batch_profiling(source_id, "user-1")
+    assert state is not None
+
+    active = get_active_profiling_snapshot(source_id, "user-1")
+    assert active is not None
+    assert active["profiling_snapshot_id"] == state.profiling_snapshot_id
+    assert active["status"] == ProfilingStatus.RUNNING.value
+
+
+def test_duplicate_profiling_job_raises(db):
+    """start_batch_profiling raises ValueError when a RUNNING job already exists."""
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "t1", [_col("id", 1)])]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    start_batch_profiling(source_id, "user-1")
+
+    with pytest.raises(ValueError, match="already running"):
+        start_batch_profiling(source_id, "user-1")
+
+
+def test_cancel_batch_profiling_sets_flag(db):
+    """cancel_batch_profiling sets cancel_requested=1 on a RUNNING snapshot."""
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "t1", [_col("id", 1)])]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    state = start_batch_profiling(source_id, "user-1")
+    snap_id = state.profiling_snapshot_id
+
+    result = cancel_batch_profiling(source_id, "user-1", snap_id)
+    assert result is not None
+    assert result["cancel_requested"] is True
+
+    row = db.execute(
+        "SELECT cancel_requested FROM profiling_snapshots WHERE id = ?", (snap_id,)
+    ).fetchone()
+    assert row["cancel_requested"] == 1
+
+
+def test_continue_batch_profiling_respects_cancel_flag(db):
+    """continue_batch_profiling transitions to CANCELLED when cancel_requested=1."""
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "t1", [_col("id", 1)])]
+    snap = _snapshot(source_id, tables)
+    _seed_schema_snapshot(db, source_id, snap)
+
+    state = start_batch_profiling(source_id, "user-1")
+    snap_id = state.profiling_snapshot_id
+
+    db.execute(
+        "UPDATE profiling_snapshots SET cancel_requested = 1 WHERE id = ?", (snap_id,)
+    )
+    db.commit()
+
+    result = continue_batch_profiling(source_id, "user-1", snap_id)
+    assert result is not None
+    assert result.status == ProfilingStatus.CANCELLED
+
+    row = db.execute(
+        "SELECT status FROM profiling_snapshots WHERE id = ?", (snap_id,)
+    ).fetchone()
+    assert row["status"] == ProfilingStatus.CANCELLED.value

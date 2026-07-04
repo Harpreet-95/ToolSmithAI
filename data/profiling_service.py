@@ -302,7 +302,7 @@ def run_full_profiling(source_id: int, user_id: str) -> dict | None:
     # ── Execute full profiling with live connection ───────────────────────────
     config = ProfilingConfig(
         mode=ProfilingMode.FULL,
-        max_tables=10,
+        max_tables=0,
         max_column_count=300,
         excluded_prefixes=['stg_', 'tmp_', 'temp_', 'bak_', 'backup_', 'arc_', 'old_'],
     )
@@ -776,9 +776,13 @@ def start_batch_profiling(
     source_id: int,
     user_id: str,
     batch_size: int = 50,
+    mode: str = "FULL",
+    max_tables: int = 0,
 ) -> ProfilingBatchState | None:
     """Create a new profiling snapshot and compute the priority-sorted table order.
 
+    mode: "FULL" (statistical + structural) or "STRUCTURAL_ONLY" (no live queries).
+    max_tables: 0 = unlimited; N > 0 = cap statistical pass to top-N tables.
     Returns a ProfilingBatchState with status=RUNNING and next_table_index=0.
     Call continue_batch_profiling repeatedly until status=COMPLETE.
     """
@@ -812,15 +816,25 @@ def start_batch_profiling(
     schema_snapshot_id = snap_row["id"]
     snapshot = _reconstruct_snapshot(json.loads(snap_row["snapshot_json"]), source_id)
 
+    prof_mode = (
+        ProfilingMode.STRUCTURAL_ONLY
+        if mode.upper() == "STRUCTURAL_ONLY"
+        else ProfilingMode.FULL
+    )
     config = ProfilingConfig(
-        mode=ProfilingMode.FULL,
-        max_tables=10,
+        mode=prof_mode,
+        max_tables=max_tables,
         max_column_count=300,
         excluded_prefixes=['stg_', 'tmp_', 'temp_', 'bak_', 'backup_', 'arc_', 'old_'],
     )
 
-    sorted_fqns     = _compute_sorted_table_order(snapshot, config)
-    statistical_fqns = sorted_fqns[:config.max_tables]
+    sorted_fqns = _compute_sorted_table_order(snapshot, config)
+    if prof_mode == ProfilingMode.STRUCTURAL_ONLY:
+        statistical_fqns = []
+    elif config.max_tables == 0:
+        statistical_fqns = sorted_fqns
+    else:
+        statistical_fqns = sorted_fqns[:config.max_tables]
 
     # Compute total column count across every table that will be profiled.
     # sorted_fqns already has exclusions applied, so no additional filtering is needed.
@@ -841,6 +855,19 @@ def start_batch_profiling(
     now = _now()
     iconn = get_connection()
     try:
+        # Block if a non-cancelled RUNNING snapshot already exists for this source
+        existing_running = iconn.execute(
+            "SELECT id FROM profiling_snapshots "
+            "WHERE source_id = ? AND status = ? "
+            "AND (cancel_requested = 0 OR cancel_requested IS NULL)",
+            (source_id, ProfilingStatus.RUNNING.value),
+        ).fetchone()
+        if existing_running:
+            raise ValueError(
+                f"A profiling job is already running for this source "
+                f"(snapshot #{existing_running['id']}). Cancel it first."
+            )
+
         snap_version = iconn.execute(
             "SELECT COALESCE(MAX(snapshot_version), 0) + 1 "
             "FROM profiling_snapshots WHERE source_id = ?",
@@ -856,7 +883,7 @@ def start_batch_profiling(
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 source_id, schema_snapshot_id, snap_version,
-                ProfilingMode.FULL.value, config.sample_rate,
+                prof_mode.value, config.sample_rate,
                 '4.0.0', ProfilingStatus.RUNNING.value,
                 len(sorted_fqns), total_columns, batch_size, 0,
                 plan, now, now,
@@ -908,9 +935,29 @@ def continue_batch_profiling(
     if psnap is None:
         return None
 
-    # Already complete — return final state immediately (idempotent)
-    if psnap["status"] == ProfilingStatus.COMPLETE.value:
+    # Already complete or cancelled — return final state immediately (idempotent)
+    if psnap["status"] in (ProfilingStatus.COMPLETE.value, ProfilingStatus.CANCELLED.value):
         return _batch_state_from_row(psnap)
+
+    # Check for cancellation request before processing this batch
+    cancel_flag = psnap["cancel_requested"] if "cancel_requested" in psnap.keys() else 0
+    if cancel_flag:
+        iconn = get_connection()
+        try:
+            iconn.execute(
+                "UPDATE profiling_snapshots SET status = ?, completed_at = ? WHERE id = ?",
+                (ProfilingStatus.CANCELLED.value, _now(), profiling_snapshot_id),
+            )
+            iconn.commit()
+        finally:
+            iconn.close()
+        return ProfilingBatchState(
+            profiling_snapshot_id=profiling_snapshot_id,
+            next_table_index=psnap["next_table_index"] or 0,
+            total_tables=psnap["tables_total"] or 0,
+            completed_tables=psnap["tables_profiled"] or 0,
+            status=ProfilingStatus.CANCELLED,
+        )
 
     plan            = json.loads(psnap["resumable_state_json"] or "{}")
     sorted_fqns     = plan.get("sorted_fqns", [])
@@ -1072,7 +1119,6 @@ def continue_batch_profiling(
 
 def _batch_state_from_row(psnap) -> ProfilingBatchState:
     """Build ProfilingBatchState from a profiling_snapshots DB row."""
-    plan = json.loads(psnap["resumable_state_json"] or "{}")
     return ProfilingBatchState(
         profiling_snapshot_id=psnap["id"],
         next_table_index=psnap["next_table_index"] or 0,
@@ -1080,6 +1126,100 @@ def _batch_state_from_row(psnap) -> ProfilingBatchState:
         completed_tables=psnap["tables_profiled"] or 0,
         status=ProfilingStatus(psnap["status"]),
     )
+
+
+def cancel_batch_profiling(
+    source_id: int,
+    user_id: str,
+    profiling_snapshot_id: int,
+) -> dict | None:
+    """Request cancellation of a running profiling batch job.
+
+    Sets cancel_requested=1 on the snapshot. The next call to
+    continue_batch_profiling will detect the flag and transition the
+    snapshot to CANCELLED status.  Safe to call on a job that has
+    already completed — returns the current status unchanged.
+    Returns None if the snapshot does not exist or does not belong to user.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        psnap = conn.execute(
+            "SELECT id, status FROM profiling_snapshots WHERE id = ? AND source_id = ?",
+            (profiling_snapshot_id, source_id),
+        ).fetchone()
+        if psnap is None:
+            return None
+
+        if psnap["status"] not in (ProfilingStatus.RUNNING.value, ProfilingStatus.PENDING.value):
+            return {
+                "cancel_requested": False,
+                "already_done": True,
+                "status": psnap["status"],
+                "profiling_snapshot_id": profiling_snapshot_id,
+            }
+
+        conn.execute(
+            "UPDATE profiling_snapshots SET cancel_requested = 1 WHERE id = ?",
+            (profiling_snapshot_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "cancel_requested": True,
+        "profiling_snapshot_id": profiling_snapshot_id,
+        "status": ProfilingStatus.RUNNING.value,
+    }
+
+
+def get_active_profiling_snapshot(source_id: int, user_id: str) -> dict | None:
+    """Return the most recent RUNNING or PENDING profiling snapshot for a source.
+
+    Used by the frontend on page load to detect jobs that survived a refresh.
+    Returns None if the source does not belong to user or has no active job.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        row = conn.execute(
+            "SELECT id, status, next_table_index, tables_total, tables_profiled, "
+            "mode, started_at, cancel_requested "
+            "FROM profiling_snapshots "
+            "WHERE source_id = ? AND status IN (?, ?) "
+            "ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id, ProfilingStatus.RUNNING.value, ProfilingStatus.PENDING.value),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    cancel_flag = row["cancel_requested"] if "cancel_requested" in row.keys() else 0
+    return {
+        "profiling_snapshot_id": row["id"],
+        "status":                row["status"],
+        "next_table_index":      row["next_table_index"] or 0,
+        "total_tables":          row["tables_total"] or 0,
+        "completed_tables":      row["tables_profiled"] or 0,
+        "mode":                  row["mode"],
+        "started_at":            row["started_at"],
+        "cancel_requested":      bool(cancel_flag),
+    }
 
 
 # ---------------------------------------------------------------------------

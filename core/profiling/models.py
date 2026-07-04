@@ -72,13 +72,14 @@ class ProfilingDepth(str, Enum):
 
 
 class ProfilingStatus(str, Enum):
-    PENDING   = 'PENDING'
-    RUNNING   = 'RUNNING'
-    COMPLETE  = 'COMPLETE'
-    PARTIAL   = 'PARTIAL'
-    TIMED_OUT = 'TIMED_OUT'
-    FAILED    = 'FAILED'
-    SKIPPED   = 'SKIPPED'
+    PENDING    = 'PENDING'
+    RUNNING    = 'RUNNING'
+    COMPLETE   = 'COMPLETE'
+    PARTIAL    = 'PARTIAL'
+    TIMED_OUT  = 'TIMED_OUT'
+    FAILED     = 'FAILED'
+    SKIPPED    = 'SKIPPED'
+    CANCELLED  = 'CANCELLED'
 
 
 # ── ProfilingConfig ────────────────────────────────────────────────────────────

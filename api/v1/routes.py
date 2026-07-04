@@ -149,7 +149,9 @@ from data.dictionary_service import (
     list_dictionary_tables,
 )
 from data.profiling_service import (
+    cancel_batch_profiling,
     continue_batch_profiling,
+    get_active_profiling_snapshot,
     get_column_profiles,
     get_latest_profile,
     get_profile_review_tasks,
@@ -4228,10 +4230,12 @@ def run_full_profile_route(
 @router.post("/sources/{source_id}/profile/batch/start")
 def start_batch_profile_route(
     source_id: int,
+    mode: str = "FULL",
+    max_tables: int = 0,
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> dict:
     try:
-        result = start_batch_profiling(source_id, user.user_id)
+        result = start_batch_profiling(source_id, user.user_id, mode=mode, max_tables=max_tables)
     except ValueError as exc:
         return JSONResponse(status_code=422, content=build_error_response(str(exc)))
     except Exception:
@@ -4270,6 +4274,31 @@ def continue_batch_profile_route(
         "is_complete":                     result.status.value == "COMPLETE",
         "status":                          result.status.value,
     }}
+
+
+# NOTE: /active must be registered before /{profiling_snapshot_id} routes to
+# prevent FastAPI from treating the literal string "active" as an int path param.
+@router.get("/sources/{source_id}/profile/batch/active")
+def get_active_batch_profile_route(
+    source_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = get_active_profiling_snapshot(source_id, user.user_id)
+    if result is None:
+        return {"status": "success", "data": None}
+    return {"status": "success", "data": result}
+
+
+@router.patch("/sources/{source_id}/profile/batch/{profiling_snapshot_id}/cancel")
+def cancel_batch_profile_route(
+    source_id: int,
+    profiling_snapshot_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = cancel_batch_profiling(source_id, user.user_id, profiling_snapshot_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Profiling snapshot not found."))
+    return {"status": "success", "data": result}
 
 
 # ---------------------------------------------------------------------------

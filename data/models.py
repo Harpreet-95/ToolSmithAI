@@ -650,8 +650,9 @@ def init_db() -> None:
         for row in cursor.execute("PRAGMA table_info(profiling_snapshots)").fetchall()
     }
     psnap_migrations = [
-        ("batch_size",       "ALTER TABLE profiling_snapshots ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 50"),
-        ("next_table_index", "ALTER TABLE profiling_snapshots ADD COLUMN next_table_index INTEGER NOT NULL DEFAULT 0"),
+        ("batch_size",        "ALTER TABLE profiling_snapshots ADD COLUMN batch_size INTEGER NOT NULL DEFAULT 50"),
+        ("next_table_index",  "ALTER TABLE profiling_snapshots ADD COLUMN next_table_index INTEGER NOT NULL DEFAULT 0"),
+        ("cancel_requested",  "ALTER TABLE profiling_snapshots ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"),
     ]
     for col, stmt in psnap_migrations:
         if col not in psnap_existing:
