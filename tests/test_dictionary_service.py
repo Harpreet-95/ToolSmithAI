@@ -23,7 +23,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -534,3 +534,343 @@ def test_generated_entries_are_unapproved(db):
         assert r["is_approved"] == 0, "Table entry must start unapproved"
     for r in col_rows:
         assert r["is_approved"] == 0, "Column entry must start unapproved"
+
+
+# ===========================================================================
+# Phase 3C — AI Semantic Intelligence: Dictionary Suggestions
+# Tests 8–15
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Shared helpers for Phase 3C tests
+# ---------------------------------------------------------------------------
+
+def _make_ai_result(
+    business_name: str = "Misc Data",
+    description: str = "AI-inferred description for this column.",
+    domain: str = "General",
+    entity: str = "Unknown",
+    confidence: float = 0.72,
+    reasoning: tuple = ("semantic_type=unknown",),
+    review_required: bool = True,
+):
+    """Return an AISemanticResult without importing it at module level."""
+    from core.ai.models import AISemanticResult
+    return AISemanticResult(
+        business_name=business_name,
+        description=description,
+        domain=domain,
+        entity=entity,
+        confidence=confidence,
+        reasoning=reasoning,
+        review_required=review_required,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: AI disabled → ai_suggestions_count == 0, all existing behaviour intact
+# ---------------------------------------------------------------------------
+
+def test_ai_disabled_does_not_produce_suggestions(db, monkeypatch):
+    """When ENABLE_AI_SEMANTIC_INTELLIGENCE is not set, ai_suggestions_count must
+    be 0 and the existing rule-based behaviour must be identical."""
+    monkeypatch.delenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", raising=False)
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "misc", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+
+    result = generate_and_save_dictionary(source_id, "user-1")
+
+    assert result is not None
+    assert result["ai_suggestions_count"] == 0
+    assert "ai_suggestions" not in result
+    # Rule-based entry still generated
+    entry = _get_col_entry(db, source_id, "dbo.misc", "raw_data")
+    assert entry["generation_method"] == "rule_based"
+
+
+# ---------------------------------------------------------------------------
+# Test 9: AI disabled — flag is false string
+# ---------------------------------------------------------------------------
+
+def test_ai_disabled_via_false_env_flag(db, monkeypatch):
+    """Setting ENABLE_AI_SEMANTIC_INTELLIGENCE=false (explicit) also disables AI."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "false")
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "misc", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze") as mock_analyze:
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    mock_analyze.assert_not_called()
+    assert result["ai_suggestions_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 10: High-confidence, specific semantic type → AI NOT called
+# ---------------------------------------------------------------------------
+
+def test_high_confidence_entry_skips_ai(db, monkeypatch):
+    """A column with high profiling confidence and a specific semantic type
+    must not be sent to the AI provider."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # order_id → PK → rule classifier gives semantic_type='id' (specific, not 'other')
+    tables = [_table("dbo", "orders", [_col("order_id", pk=True)])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.orders", "order_id",
+        semantic_type="ID",
+        semantic_confidence=0.95,  # well above default threshold (0.75)
+        quality_score=95.0,
+    )
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze") as mock_analyze:
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    mock_analyze.assert_not_called()
+    assert result["ai_suggestions_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 11: 'other' semantic type → AI IS called, suggestion returned
+# ---------------------------------------------------------------------------
+
+def test_other_semantic_type_triggers_ai_suggestion(db, monkeypatch):
+    """A column whose rule-engine gives semantic_type='other' must be sent to
+    the AI layer.  The returned suggestion must appear in the summary and must
+    NOT be written to the database."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # 'NVARCHAR' type → no rule-based classification → semantic_type='other'
+    tables = [_table("dbo", "signals", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.signals", "raw_data",
+        semantic_type="UNKNOWN",
+        semantic_confidence=0.25,
+    )
+
+    mock_ai = _make_ai_result(
+        business_name="Raw Signal Data",
+        description="Unclassified signal data requiring manual review.",
+        confidence=0.60,
+    )
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze", return_value=mock_ai):
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    # Suggestion in summary
+    assert result["ai_suggestions_count"] == 1
+    suggestion = result["ai_suggestions"][0]
+    assert suggestion["column_name"] == "raw_data"
+    assert suggestion["suggested_business_name"] == "Raw Signal Data"
+    assert suggestion["review_required"] is True
+
+    # Database row unchanged — generation_method is rule-based, NOT ai_enriched
+    entry = _get_col_entry(db, source_id, "dbo.signals", "raw_data")
+    assert "ai" not in entry["generation_method"]
+    assert entry["semantic_type"] == "other"   # rule-based result preserved
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Low quality score → AI called, suggestion returned
+# ---------------------------------------------------------------------------
+
+def test_low_quality_score_triggers_ai(db, monkeypatch):
+    """A column with quality_score < 60 must also trigger the AI layer
+    even when the semantic type is a recognised category (not 'other')."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # 'category' TEXT → rule classifier gives semantic_type='dimension' (specific)
+    # but quality_score=35 < 60 → AI should still be called
+    tables = [_table("dbo", "events", [_col("category")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.events", "category",
+        semantic_type="STATUS",
+        semantic_confidence=0.80,   # high confidence
+        quality_score=35.0,         # but very low quality — needs AI interpretation
+        quality_grade="F",
+    )
+
+    mock_ai = _make_ai_result(
+        business_name="Event Category",
+        description="Classifies events by type; data quality requires review.",
+        confidence=0.55,
+    )
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze", return_value=mock_ai) as mock_analyze:
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    mock_analyze.assert_called_once()
+    assert result["ai_suggestions_count"] == 1
+    assert result["ai_suggestions"][0]["review_required"] is True
+
+
+# ---------------------------------------------------------------------------
+# Test 13: AI provider failure → dictionary generation still succeeds
+# ---------------------------------------------------------------------------
+
+def test_ai_failure_does_not_fail_dictionary_generation(db, monkeypatch):
+    """If the AI provider raises during analysis, the exception must be caught
+    and dictionary generation must complete successfully with ai_suggestions_count=0."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "misc", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.misc", "raw_data",
+        semantic_type="UNKNOWN",
+        semantic_confidence=0.20,
+    )
+
+    with patch(
+        "core.ai.semantic_intelligence.SemanticIntelligenceService.analyze",
+        side_effect=RuntimeError("simulated API timeout"),
+    ):
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    # Dictionary generation must have completed
+    assert result is not None
+    assert result["columns_generated"] == 1
+    assert result["ai_suggestions_count"] == 0
+    assert "ai_suggestions" not in result
+
+    # Rule-based DB entry still intact
+    entry = _get_col_entry(db, source_id, "dbo.misc", "raw_data")
+    assert entry["semantic_type"] == "other"
+    assert entry["is_approved"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Human-approved column row is not overwritten by regeneration
+# ---------------------------------------------------------------------------
+
+def test_human_approved_column_not_overwritten(db, monkeypatch):
+    """A column row with generation_method='human' and is_approved=1 must
+    survive an entire generate_and_save_dictionary call unchanged.
+    This validates the ON CONFLICT ... WHERE generation_method != 'human' guard."""
+    monkeypatch.delenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", raising=False)
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "customers", [_col("notes", "TEXT")])]
+    snap = _snapshot(source_id, tables)
+    snap_id = _seed_schema_snapshot(db, source_id, snap)
+
+    # Pre-seed a human-approved dictionary row with custom values
+    db.execute(
+        """INSERT INTO data_dictionary_columns
+           (source_id, snapshot_id, table_fqn, column_name,
+            business_label, meaning, semantic_type, is_metric, is_dimension,
+            is_date, is_id, pii_risk, is_approved, approved_by,
+            generation_method, created_at, updated_at)
+           VALUES (?, ?, 'dbo.customers', 'notes',
+                   'Customer Notes', 'Freeform notes entered by the account team.',
+                   'dimension', 0, 1, 0, 0, 0, 1, 'admin',
+                   'human', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""",
+        (source_id, snap_id),
+    )
+    db.commit()
+
+    generate_and_save_dictionary(source_id, "user-1")
+
+    entry = _get_col_entry(db, source_id, "dbo.customers", "notes")
+    assert entry["is_approved"] == 1,          "Human approval must not be cleared"
+    assert entry["approved_by"] == "admin",    "Approver must not be overwritten"
+    assert entry["generation_method"] == "human", "generation_method must stay 'human'"
+    assert entry["business_label"] == "Customer Notes", "Business label must not change"
+    assert "account team" in entry["meaning"], "Human meaning must be preserved"
+
+
+# ---------------------------------------------------------------------------
+# Test 15: AI suggestion is not auto-approved (is_approved stays 0 in DB)
+# ---------------------------------------------------------------------------
+
+def test_ai_suggestion_not_auto_approved(db, monkeypatch):
+    """Even when the AI layer returns a high-confidence suggestion, the DB
+    column entry must remain is_approved=0 and the generation_method must
+    not be 'ai_enriched' — AI never writes to the DB."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "misc", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.misc", "raw_data",
+        semantic_type="UNKNOWN",
+        semantic_confidence=0.20,
+    )
+
+    mock_ai = _make_ai_result(
+        business_name="Raw Data Field",
+        description="AI-inferred: unclassified data requiring review.",
+        confidence=0.88,
+        review_required=True,
+    )
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze", return_value=mock_ai):
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    # AI suggestion present in summary only
+    assert result["ai_suggestions_count"] == 1
+    assert result["ai_suggestions"][0]["review_required"] is True
+
+    # DB row NOT modified by AI
+    entry = _get_col_entry(db, source_id, "dbo.misc", "raw_data")
+    assert entry["is_approved"] == 0,              "AI must never auto-approve"
+    assert entry["generation_method"] != "ai_enriched", "AI must not write to DB"
+    assert entry["meaning"] != mock_ai.description,     "AI description must not overwrite DB"
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Provider called with rich context from profiling signals
+# ---------------------------------------------------------------------------
+
+def test_ai_context_includes_profiling_signals(db, monkeypatch):
+    """The AISemanticContext passed to svc.analyze must include quality,
+    cardinality, null rate, and uniqueness signals from the profiling snapshot."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "analysis", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.analysis", "raw_data",
+        semantic_type="UNKNOWN",
+        semantic_confidence=0.30,
+        quality_score=45.0,
+        quality_grade="D",
+        null_percentage=12.5,
+        uniqueness_score=0.85,
+        cardinality_tier="HIGH",
+    )
+
+    captured: list = []
+
+    def capture_context(ctx):
+        captured.append(ctx)
+        return None  # No suggestion — test is about context, not result
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze", side_effect=capture_context):
+        generate_and_save_dictionary(source_id, "user-1")
+
+    assert len(captured) == 1, "analyze() should have been called exactly once"
+    ctx = captured[0]
+
+    assert ctx.source_id == source_id
+    assert ctx.table_fqn == "dbo.analysis"
+    assert ctx.column_name == "raw_data"
+    assert ctx.quality_score == 45.0
+    assert ctx.quality_grade == "D"
+    assert ctx.null_percentage == 12.5
+    assert ctx.uniqueness_score == 0.85
+    assert ctx.cardinality_tier == "HIGH"
+    assert ctx.semantic_type == "other"  # mapped from 'other' (NVARCHAR → rule classifier)
+    # Sample values are never included (PII safety)
+    assert ctx.sample_values == []
+    assert ctx.top_values == []

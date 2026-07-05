@@ -1,12 +1,15 @@
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 from core.connectors.schema import (
     ColumnInfo, ForeignKeyInfo, PrimaryKeyInfo,
     SchemaInfo, SchemaSnapshot, TableInfo,
 )
-from core.dictionary.generator import DictionaryResult, generate_dictionary
+from core.dictionary.generator import (
+    ColumnDictEntry, DictionaryResult, TableDictEntry, generate_dictionary,
+)
 from data.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -88,6 +91,204 @@ _COL_UPSERT = """
 """
 
 
+# ── AI enrichment — eligibility, context, enrichment runner ───────────────────
+
+# Threshold below which rule-engine profiling confidence triggers AI review.
+# Matches the value used by SemanticIntelligenceService.
+_AI_CONFIDENCE_THRESHOLD: float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.75"))
+_AI_LOW_QUALITY_THRESHOLD: float = 60.0
+_WEAK_SEMANTIC_TYPES: frozenset[str] = frozenset({"other", "unknown"})
+
+
+def _column_needs_ai(entry: ColumnDictEntry, prof: dict | None) -> bool:
+    """Return True when this column dictionary entry should be sent to the AI layer.
+
+    Checks four independent signals; any single True triggers AI.
+    Never called unless ENABLE_AI_SEMANTIC_INTELLIGENCE=true.
+    PII columns are filtered out by the caller before this is reached.
+    """
+    # Weak rule-engine semantic type — classifier couldn't determine meaning
+    if entry.semantic_type in _WEAK_SEMANTIC_TYPES:
+        return True
+    # Generic meaning — produced by the _make_meaning else-branch for 'other' columns
+    if entry.meaning.startswith("Stores "):
+        return True
+    if prof is not None:
+        # Low profiling confidence — rule engine isn't sure about this column
+        conf = prof.get("semantic_confidence")
+        if conf is not None and conf < _AI_CONFIDENCE_THRESHOLD:
+            return True
+        # Low quality — column needs human-intelligible interpretation caveats
+        quality = prof.get("quality_score")
+        if quality is not None and quality < _AI_LOW_QUALITY_THRESHOLD:
+            return True
+    return False
+
+
+def _build_ai_context(
+    entry: ColumnDictEntry,
+    table_entry: TableDictEntry | None,
+    prof: dict | None,
+    source_id: int,
+) -> "AISemanticContext | None":  # type: ignore[name-defined]
+    """Build an AISemanticContext from existing dictionary and profiling data.
+
+    Returns None only if the core AI import fails (degenerate environment).
+    Does not query the database — all signals come from in-memory objects.
+    Sample values are intentionally excluded (not available in profiling query).
+    """
+    try:
+        from core.ai.models import AISemanticContext
+    except ImportError:
+        return None
+
+    # table_fqn is always "schema.table"
+    parts = entry.table_fqn.rsplit(".", 1)
+    schema_name = parts[0] if len(parts) == 2 else "unknown"
+    table_name  = parts[1] if len(parts) == 2 else entry.table_fqn
+
+    # Build evidence list from strong available signals
+    evidence: list[str] = []
+    if entry.semantic_type and entry.semantic_type not in _WEAK_SEMANTIC_TYPES:
+        evidence.append(f"rule_classifier: {entry.semantic_type}")
+    if prof:
+        conf = prof.get("semantic_confidence")
+        if conf is not None:
+            evidence.append(f"semantic_confidence={conf:.2f}")
+        if prof.get("dominant_pattern"):
+            cov = prof.get("pattern_coverage") or 0.0
+            evidence.append(f"dominant_pattern detected (coverage={cov:.0%})")
+
+    # PII signals (safe to include in context — no raw values)
+    pii_signals: list[str] = []
+    if prof:
+        if prof.get("pii_confirmed"):
+            pii_signals.append("pii_confirmed")
+        if prof.get("pii_name_heuristic"):
+            pii_signals.append("name_heuristic")
+
+    return AISemanticContext(
+        source_id=source_id,
+        schema_name=schema_name,
+        table_name=table_name,
+        table_fqn=entry.table_fqn,
+        column_name=entry.column_name,
+        business_name=entry.business_label,
+        existing_description=entry.meaning,
+        existing_domain=table_entry.domain if table_entry else None,
+        existing_entity=None,
+        semantic_type=entry.semantic_type,
+        semantic_confidence=prof.get("semantic_confidence") if prof else None,
+        rule_engine_domain=table_entry.domain if table_entry else None,
+        rule_engine_entity=None,
+        rule_engine_confidence=prof.get("semantic_confidence") if prof else None,
+        rule_engine_evidence=evidence,
+        quality_score=prof.get("quality_score") if prof else None,
+        quality_grade=prof.get("quality_grade") if prof else None,
+        completeness_score=None,
+        cardinality_tier=prof.get("cardinality_tier") if prof else None,
+        distinct_count=None,
+        distinct_percentage=None,
+        uniqueness_score=prof.get("uniqueness_score") if prof else None,
+        null_percentage=prof.get("null_percentage") if prof else None,
+        empty_string_count=None,
+        distribution_shape=None,
+        pii_confirmed=bool(prof.get("pii_confirmed", 0)) if prof else False,
+        pii_signals=pii_signals,
+        dominant_pattern=prof.get("dominant_pattern") if prof else None,
+        pattern_coverage=prof.get("pattern_coverage") if prof else None,
+        email_match_rate=None,
+        phone_match_rate=None,
+        top_values=[],    # not available in the current profiling query
+        sample_values=[],  # intentionally excluded — PII safety
+    )
+
+
+def _enrich_with_ai(
+    result: DictionaryResult,
+    profiling_context: dict[tuple[str, str], dict] | None,
+) -> list[dict]:
+    """Run AI enrichment after rule-based generation completes.
+
+    Pipeline contract:
+    - Rule engine always runs first (caller guarantees this).
+    - AI only runs when ENABLE_AI_SEMANTIC_INTELLIGENCE=true.
+    - AI only runs for columns that fail _column_needs_ai eligibility.
+    - PII columns are never sent to the AI provider.
+    - Results are returned as a suggestion list — never written to the database.
+    - Any AI failure is logged and skipped; dictionary generation is unaffected.
+    - review_required is always True in every suggestion (enforced by validate_result_json).
+    """
+    if not os.getenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "false").lower() == "true":
+        return []
+
+    try:
+        from core.ai.providers.openai_provider import OpenAISemanticProvider
+        from core.ai.semantic_intelligence import SemanticIntelligenceService
+    except ImportError:
+        logger.warning("core.ai imports unavailable; skipping AI dictionary enrichment")
+        return []
+
+    try:
+        provider = OpenAISemanticProvider()
+        svc = SemanticIntelligenceService(provider=provider)
+    except Exception as exc:
+        logger.warning("AI provider initialisation failed: %s", exc)
+        return []
+
+    # Build table_fqn → TableDictEntry for domain / business_name lookups
+    table_lookup: dict[str, TableDictEntry] = {
+        t.table_fqn: t for t in result.table_entries
+    }
+
+    suggestions: list[dict] = []
+
+    for entry in result.column_entries:
+        # Never send PII column context to an external AI provider
+        if entry.pii_risk:
+            continue
+
+        prof = (
+            profiling_context.get((entry.table_fqn, entry.column_name))
+            if profiling_context else None
+        )
+
+        if not _column_needs_ai(entry, prof):
+            continue
+
+        try:
+            ctx = _build_ai_context(
+                entry, table_lookup.get(entry.table_fqn), prof, result.source_id
+            )
+            if ctx is None:
+                continue
+
+            ai_result = svc.analyze(ctx)
+            if ai_result is None:
+                continue
+
+            # ai_result.review_required is enforced True by validate_result_json
+            suggestions.append({
+                "table_fqn":               entry.table_fqn,
+                "column_name":             entry.column_name,
+                "suggested_business_name": ai_result.business_name,
+                "suggested_description":   ai_result.description,
+                "suggested_domain":        ai_result.domain,
+                "suggested_entity":        ai_result.entity,
+                "ai_confidence":           ai_result.confidence,
+                "ai_reasoning":            list(ai_result.reasoning),
+                "review_required":         ai_result.review_required,
+            })
+
+        except Exception as exc:
+            logger.warning(
+                "AI enrichment failed for %s.%s: %s",
+                entry.table_fqn, entry.column_name, exc,
+            )
+
+    return suggestions
+
+
 # ── Public service functions ───────────────────────────────────────────────────
 
 def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
@@ -153,15 +354,22 @@ def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
     result = generate_dictionary(snapshot, snapshot_id, profiling_context=profiling_context)
     _upsert_dictionary(result)
 
-    return {
-        "snapshot_id":       snapshot_id,
-        "tables_generated":  len(result.table_entries),
-        "columns_generated": len(result.column_entries),
-        "pii_column_count":  result.pii_column_count,
-        "generation_method": result.generation_method,
-        "generated_at":      result.generated_at,
-        "coverage":          _coverage(source_id),
+    # Stage 2: AI enrichment — runs after rule-based upsert, never writes to DB.
+    ai_suggestions = _enrich_with_ai(result, profiling_context)
+
+    summary: dict = {
+        "snapshot_id":          snapshot_id,
+        "tables_generated":     len(result.table_entries),
+        "columns_generated":    len(result.column_entries),
+        "pii_column_count":     result.pii_column_count,
+        "generation_method":    result.generation_method,
+        "generated_at":         result.generated_at,
+        "coverage":             _coverage(source_id),
+        "ai_suggestions_count": len(ai_suggestions),
     }
+    if ai_suggestions:
+        summary["ai_suggestions"] = ai_suggestions
+    return summary
 
 
 def list_dictionary_tables(source_id: int, user_id: str) -> list[dict] | None:
