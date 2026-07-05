@@ -139,6 +139,20 @@ OPENAI_MODEL:                str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_TIMEOUT_SECONDS:      int = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "10"))
 
 # ---------------------------------------------------------------------------
+# AI Semantic Intelligence (Phase 3A)
+# AI is a secondary layer — it only runs when rule-engine confidence is below
+# AI_CONFIDENCE_THRESHOLD.  It never runs first and never auto-approves.
+#
+# ENABLE_AI_SEMANTIC_INTELLIGENCE — master toggle; false = rule engine only
+# AI_CONFIDENCE_THRESHOLD         — rule-engine confidence below which AI is
+#                                   consulted (0.0–1.0, default 0.75)
+# AI_SEMANTIC_TIMEOUT_SECONDS     — per-column AI call timeout
+# ---------------------------------------------------------------------------
+ENABLE_AI_SEMANTIC_INTELLIGENCE: bool  = os.getenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "false").lower() == "true"
+AI_CONFIDENCE_THRESHOLD:         float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.75"))
+AI_SEMANTIC_TIMEOUT_SECONDS:     int   = int(os.getenv("AI_SEMANTIC_TIMEOUT_SECONDS", "15"))
+
+# ---------------------------------------------------------------------------
 # Dynamic Tool Composer
 # ENABLE_DYNAMIC_TOOLS    — registry reads approved+enabled rows from DB
 # ENABLE_DYNAMIC_TOOL_EXECUTION — primitive executor routes dynamic tool steps
