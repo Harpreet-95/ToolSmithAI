@@ -142,11 +142,14 @@ from data.semantic_layer_service import (
     semantic_summary,
 )
 from data.dictionary_service import (
+    accept_ai_suggestion,
     approve_column_dictionary,
     approve_table_dictionary,
     generate_and_save_dictionary,
     get_table_dictionary,
+    list_ai_suggestions,
     list_dictionary_tables,
+    reject_ai_suggestion,
 )
 from data.profiling_service import (
     cancel_batch_profiling,
@@ -4116,6 +4119,56 @@ def approve_column_route(
     result = approve_column_dictionary(source_id, user.user_id, table_fqn, column_name)
     if result is None:
         return JSONResponse(status_code=404, content=build_error_response("Dictionary column entry not found."))
+    return {"status": "success", "data": result}
+
+
+# ---------------------------------------------------------------------------
+# AI Suggestion Review Queue  (/v1/sources/{id}/ai-suggestions)
+# ---------------------------------------------------------------------------
+
+@router.get("/sources/{source_id}/ai-suggestions")
+def list_ai_suggestions_route(
+    source_id: int,
+    status: str = Query("PENDING"),
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    if status not in ("PENDING", "ACCEPTED", "REJECTED"):
+        return JSONResponse(
+            status_code=422,
+            content=build_error_response("status must be PENDING, ACCEPTED, or REJECTED."),
+        )
+    result = list_ai_suggestions(source_id, user.user_id, status)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
+    return {"status": "success", "data": result, "count": len(result)}
+
+
+@router.post("/sources/{source_id}/ai-suggestions/{suggestion_id}/accept")
+def accept_ai_suggestion_route(
+    source_id: int,
+    suggestion_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = accept_ai_suggestion(source_id, user.user_id, suggestion_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Suggestion not found or already reviewed."))
+    if result.get("blocked"):
+        return JSONResponse(
+            status_code=409,
+            content=build_error_response(result.get("reason", "Cannot apply suggestion to human-approved row.")),
+        )
+    return {"status": "success", "data": result}
+
+
+@router.post("/sources/{source_id}/ai-suggestions/{suggestion_id}/reject")
+def reject_ai_suggestion_route(
+    source_id: int,
+    suggestion_id: int,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> dict:
+    result = reject_ai_suggestion(source_id, user.user_id, suggestion_id)
+    if result is None:
+        return JSONResponse(status_code=404, content=build_error_response("Suggestion not found or already reviewed."))
     return {"status": "success", "data": result}
 
 

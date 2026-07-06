@@ -701,6 +701,29 @@ export async function approveDictionaryColumn(sourceId, tableFqn, columnName, to
   return parseResponse(res)
 }
 
+export async function listAiSuggestions(sourceId, token, status = 'PENDING') {
+  const res = await fetch(`/v1/sources/${sourceId}/ai-suggestions?status=${encodeURIComponent(status)}`, {
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function acceptAiSuggestion(sourceId, suggestionId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/ai-suggestions/${suggestionId}/accept`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
+export async function rejectAiSuggestion(sourceId, suggestionId, token) {
+  const res = await fetch(`/v1/sources/${sourceId}/ai-suggestions/${suggestionId}/reject`, {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+  })
+  return parseResponse(res)
+}
+
 // ---------------------------------------------------------------------------
 // Data Source — metadata pipeline (profile / dictionary / domains / entities)
 // ---------------------------------------------------------------------------

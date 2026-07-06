@@ -172,6 +172,29 @@ _SCHEMA = """
         updated_at        TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(source_id, table_fqn, column_name)
     );
+
+    CREATE TABLE ai_semantic_suggestions (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id               INTEGER NOT NULL,
+        object_type             TEXT    NOT NULL DEFAULT 'dict.column',
+        table_fqn               TEXT    NOT NULL,
+        column_name             TEXT    NOT NULL,
+        suggested_business_name TEXT,
+        suggested_description   TEXT,
+        suggested_domain        TEXT,
+        suggested_entity        TEXT,
+        ai_confidence           REAL,
+        ai_reasoning_json       TEXT    NOT NULL DEFAULT '[]',
+        review_required         INTEGER NOT NULL DEFAULT 1,
+        status                  TEXT    NOT NULL DEFAULT 'PENDING',
+        provider                TEXT,
+        model                   TEXT,
+        prompt_version          TEXT,
+        created_by              TEXT,
+        created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        reviewed_by             TEXT,
+        reviewed_at             TEXT
+    );
 """
 
 

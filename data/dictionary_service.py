@@ -354,8 +354,11 @@ def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
     result = generate_dictionary(snapshot, snapshot_id, profiling_context=profiling_context)
     _upsert_dictionary(result)
 
-    # Stage 2: AI enrichment — runs after rule-based upsert, never writes to DB.
+    # Stage 2: AI enrichment — runs after rule-based upsert, never writes to dictionary.
     ai_suggestions = _enrich_with_ai(result, profiling_context)
+
+    # Stage 3: Persist suggestions to review queue (deduped; not auto-approved).
+    inserted = _insert_ai_suggestions(source_id, user_id, ai_suggestions)
 
     summary: dict = {
         "snapshot_id":          snapshot_id,
@@ -366,6 +369,7 @@ def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
         "generated_at":         result.generated_at,
         "coverage":             _coverage(source_id),
         "ai_suggestions_count": len(ai_suggestions),
+        "ai_suggestions_queued": inserted,
     }
     if ai_suggestions:
         summary["ai_suggestions"] = ai_suggestions
@@ -459,6 +463,187 @@ def _upsert_dictionary(result: DictionaryResult) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _insert_ai_suggestions(source_id: int, user_id: str, suggestions: list[dict]) -> int:
+    """Persist AI suggestions from a generation run into the review queue.
+
+    Dedupes by checking for an existing PENDING row with the same
+    (source_id, object_type, table_fqn, column_name).  Skips insertion when
+    one already exists so re-running Generate Dictionary is idempotent.
+    Returns the count of newly inserted rows.
+    """
+    if not suggestions:
+        return 0
+
+    now = _now()
+    inserted = 0
+    conn = get_connection()
+    try:
+        for s in suggestions:
+            existing = conn.execute(
+                """SELECT id FROM ai_semantic_suggestions
+                   WHERE source_id = ? AND object_type = 'dict.column'
+                   AND table_fqn = ? AND column_name = ? AND status = 'PENDING'""",
+                (source_id, s["table_fqn"], s["column_name"]),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """INSERT INTO ai_semantic_suggestions
+                   (source_id, object_type, table_fqn, column_name,
+                    suggested_business_name, suggested_description,
+                    suggested_domain, suggested_entity,
+                    ai_confidence, ai_reasoning_json, review_required,
+                    status, created_by, created_at)
+                   VALUES (?, 'dict.column', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'PENDING', ?, ?)""",
+                (
+                    source_id, s["table_fqn"], s["column_name"],
+                    s.get("suggested_business_name"),
+                    s.get("suggested_description"),
+                    s.get("suggested_domain"),
+                    s.get("suggested_entity"),
+                    s.get("ai_confidence"),
+                    json.dumps(s.get("ai_reasoning", [])),
+                    user_id, now,
+                ),
+            )
+            inserted += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return inserted
+
+
+def list_ai_suggestions(
+    source_id: int, user_id: str, status: str = "PENDING"
+) -> list[dict] | None:
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+        rows = conn.execute(
+            """SELECT * FROM ai_semantic_suggestions
+               WHERE source_id = ? AND status = ?
+               ORDER BY created_at DESC""",
+            (source_id, status),
+        ).fetchall()
+    finally:
+        conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["ai_reasoning"] = json.loads(d.get("ai_reasoning_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["ai_reasoning"] = []
+        result.append(d)
+    return result
+
+
+def accept_ai_suggestion(
+    source_id: int, user_id: str, suggestion_id: int
+) -> dict | None:
+    """Apply an AI suggestion to its dictionary row.
+
+    Safety rules:
+    - Suggestion must exist, belong to source_id, and be PENDING.
+    - If the target column row is human-approved (is_approved=1), returns
+      {"blocked": True} — the dictionary row is never modified.
+    - On success, sets generation_method='ai_suggested' and marks the
+      suggestion ACCEPTED.  is_approved stays 0 on the dictionary row.
+    """
+    now = _now()
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        sug_row = conn.execute(
+            """SELECT * FROM ai_semantic_suggestions
+               WHERE id = ? AND source_id = ? AND status = 'PENDING'""",
+            (suggestion_id, source_id),
+        ).fetchone()
+        if sug_row is None:
+            return None
+
+        sug = dict(sug_row)
+
+        col_row = conn.execute(
+            """SELECT is_approved FROM data_dictionary_columns
+               WHERE source_id = ? AND table_fqn = ? AND column_name = ?""",
+            (source_id, sug["table_fqn"], sug["column_name"]),
+        ).fetchone()
+
+        if col_row and col_row["is_approved"] == 1:
+            return {
+                "blocked": True,
+                "reason": "Column is human-approved; cannot overwrite with AI suggestion.",
+            }
+
+        conn.execute(
+            """UPDATE data_dictionary_columns
+               SET business_label     = ?,
+                   meaning            = ?,
+                   generation_method  = 'ai_suggested',
+                   updated_at         = ?
+               WHERE source_id = ? AND table_fqn = ? AND column_name = ?""",
+            (
+                sug["suggested_business_name"],
+                sug["suggested_description"],
+                now,
+                source_id,
+                sug["table_fqn"],
+                sug["column_name"],
+            ),
+        )
+        conn.execute(
+            """UPDATE ai_semantic_suggestions
+               SET status = 'ACCEPTED', reviewed_by = ?, reviewed_at = ?
+               WHERE id = ?""",
+            (user_id, now, suggestion_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"accepted": True, "suggestion_id": suggestion_id}
+
+
+def reject_ai_suggestion(
+    source_id: int, user_id: str, suggestion_id: int
+) -> dict | None:
+    """Mark a suggestion REJECTED without touching the dictionary row."""
+    now = _now()
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        cursor = conn.execute(
+            """UPDATE ai_semantic_suggestions
+               SET status = 'REJECTED', reviewed_by = ?, reviewed_at = ?
+               WHERE id = ? AND source_id = ? AND status = 'PENDING'""",
+            (user_id, now, suggestion_id, source_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    if cursor.rowcount == 0:
+        return None
+    return {"rejected": True, "suggestion_id": suggestion_id}
 
 
 def approve_table_dictionary(source_id: int, user_id: str, table_fqn: str) -> dict | None:

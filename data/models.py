@@ -1326,4 +1326,42 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # ai_semantic_suggestions — pending review queue for AI-generated dictionary suggestions.
+    # AI never writes directly to data_dictionary_columns; all output lands here first.
+    # status: PENDING | ACCEPTED | REJECTED
+    # Deduplication key: (source_id, object_type, table_fqn, column_name, status=PENDING)
+    # enforced in the service layer (not by a DB unique index) so re-runs are safe.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS ai_semantic_suggestions (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id               INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            object_type             TEXT    NOT NULL DEFAULT 'dict.column',
+            table_fqn               TEXT    NOT NULL,
+            column_name             TEXT    NOT NULL,
+            suggested_business_name TEXT,
+            suggested_description   TEXT,
+            suggested_domain        TEXT,
+            suggested_entity        TEXT,
+            ai_confidence           REAL,
+            ai_reasoning_json       TEXT    NOT NULL DEFAULT '[]',
+            review_required         INTEGER NOT NULL DEFAULT 1,
+            status                  TEXT    NOT NULL DEFAULT 'PENDING',
+            provider                TEXT,
+            model                   TEXT,
+            prompt_version          TEXT,
+            created_by              TEXT,
+            created_at              TEXT    NOT NULL,
+            reviewed_by             TEXT,
+            reviewed_at             TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ais_source_status
+            ON ai_semantic_suggestions (source_id, status);
+        CREATE INDEX IF NOT EXISTS idx_ais_source_fqn_col
+            ON ai_semantic_suggestions (source_id, table_fqn, column_name);
+        CREATE INDEX IF NOT EXISTS idx_ais_created_at
+            ON ai_semantic_suggestions (created_at);
+    """)
+    conn.commit()
+
     conn.close()

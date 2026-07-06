@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react'
-import { approveDictionaryColumn, approveDictionaryTable, getDictionaryTable, listDataSources, listDictionaryTables } from '../api/client'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { acceptAiSuggestion, approveDictionaryColumn, approveDictionaryTable, getDictionaryTable, listAiSuggestions, listDataSources, listDictionaryTables, rejectAiSuggestion } from '../api/client'
 
 const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 const MONO = "'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace"
@@ -57,7 +57,12 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
   const [error,         setError]         = useState(null)
   const [approvingTable, setApprovingTable] = useState(false)
   const [approvingCols,  setApprovingCols]  = useState(new Set())
-  const [coverage,       setCoverage]       = useState(null)
+  const [coverage,         setCoverage]         = useState(null)
+  const [aiSuggestions,    setAiSuggestions]    = useState([])
+  const [loadingAiSugs,    setLoadingAiSugs]    = useState(false)
+  const [expandedSugId,    setExpandedSugId]    = useState(null)
+  const [actingOnSug,      setActingOnSug]      = useState(new Set())
+  const [aiSugMsg,         setAiSugMsg]         = useState(null)
 
   // Load sources once (skip when a sourceId is pre-bound and selector is hidden)
   useEffect(() => {
@@ -92,6 +97,61 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
       .catch(() => setError('Failed to load table details.'))
       .finally(() => setLoadingDet(false))
   }, [selectedFqn]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load pending AI suggestions when source changes
+  const refreshAiSuggestions = useCallback(() => {
+    if (!sourceId) { setAiSuggestions([]); return }
+    setLoadingAiSugs(true)
+    listAiSuggestions(sourceId, token, 'PENDING')
+      .then(d => setAiSuggestions(d?.data ?? []))
+      .catch(() => setAiSuggestions([]))
+      .finally(() => setLoadingAiSugs(false))
+  }, [sourceId, token])
+
+  useEffect(() => { refreshAiSuggestions() }, [refreshAiSuggestions])
+
+  async function handleAcceptSuggestion(sug) {
+    setActingOnSug(s => new Set(s).add(sug.id))
+    setAiSugMsg(null)
+    try {
+      const resp = await acceptAiSuggestion(sourceId, sug.id, token)
+      if (resp?.data?.blocked) {
+        setAiSugMsg({ type: 'error', text: resp?.data?.reason ?? 'Blocked: row is human-approved.' })
+      } else {
+        setAiSugMsg({ type: 'success', text: `Applied suggestion for ${sug.column_name}.` })
+        refreshAiSuggestions()
+        // Refresh table details if current table is affected
+        if (selectedFqn === sug.table_fqn) {
+          getDictionaryTable(sourceId, selectedFqn, token)
+            .then(d => setDetails(d?.data ?? null))
+            .catch(() => {})
+        }
+      }
+    } catch (e) {
+      const msg = e?.message ?? ''
+      if (msg.includes('409') || msg.toLowerCase().includes('human-approved')) {
+        setAiSugMsg({ type: 'error', text: 'Blocked: this column has been human-approved.' })
+      } else {
+        setAiSugMsg({ type: 'error', text: e?.message ?? 'Accept failed.' })
+      }
+    } finally {
+      setActingOnSug(s => { const n = new Set(s); n.delete(sug.id); return n })
+    }
+  }
+
+  async function handleRejectSuggestion(sug) {
+    setActingOnSug(s => new Set(s).add(sug.id))
+    setAiSugMsg(null)
+    try {
+      await rejectAiSuggestion(sourceId, sug.id, token)
+      setAiSugMsg({ type: 'success', text: `Rejected suggestion for ${sug.column_name}.` })
+      refreshAiSuggestions()
+    } catch (e) {
+      setAiSugMsg({ type: 'error', text: e?.message ?? 'Reject failed.' })
+    } finally {
+      setActingOnSug(s => { const n = new Set(s); n.delete(sug.id); return n })
+    }
+  }
 
   async function handleApproveTable() {
     if (!sourceId || !selectedFqn) return
@@ -247,6 +307,177 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
 
       {/* ── Right panel ──────────────────────────────────────────────────── */}
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 }}>
+
+        {/* ── AI Suggestions panel ─────────────────────────────────────────── */}
+        {sourceId && (aiSuggestions.length > 0 || loadingAiSugs) && (() => {
+          const aiAccent = '#f59e0b'
+          return (
+            <div style={{ ...card({ padding: '0' }), border: `1px solid ${aiAccent}30` }}>
+              {/* Header */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '10px 16px', borderBottom: `1px solid ${aiAccent}20`,
+                background: `${aiAccent}08`,
+              }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: '700', color: aiAccent, letterSpacing: '0.04em' }}>
+                  AI SUGGESTIONS
+                </span>
+                {!loadingAiSugs && (
+                  <span style={{
+                    fontSize: '0.65rem', fontWeight: '700', padding: '1px 7px', borderRadius: '9px',
+                    background: `${aiAccent}20`, color: aiAccent, border: `1px solid ${aiAccent}35`,
+                  }}>
+                    {aiSuggestions.length} PENDING
+                  </span>
+                )}
+                <span style={{ fontSize: '0.68rem', color: muted, marginLeft: 'auto' }}>
+                  Review and accept or reject each suggestion.
+                </span>
+              </div>
+
+              {/* Feedback message */}
+              {aiSugMsg && (
+                <div style={{
+                  padding: '6px 16px', fontSize: '0.74rem',
+                  color: aiSugMsg.type === 'success' ? success : '#f87171',
+                  background: aiSugMsg.type === 'success' ? `${success}10` : '#f8717110',
+                  borderBottom: `1px solid ${border}`,
+                }}>
+                  {aiSugMsg.text}
+                </div>
+              )}
+
+              {/* Loading */}
+              {loadingAiSugs && (
+                <div style={{ padding: '16px', textAlign: 'center', color: muted, fontSize: '0.78rem' }}>
+                  Loading…
+                </div>
+              )}
+
+              {/* Suggestion rows */}
+              {!loadingAiSugs && aiSuggestions.map(sug => {
+                const isExpanded = expandedSugId === sug.id
+                const isActing   = actingOnSug.has(sug.id)
+                const conf       = sug.ai_confidence ?? 0
+                const confPct    = Math.round(conf * 100)
+                const confColor  = conf >= 0.8 ? success : conf >= 0.6 ? aiAccent : '#94a3b8'
+                const reasoning  = Array.isArray(sug.ai_reasoning) ? sug.ai_reasoning : []
+                return (
+                  <div key={sug.id} style={{ borderBottom: `1px solid ${border}20` }}>
+                    {/* Row summary */}
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1fr 1fr 60px 120px',
+                        alignItems: 'center',
+                        padding: '8px 16px', gap: '8px',
+                        cursor: 'pointer',
+                        background: isExpanded ? `${aiAccent}06` : 'transparent',
+                      }}
+                      onClick={() => setExpandedSugId(isExpanded ? null : sug.id)}
+                    >
+                      {/* Table / column */}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '0.72rem', fontFamily: MONO, color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {sug.table_fqn}
+                        </div>
+                        <div style={{ fontSize: '0.82rem', fontWeight: '600', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {sug.column_name}
+                        </div>
+                      </div>
+
+                      {/* Suggested business name */}
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1px' }}>
+                          Suggested name
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {sug.suggested_business_name ?? '—'}
+                        </div>
+                      </div>
+
+                      {/* Confidence */}
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Conf.</div>
+                        <div style={{ fontSize: '0.78rem', fontWeight: '700', color: confColor }}>{confPct}%</div>
+                      </div>
+
+                      {/* Actions */}
+                      <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => handleAcceptSuggestion(sug)}
+                          disabled={isActing}
+                          style={{
+                            background: `${success}15`, color: success, border: `1px solid ${success}35`,
+                            borderRadius: '5px', padding: '3px 10px', fontSize: '0.68rem', fontWeight: '700',
+                            cursor: isActing ? 'default' : 'pointer', fontFamily: FONT,
+                          }}
+                        >
+                          {isActing ? '…' : 'Accept'}
+                        </button>
+                        <button
+                          onClick={() => handleRejectSuggestion(sug)}
+                          disabled={isActing}
+                          style={{
+                            background: '#ef444415', color: '#f87171', border: '1px solid #ef444430',
+                            borderRadius: '5px', padding: '3px 10px', fontSize: '0.68rem', fontWeight: '700',
+                            cursor: isActing ? 'default' : 'pointer', fontFamily: FONT,
+                          }}
+                        >
+                          {isActing ? '…' : 'Reject'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Expanded detail */}
+                    {isExpanded && (
+                      <div style={{ padding: '0 16px 12px', background: `${aiAccent}04` }}>
+                        {sug.suggested_description && (
+                          <div style={{ marginBottom: '8px' }}>
+                            <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>
+                              Suggested Description
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: textSec, lineHeight: 1.5 }}>
+                              {sug.suggested_description}
+                            </div>
+                          </div>
+                        )}
+                        {(sug.suggested_domain || sug.suggested_entity) && (
+                          <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
+                            {sug.suggested_domain && (
+                              <div>
+                                <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Domain</div>
+                                <div style={{ fontSize: '0.76rem', color: textSec }}>{sug.suggested_domain}</div>
+                              </div>
+                            )}
+                            {sug.suggested_entity && (
+                              <div>
+                                <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Entity</div>
+                                <div style={{ fontSize: '0.76rem', color: textSec }}>{sug.suggested_entity}</div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {reasoning.length > 0 && (
+                          <div>
+                            <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>
+                              AI Reasoning
+                            </div>
+                            <ul style={{ margin: 0, padding: '0 0 0 16px' }}>
+                              {reasoning.map((r, i) => (
+                                <li key={i} style={{ fontSize: '0.74rem', color: textSec, lineHeight: 1.6 }}>{r}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })()}
 
         {!selectedFqn && (
           <div style={{ ...card({ padding: '48px 24px' }), textAlign: 'center' }}>
