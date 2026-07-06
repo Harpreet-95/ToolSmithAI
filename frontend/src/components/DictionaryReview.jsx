@@ -63,6 +63,8 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
   const [expandedSugId,    setExpandedSugId]    = useState(null)
   const [actingOnSug,      setActingOnSug]      = useState(new Set())
   const [aiSugMsg,         setAiSugMsg]         = useState(null)
+  const [aiPanelOpen,      setAiPanelOpen]      = useState(false)
+  const [visibleCount,     setVisibleCount]     = useState(100)
 
   // Load sources once (skip when a sourceId is pre-bound and selector is hidden)
   useEffect(() => {
@@ -109,6 +111,8 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
   }, [sourceId, token])
 
   useEffect(() => { refreshAiSuggestions() }, [refreshAiSuggestions])
+
+  useEffect(() => { setVisibleCount(100) }, [search, domainFilter, sourceId])
 
   async function handleAcceptSuggestion(sug) {
     setActingOnSug(s => new Set(s).add(sug.id))
@@ -189,7 +193,7 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
     })
   }, [tables, search, domainFilter])
 
-  const visibleTables = filteredTables.slice(0, 100)
+  const visibleTables = filteredTables.slice(0, visibleCount)
 
   const filteredCols = useMemo(() => {
     const cols = details?.columns ?? []
@@ -297,9 +301,19 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
             )
           })}
 
-          {filteredTables.length > 100 && (
-            <div style={{ textAlign: 'center', padding: '10px', fontSize: '0.7rem', color: muted }}>
-              +{filteredTables.length - 100} more — refine search to narrow
+          {visibleCount < filteredTables.length && (
+            <div style={{ textAlign: 'center', padding: '10px' }}>
+              <button
+                onClick={() => setVisibleCount(c => c + 100)}
+                style={{
+                  background: `${accent}15`, color: accent,
+                  border: `1px solid ${accent}30`, borderRadius: '7px',
+                  padding: '5px 14px', fontSize: '0.72rem', fontWeight: '600',
+                  cursor: 'pointer', fontFamily: FONT,
+                }}
+              >
+                Load more ({filteredTables.length - visibleCount} remaining)
+              </button>
             </div>
           )}
         </div>
@@ -308,173 +322,182 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
       {/* ── Right panel ──────────────────────────────────────────────────── */}
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', minWidth: 0 }}>
 
-        {/* ── AI Suggestions panel ─────────────────────────────────────────── */}
+        {/* ── AI Suggestions panel (collapsible) ───────────────────────────── */}
         {sourceId && (aiSuggestions.length > 0 || loadingAiSugs) && (() => {
           const aiAccent = '#f59e0b'
           return (
-            <div style={{ ...card({ padding: '0' }), border: `1px solid ${aiAccent}30` }}>
-              {/* Header */}
+            <div style={{ borderRadius: '8px', border: `1px solid ${aiAccent}28`, overflow: 'hidden', flexShrink: 0 }}>
+
+              {/* Summary bar — always visible */}
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '8px',
-                padding: '10px 16px', borderBottom: `1px solid ${aiAccent}20`,
-                background: `${aiAccent}08`,
+                padding: '7px 14px', background: `${aiAccent}08`,
               }}>
-                <span style={{ fontSize: '0.75rem', fontWeight: '700', color: aiAccent, letterSpacing: '0.04em' }}>
-                  AI SUGGESTIONS
+                <span style={{ fontSize: '0.72rem', fontWeight: '700', color: aiAccent, letterSpacing: '0.04em', flexShrink: 0 }}>
+                  AI Suggestions
                 </span>
                 {!loadingAiSugs && (
                   <span style={{
-                    fontSize: '0.65rem', fontWeight: '700', padding: '1px 7px', borderRadius: '9px',
-                    background: `${aiAccent}20`, color: aiAccent, border: `1px solid ${aiAccent}35`,
+                    fontSize: '0.62rem', fontWeight: '700', padding: '1px 6px', borderRadius: '8px',
+                    background: `${aiAccent}20`, color: aiAccent, border: `1px solid ${aiAccent}35`, flexShrink: 0,
                   }}>
-                    {aiSuggestions.length} PENDING
+                    {aiSuggestions.length} pending
                   </span>
                 )}
-                <span style={{ fontSize: '0.68rem', color: muted, marginLeft: 'auto' }}>
-                  Review and accept or reject each suggestion.
+                {loadingAiSugs && (
+                  <span style={{ fontSize: '0.67rem', color: muted }}>Loading…</span>
+                )}
+                <span style={{ fontSize: '0.65rem', color: muted, marginLeft: 'auto', marginRight: '8px', flexShrink: 0 }}>
+                  Safe batches · Regenerate for more
                 </span>
+                <button
+                  onClick={refreshAiSuggestions}
+                  style={{
+                    background: 'transparent', border: `1px solid ${border}`, borderRadius: '5px',
+                    color: muted, fontSize: '0.65rem', padding: '2px 8px', cursor: 'pointer',
+                    fontFamily: FONT, flexShrink: 0,
+                  }}
+                >
+                  Refresh
+                </button>
+                <button
+                  onClick={() => setAiPanelOpen(v => !v)}
+                  style={{
+                    background: `${aiAccent}12`, border: `1px solid ${aiAccent}30`, borderRadius: '5px',
+                    color: aiAccent, fontSize: '0.65rem', fontWeight: '600', padding: '2px 8px',
+                    cursor: 'pointer', fontFamily: FONT, flexShrink: 0,
+                  }}
+                >
+                  {aiPanelOpen ? 'Collapse' : 'Expand'}
+                </button>
               </div>
 
-              {/* Feedback message */}
+              {/* Inline feedback message */}
               {aiSugMsg && (
                 <div style={{
-                  padding: '6px 16px', fontSize: '0.74rem',
+                  padding: '5px 14px', fontSize: '0.71rem',
                   color: aiSugMsg.type === 'success' ? success : '#f87171',
                   background: aiSugMsg.type === 'success' ? `${success}10` : '#f8717110',
-                  borderBottom: `1px solid ${border}`,
+                  borderTop: `1px solid ${border}20`,
                 }}>
                   {aiSugMsg.text}
                 </div>
               )}
 
-              {/* Loading */}
-              {loadingAiSugs && (
-                <div style={{ padding: '16px', textAlign: 'center', color: muted, fontSize: '0.78rem' }}>
-                  Loading…
+              {/* Scrollable suggestion list — only when expanded */}
+              {aiPanelOpen && !loadingAiSugs && (
+                <div style={{ maxHeight: '260px', overflowY: 'auto', borderTop: `1px solid ${aiAccent}20` }}>
+                  {aiSuggestions.map(sug => {
+                    const isExpanded = expandedSugId === sug.id
+                    const isActing   = actingOnSug.has(sug.id)
+                    const conf       = sug.ai_confidence ?? 0
+                    const confPct    = Math.round(conf * 100)
+                    const confColor  = conf >= 0.8 ? success : conf >= 0.6 ? aiAccent : '#94a3b8'
+                    const reasoning  = Array.isArray(sug.ai_reasoning) ? sug.ai_reasoning : []
+                    return (
+                      <div key={sug.id} style={{ borderBottom: `1px solid ${border}20` }}>
+
+                        {/* Compact row */}
+                        <div
+                          style={{
+                            display: 'grid', gridTemplateColumns: '1fr 1fr 52px 118px',
+                            alignItems: 'center', gap: '8px',
+                            padding: '6px 14px', cursor: 'pointer',
+                            background: isExpanded ? `${aiAccent}06` : 'transparent',
+                          }}
+                          onClick={() => setExpandedSugId(isExpanded ? null : sug.id)}
+                        >
+                          {/* Table · column */}
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: '0.67rem', fontFamily: MONO, color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {sug.table_fqn}
+                            </div>
+                            <div style={{ fontSize: '0.78rem', fontWeight: '600', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {sug.column_name}
+                            </div>
+                          </div>
+
+                          {/* Suggested business name */}
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: '0.76rem', color: textSec, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {sug.suggested_business_name ?? '—'}
+                            </div>
+                          </div>
+
+                          {/* Confidence */}
+                          <div style={{ textAlign: 'center', flexShrink: 0 }}>
+                            <div style={{ fontSize: '0.75rem', fontWeight: '700', color: confColor }}>{confPct}%</div>
+                          </div>
+
+                          {/* Accept / Reject */}
+                          <div style={{ display: 'flex', gap: '4px', justifyContent: 'flex-end', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                            <button
+                              onClick={() => handleAcceptSuggestion(sug)}
+                              disabled={isActing}
+                              style={{
+                                background: `${success}15`, color: success, border: `1px solid ${success}35`,
+                                borderRadius: '5px', padding: '2px 9px', fontSize: '0.65rem', fontWeight: '700',
+                                cursor: isActing ? 'default' : 'pointer', fontFamily: FONT, whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {isActing ? '…' : 'Accept'}
+                            </button>
+                            <button
+                              onClick={() => handleRejectSuggestion(sug)}
+                              disabled={isActing}
+                              style={{
+                                background: '#ef444415', color: '#f87171', border: '1px solid #ef444430',
+                                borderRadius: '5px', padding: '2px 9px', fontSize: '0.65rem', fontWeight: '700',
+                                cursor: isActing ? 'default' : 'pointer', fontFamily: FONT, whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {isActing ? '…' : 'Reject'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Expanded detail — reasoning hidden until row clicked */}
+                        {isExpanded && (
+                          <div style={{ padding: '0 14px 10px 14px', background: `${aiAccent}04` }}>
+                            {sug.suggested_description && (
+                              <div style={{ marginBottom: '6px' }}>
+                                <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Description</div>
+                                <div style={{ fontSize: '0.74rem', color: textSec, lineHeight: 1.5 }}>{sug.suggested_description}</div>
+                              </div>
+                            )}
+                            {(sug.suggested_domain || sug.suggested_entity) && (
+                              <div style={{ display: 'flex', gap: '16px', marginBottom: '6px' }}>
+                                {sug.suggested_domain && (
+                                  <div>
+                                    <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1px' }}>Domain</div>
+                                    <div style={{ fontSize: '0.72rem', color: textSec }}>{sug.suggested_domain}</div>
+                                  </div>
+                                )}
+                                {sug.suggested_entity && (
+                                  <div>
+                                    <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1px' }}>Entity</div>
+                                    <div style={{ fontSize: '0.72rem', color: textSec }}>{sug.suggested_entity}</div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {reasoning.length > 0 && (
+                              <div>
+                                <div style={{ fontSize: '0.6rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>AI Reasoning</div>
+                                <ul style={{ margin: 0, padding: '0 0 0 14px' }}>
+                                  {reasoning.map((r, i) => (
+                                    <li key={i} style={{ fontSize: '0.7rem', color: textSec, lineHeight: 1.5 }}>{r}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
-
-              {/* Suggestion rows */}
-              {!loadingAiSugs && aiSuggestions.map(sug => {
-                const isExpanded = expandedSugId === sug.id
-                const isActing   = actingOnSug.has(sug.id)
-                const conf       = sug.ai_confidence ?? 0
-                const confPct    = Math.round(conf * 100)
-                const confColor  = conf >= 0.8 ? success : conf >= 0.6 ? aiAccent : '#94a3b8'
-                const reasoning  = Array.isArray(sug.ai_reasoning) ? sug.ai_reasoning : []
-                return (
-                  <div key={sug.id} style={{ borderBottom: `1px solid ${border}20` }}>
-                    {/* Row summary */}
-                    <div
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: '1fr 1fr 60px 120px',
-                        alignItems: 'center',
-                        padding: '8px 16px', gap: '8px',
-                        cursor: 'pointer',
-                        background: isExpanded ? `${aiAccent}06` : 'transparent',
-                      }}
-                      onClick={() => setExpandedSugId(isExpanded ? null : sug.id)}
-                    >
-                      {/* Table / column */}
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: '0.72rem', fontFamily: MONO, color: muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {sug.table_fqn}
-                        </div>
-                        <div style={{ fontSize: '0.82rem', fontWeight: '600', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {sug.column_name}
-                        </div>
-                      </div>
-
-                      {/* Suggested business name */}
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1px' }}>
-                          Suggested name
-                        </div>
-                        <div style={{ fontSize: '0.8rem', color: text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {sug.suggested_business_name ?? '—'}
-                        </div>
-                      </div>
-
-                      {/* Confidence */}
-                      <div style={{ textAlign: 'center' }}>
-                        <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Conf.</div>
-                        <div style={{ fontSize: '0.78rem', fontWeight: '700', color: confColor }}>{confPct}%</div>
-                      </div>
-
-                      {/* Actions */}
-                      <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
-                        <button
-                          onClick={() => handleAcceptSuggestion(sug)}
-                          disabled={isActing}
-                          style={{
-                            background: `${success}15`, color: success, border: `1px solid ${success}35`,
-                            borderRadius: '5px', padding: '3px 10px', fontSize: '0.68rem', fontWeight: '700',
-                            cursor: isActing ? 'default' : 'pointer', fontFamily: FONT,
-                          }}
-                        >
-                          {isActing ? '…' : 'Accept'}
-                        </button>
-                        <button
-                          onClick={() => handleRejectSuggestion(sug)}
-                          disabled={isActing}
-                          style={{
-                            background: '#ef444415', color: '#f87171', border: '1px solid #ef444430',
-                            borderRadius: '5px', padding: '3px 10px', fontSize: '0.68rem', fontWeight: '700',
-                            cursor: isActing ? 'default' : 'pointer', fontFamily: FONT,
-                          }}
-                        >
-                          {isActing ? '…' : 'Reject'}
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Expanded detail */}
-                    {isExpanded && (
-                      <div style={{ padding: '0 16px 12px', background: `${aiAccent}04` }}>
-                        {sug.suggested_description && (
-                          <div style={{ marginBottom: '8px' }}>
-                            <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '3px' }}>
-                              Suggested Description
-                            </div>
-                            <div style={{ fontSize: '0.78rem', color: textSec, lineHeight: 1.5 }}>
-                              {sug.suggested_description}
-                            </div>
-                          </div>
-                        )}
-                        {(sug.suggested_domain || sug.suggested_entity) && (
-                          <div style={{ display: 'flex', gap: '16px', marginBottom: '8px' }}>
-                            {sug.suggested_domain && (
-                              <div>
-                                <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Domain</div>
-                                <div style={{ fontSize: '0.76rem', color: textSec }}>{sug.suggested_domain}</div>
-                              </div>
-                            )}
-                            {sug.suggested_entity && (
-                              <div>
-                                <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '2px' }}>Entity</div>
-                                <div style={{ fontSize: '0.76rem', color: textSec }}>{sug.suggested_entity}</div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {reasoning.length > 0 && (
-                          <div>
-                            <div style={{ fontSize: '0.63rem', color: muted, fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>
-                              AI Reasoning
-                            </div>
-                            <ul style={{ margin: 0, padding: '0 0 0 16px' }}>
-                              {reasoning.map((r, i) => (
-                                <li key={i} style={{ fontSize: '0.74rem', color: textSec, lineHeight: 1.6 }}>{r}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
             </div>
           )
         })()}
