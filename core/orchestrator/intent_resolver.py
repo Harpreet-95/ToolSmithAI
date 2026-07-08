@@ -138,6 +138,7 @@ _INTENT_CAPABILITIES: Dict[IntentType, List[ServiceCapability]] = {
         ServiceCapability.SCHEMA_READ,
         ServiceCapability.RELATIONSHIP_READ,
         ServiceCapability.SEMANTIC_READ,
+        ServiceCapability.LIVE_QUERY,
     ],
     IntentType.WORKFLOW: [
         ServiceCapability.WORKFLOW_READ,

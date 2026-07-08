@@ -468,7 +468,28 @@ class TestOrchestratorIntegration:
         service_ids = [c.service_id for c in package.service_calls]
         assert "live_query" not in service_ids
 
-    def test_live_query_adapter_returns_none_without_sql(self):
+    def test_live_query_adapter_returns_none_without_sql(self, tmp_path, monkeypatch):
+        # Phase A1.2: without an explicit "sql" param, the adapter now treats
+        # req.query as a business question and runs semantic resolution
+        # (data.query_planning_service.plan_business_query) first. Point that
+        # at an isolated, source-less temp DB so this stays a fast, isolated
+        # unit test rather than touching the real project DB — with no
+        # source_id=1 row to resolve, plan_business_query returns None and
+        # the adapter still returns None before any SQL is generated or run.
+        import sqlite3
+        import data.db as db_module
+        import data.models as models
+
+        db_path = str(tmp_path / "no_source.db")
+        monkeypatch.setattr(db_module, "DB_PATH", db_path)
+        models.init_db()
+
+        def _conn():
+            c = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+            c.row_factory = sqlite3.Row
+            return c
+        monkeypatch.setattr("data.query_planning_service.get_connection", _conn)
+
         from core.orchestrator.context_builder import _live_query
         req = OrchestratorRequest(query="anything", source_id=1, user_id="user-1", params={})
         assert _live_query(req) is None

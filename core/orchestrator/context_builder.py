@@ -144,21 +144,80 @@ def _live_metadata(req: OrchestratorRequest) -> Any:
 
 
 def _live_query(req: OrchestratorRequest) -> Any:
-    sql = req.params.get("sql")
-    if req.source_id is None or req.user_id is None or not sql:
+    if req.source_id is None or req.user_id is None:
         return None
     from core.live.query_engine import LiveQueryEngine
 
+    sql = req.params.get("sql")
+    if sql:
+        # Trusted caller already has exact SQL to run (Phase 7 bypass) —
+        # unchanged behavior.
+        result = LiveQueryEngine().execute(
+            req.source_id, req.user_id, sql,
+            params=req.params.get("sql_params"),
+            row_limit=req.params.get("row_limit"),
+            timeout_s=req.params.get("timeout_s"),
+            page=req.params.get("page", 1),
+            page_size=req.params.get("page_size"),
+            max_payload_bytes=req.params.get("max_payload_bytes"),
+        )
+        return result.to_dict()
+
+    # No pre-built SQL — treat this as a business question and run the full
+    # existing chain: semantic resolution (query_planning_service) -> SQL
+    # planning (sql_planning_service) -> SQL generation (sql_generation_service).
+    # LiveQueryEngine.execute() (with its own read-only validation, ownership,
+    # live_query_enabled gate, rate limits, and audit logging) is only ever
+    # reached below when generation actually produced a validated SQL string.
+    question = (req.params.get("question") or req.query or "").strip()
+    if not question:
+        return None
+
+    from core.semantic.concept_resolver import extract_terms
+    from data.query_planning_service import plan_business_query
+    from data.sql_planning_service import build_sql_plan
+    from data.sql_generation_service import detect_dialect, generate_sql
+
+    concepts, measures, dimensions = extract_terms(question)
+    query_plan = plan_business_query(req.source_id, req.user_id, {
+        "question": question,
+        "concepts": concepts,
+        "measures": measures,
+        "dimensions": dimensions,
+        "filters": req.params.get("filters") or [],
+    })
+    if query_plan is None:
+        return None  # unknown/unowned source — same contract as the raw-SQL branch
+
+    sql_plan = build_sql_plan(
+        req.source_id, req.user_id, query_plan,
+        allow_unconfirmed_pii=req.params.get("allow_unconfirmed_pii", False),
+    )
+    generated = generate_sql(
+        req.source_id, req.user_id, sql_plan,
+        dialect=detect_dialect(req.source_id),
+    )
+    if not generated.get("sql"):
+        return {
+            "executed": False,
+            "reason": "sql_generation_refused",
+            "explanation": generated.get("explanation") or [],
+            "warnings": generated.get("warnings") or sql_plan.get("warnings") or [],
+        }
+
     result = LiveQueryEngine().execute(
-        req.source_id, req.user_id, sql,
-        params=req.params.get("sql_params"),
+        req.source_id, req.user_id, generated["sql"],
+        params=generated["parameters"]["values"],
         row_limit=req.params.get("row_limit"),
         timeout_s=req.params.get("timeout_s"),
         page=req.params.get("page", 1),
         page_size=req.params.get("page_size"),
         max_payload_bytes=req.params.get("max_payload_bytes"),
     )
-    return result.to_dict()
+    data = result.to_dict()
+    data["generated_sql"] = generated["sql"]
+    data["sql_generation_explanation"] = generated.get("explanation") or []
+    return data
 
 
 def _semantic_query_plan(req: OrchestratorRequest) -> Any:
