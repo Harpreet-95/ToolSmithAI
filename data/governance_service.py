@@ -107,6 +107,8 @@ class GovernedObjectType(str, Enum):
     ENGINE_TOOL           = "tool.engine"
     PII_CONFIRMATION      = "pii.confirmation"
     RELATIONSHIP_SUGGESTION = "relationship.suggestion"
+    DOMAIN_ASSIGNMENT      = "domain.assignment"
+    ENTITY_ASSIGNMENT      = "entity.assignment"
 
 
 _TYPE_META: dict[str, dict] = {
@@ -118,6 +120,8 @@ _TYPE_META: dict[str, dict] = {
     "tool.engine":            {"display_name": "Engine Tool",                  "source_table": "engine_tools"},
     "pii.confirmation":       {"display_name": "PII Confirmation",             "source_table": "profiling_column_profiles"},
     "relationship.suggestion": {"display_name": "Relationship Suggestion",     "source_table": "table_relationships"},
+    "domain.assignment":      {"display_name": "Domain Assignment",           "source_table": "domain_assignments"},
+    "entity.assignment":      {"display_name": "Entity Assignment",           "source_table": "entity_assignments"},
 }
 
 

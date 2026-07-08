@@ -21,8 +21,8 @@ _UPSERT = """
     INSERT INTO entity_assignments (
         source_id, profiling_snapshot_id, table_fqn, entity,
         confidence, evidence_json, competing_entities_json,
-        created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        assignment_source, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rule', ?, ?)
     ON CONFLICT(source_id, table_fqn) DO UPDATE SET
         profiling_snapshot_id   = excluded.profiling_snapshot_id,
         entity                  = excluded.entity,
@@ -30,6 +30,7 @@ _UPSERT = """
         evidence_json           = excluded.evidence_json,
         competing_entities_json = excluded.competing_entities_json,
         updated_at              = excluded.updated_at
+    WHERE entity_assignments.assignment_source != 'human'
 """
 
 
@@ -37,12 +38,20 @@ _UPSERT = """
 # Public service functions
 # ---------------------------------------------------------------------------
 
-def generate_entity_assignments(source_id: int, user_id: str) -> dict | None:
+def generate_entity_assignments(
+    source_id: int, user_id: str, table_fqns: list[str] | None = None
+) -> dict | None:
     """Classify every profiled table for source_id into a business entity and persist.
 
     Uses the latest profiling snapshot.  Column semantic types from
     profiling_column_profiles are passed to detect_table_entity() as
     additional signal.
+
+    table_fqns: when provided, only these tables are classified/upserted (used
+    by the autonomous metadata lifecycle to refresh changed/new objects only).
+    None (default) preserves the original full-source behavior used by the
+    manual "Generate Entities" action. Rows with assignment_source='human' are
+    never overwritten regardless of this parameter (see _UPSERT guard).
 
     Returns:
         Summary dict, or None if source_id does not belong to user_id.
@@ -73,24 +82,45 @@ def generate_entity_assignments(source_id: int, user_id: str) -> dict | None:
 
         snap_id = snap_row["id"]
 
-        table_rows = conn.execute(
-            "SELECT * FROM profiling_table_profiles "
-            "WHERE profiling_snapshot_id = ?",
-            (snap_id,),
-        ).fetchall()
+        if table_fqns is not None:
+            if not table_fqns:
+                table_rows = []
+                col_rows = []
+            else:
+                placeholders = ",".join("?" for _ in table_fqns)
+                table_rows = conn.execute(
+                    "SELECT * FROM profiling_table_profiles "
+                    f"WHERE profiling_snapshot_id = ? AND table_fqn IN ({placeholders})",
+                    (snap_id, *table_fqns),
+                ).fetchall()
+                col_rows = conn.execute(
+                    "SELECT table_fqn, semantic_type, semantic_confidence, cardinality_tier, "
+                    "uniqueness_score, null_percentage, blank_percentage, quality_score, "
+                    "quality_grade, distribution_shape, pii_confirmed, pii_signals_json, "
+                    "dominant_pattern, pattern_coverage "
+                    f"FROM profiling_column_profiles "
+                    f"WHERE profiling_snapshot_id = ? AND table_fqn IN ({placeholders})",
+                    (snap_id, *table_fqns),
+                ).fetchall()
+        else:
+            table_rows = conn.execute(
+                "SELECT * FROM profiling_table_profiles "
+                "WHERE profiling_snapshot_id = ?",
+                (snap_id,),
+            ).fetchall()
 
-        # Full column profiles per table — used for deep profiling entity intelligence.
-        # Fetches all columns (not just those with semantic_type) to use cardinality,
-        # quality, distribution, PII signals alongside semantic type.
-        col_rows = conn.execute(
-            "SELECT table_fqn, semantic_type, semantic_confidence, cardinality_tier, "
-            "uniqueness_score, null_percentage, blank_percentage, quality_score, "
-            "quality_grade, distribution_shape, pii_confirmed, pii_signals_json, "
-            "dominant_pattern, pattern_coverage "
-            "FROM profiling_column_profiles "
-            "WHERE profiling_snapshot_id = ?",
-            (snap_id,),
-        ).fetchall()
+            # Full column profiles per table — used for deep profiling entity intelligence.
+            # Fetches all columns (not just those with semantic_type) to use cardinality,
+            # quality, distribution, PII signals alongside semantic type.
+            col_rows = conn.execute(
+                "SELECT table_fqn, semantic_type, semantic_confidence, cardinality_tier, "
+                "uniqueness_score, null_percentage, blank_percentage, quality_score, "
+                "quality_grade, distribution_shape, pii_confirmed, pii_signals_json, "
+                "dominant_pattern, pattern_coverage "
+                "FROM profiling_column_profiles "
+                "WHERE profiling_snapshot_id = ?",
+                (snap_id,),
+            ).fetchall()
 
         # Load APPROVED active entity rules for this source, sorted by
         # confidence desc so higher-confidence rules take priority.
@@ -204,6 +234,77 @@ def generate_entity_assignments(source_id: int, user_id: str) -> dict | None:
         "unknown_matches":       unknown_matches,
         "generated_at":          now,
     }
+
+
+def lock_entity_assignment(
+    source_id: int, user_id: str, table_fqn: str, entity: str | None = None
+) -> dict | None:
+    """Mark an entity assignment as human-set so it is never overwritten by
+    generate_entity_assignments() again.
+
+    If entity is provided, the value is corrected at the same time. Otherwise
+    the existing entity value is left as-is and only assignment_source flips
+    to 'human'.
+
+    Returns the updated row, or None if source_id does not belong to user_id
+    or no assignment row exists yet for table_fqn.
+    """
+    now = _now()
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        if entity is not None:
+            cursor = conn.execute(
+                "UPDATE entity_assignments "
+                "SET entity = ?, assignment_source = 'human', updated_at = ? "
+                "WHERE source_id = ? AND table_fqn = ?",
+                (entity, now, source_id, table_fqn),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE entity_assignments "
+                "SET assignment_source = 'human', updated_at = ? "
+                "WHERE source_id = ? AND table_fqn = ?",
+                (now, source_id, table_fqn),
+            )
+        conn.commit()
+
+        if cursor.rowcount == 0:
+            return None
+
+        row = conn.execute(
+            "SELECT * FROM entity_assignments WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType, log_governance_event,
+        )
+        log_governance_event(
+            object_type_id = GovernedObjectType.ENTITY_ASSIGNMENT,
+            object_id      = f"{source_id}:{table_fqn}",
+            event_type     = "HUMAN_LOCK",
+            from_state     = GovernanceState.GENERATED,
+            to_state       = GovernanceState.HUMAN_APPROVED,
+            actor_id       = user_id,
+            source_service = "entity_service",
+        )
+    except Exception:
+        logger.warning("governance logging failed for entity.assignment %s:%s", source_id, table_fqn)
+
+    d = dict(row)
+    d["evidence"]           = json.loads(d.pop("evidence_json", "[]") or "[]")
+    d["competing_entities"] = json.loads(d.pop("competing_entities_json", "[]") or "[]")
+    return d
 
 
 def list_entity_assignments(source_id: int, user_id: str) -> list[dict] | None:

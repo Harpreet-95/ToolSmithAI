@@ -154,6 +154,28 @@ def run_metadata_job(job_id: int) -> None:
                     completed_at=_now())
         return
 
+    _update_job(job_id, status="RUNNING", current_step="LIFECYCLE",
+                progress_message="Running autonomous metadata lifecycle...")
+
+    # The autonomous metadata lifecycle (dictionary/domain/entity refresh, review
+    # tasks, notifications) is best-effort on top of the core scan promise: a
+    # lifecycle failure does not fail the job, since discovery + profiling — the
+    # data this job exists to produce — already succeeded. The failure is still
+    # fully recorded via metadata_lifecycle_runs, the audit log, and a failure
+    # notification inside run_autonomous_lifecycle() itself.
+    try:
+        from core.lifecycle.models import LifecycleTrigger
+        from core.lifecycle.runner import run_autonomous_lifecycle
+
+        run_autonomous_lifecycle(
+            source_id, user_id, trigger=LifecycleTrigger.SCAN_COMPLETE, job_id=job_id,
+        )
+    except Exception:
+        logger.exception(
+            "Metadata job id=%s: autonomous metadata lifecycle failed for source id=%s",
+            job_id, source_id,
+        )
+
     _update_job(job_id, status="COMPLETE", current_step="READY",
                 progress_message="Metadata ready.", completed_at=_now())
 

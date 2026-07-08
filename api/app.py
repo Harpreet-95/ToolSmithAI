@@ -16,6 +16,7 @@ from core.config import (
 )
 from api.v1.routes import router as v1_router
 from api.v1.composer import composer_router
+from api.v1.lifecycle_routes import lifecycle_router
 from data.models import init_db
 from data.scheduled_workflow_service import run_due_workflows
 from core.errors.exception_handler import global_exception_handler, validation_exception_handler
@@ -55,6 +56,12 @@ async def lifespan(app):
         )
     else:
         logger.info("Scheduler disabled (SCHEDULER_ENABLED=false) — no workflows will run automatically")
+    # Future insertion point for scheduled autonomous metadata lifecycle runs
+    # (nightly/hourly). core.lifecycle.runner.run_autonomous_lifecycle() already
+    # accepts LifecycleTrigger.SCHEDULED_NIGHTLY / SCHEDULED_HOURLY and needs no
+    # changes — only a scheduler job would need to be added here, e.g.:
+    #   _scheduler.add_job(run_scheduled_lifecycle_ticks, "interval", ...)
+    # No cron is implemented in this phase.
     yield
     if SCHEDULER_ENABLED and _scheduler.running:
         _scheduler.shutdown(wait=False)
@@ -74,3 +81,4 @@ app.add_exception_handler(Exception, global_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.include_router(v1_router, prefix="/v1")
 app.include_router(composer_router, prefix="/v1")
+app.include_router(lifecycle_router, prefix="/v1")

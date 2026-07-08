@@ -1364,4 +1364,66 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # Idempotent migration: assignment_source distinguishes machine-generated
+    # domain/entity assignments from human-locked ones. Rows with
+    # assignment_source='human' are protected from overwrite by the
+    # autonomous metadata lifecycle (Phase 11).
+    da_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(domain_assignments)").fetchall()
+    }
+    if "assignment_source" not in da_existing:
+        cursor.execute(
+            "ALTER TABLE domain_assignments ADD COLUMN assignment_source "
+            "TEXT NOT NULL DEFAULT 'rule'"
+        )
+    conn.commit()
+
+    ea_existing = {
+        row[1]
+        for row in cursor.execute("PRAGMA table_info(entity_assignments)").fetchall()
+    }
+    if "assignment_source" not in ea_existing:
+        cursor.execute(
+            "ALTER TABLE entity_assignments ADD COLUMN assignment_source "
+            "TEXT NOT NULL DEFAULT 'rule'"
+        )
+    conn.commit()
+
+    # metadata_lifecycle_runs — one row per autonomous metadata lifecycle run
+    # (Phase 11). Records the diff summary, refresh counts, review tasks, and
+    # notifications produced by a single trigger event, for audit/history.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS metadata_lifecycle_runs (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id                   INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            job_id                      INTEGER REFERENCES metadata_jobs(id) ON DELETE SET NULL,
+            user_id                     TEXT    NOT NULL,
+            trigger_event               TEXT    NOT NULL,
+            status                      TEXT    NOT NULL DEFAULT 'RUNNING',
+            old_snapshot_id             INTEGER REFERENCES schema_snapshots(id),
+            new_snapshot_id             INTEGER REFERENCES schema_snapshots(id),
+            tables_added_count          INTEGER NOT NULL DEFAULT 0,
+            tables_removed_count        INTEGER NOT NULL DEFAULT 0,
+            tables_modified_count       INTEGER NOT NULL DEFAULT 0,
+            objects_changed_count       INTEGER NOT NULL DEFAULT 0,
+            dictionary_refreshed_count  INTEGER NOT NULL DEFAULT 0,
+            domains_refreshed_count     INTEGER NOT NULL DEFAULT 0,
+            entities_refreshed_count    INTEGER NOT NULL DEFAULT 0,
+            review_tasks_created_count  INTEGER NOT NULL DEFAULT 0,
+            notifications_sent_count    INTEGER NOT NULL DEFAULT 0,
+            steps_executed_json         TEXT    NOT NULL DEFAULT '[]',
+            error_message               TEXT,
+            duration_ms                 INTEGER,
+            started_at                  TEXT    NOT NULL,
+            completed_at                TEXT,
+            created_at                  TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mlr_source_id ON metadata_lifecycle_runs (source_id);
+        CREATE INDEX IF NOT EXISTS idx_mlr_job_id    ON metadata_lifecycle_runs (job_id);
+        CREATE INDEX IF NOT EXISTS idx_mlr_status    ON metadata_lifecycle_runs (status);
+    """)
+    conn.commit()
+
     conn.close()

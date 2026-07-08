@@ -1209,7 +1209,7 @@ class TestConfirmPiiColumn:
 # ---------------------------------------------------------------------------
 
 class TestListGovernedObjectTypes:
-    def test_returns_all_eight_types(self):
+    def test_returns_all_ten_types(self):
         types = list_governed_object_types()
         ids = {t["id"] for t in types}
         expected = {
@@ -1217,6 +1217,9 @@ class TestListGovernedObjectTypes:
             "domain.rule", "domain.refinement",
             "entity.rule", "tool.engine",
             "pii.confirmation", "relationship.suggestion",
+            # Added in Phase 11 (Enterprise Autonomous Metadata Lifecycle) for the
+            # domain/entity assignment human-lock governance event trail.
+            "domain.assignment", "entity.assignment",
         }
         assert expected == ids
 

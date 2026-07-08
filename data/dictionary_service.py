@@ -291,7 +291,16 @@ def _enrich_with_ai(
 
 # ── Public service functions ───────────────────────────────────────────────────
 
-def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
+def generate_and_save_dictionary(
+    source_id: int, user_id: str, table_fqns: list[str] | None = None
+) -> dict | None:
+    """Generate and upsert dictionary entries for source_id.
+
+    table_fqns: when provided, only entries for these tables are generated and
+    upserted (used by the autonomous metadata lifecycle to refresh changed/new
+    objects only). None (default) preserves the original full-source behavior
+    used by the manual "Generate Dictionary" action.
+    """
     conn = get_connection()
     try:
         owns = conn.execute(
@@ -352,6 +361,13 @@ def generate_and_save_dictionary(source_id: int, user_id: str) -> dict | None:
         conn.close()
 
     result = generate_dictionary(snapshot, snapshot_id, profiling_context=profiling_context)
+
+    if table_fqns is not None:
+        fqn_set = set(table_fqns)
+        result.table_entries = [e for e in result.table_entries if e.table_fqn in fqn_set]
+        result.column_entries = [e for e in result.column_entries if e.table_fqn in fqn_set]
+        result.pii_column_count = sum(1 for e in result.column_entries if e.pii_risk)
+
     _upsert_dictionary(result)
 
     # Stage 2: AI enrichment — runs after rule-based upsert, never writes to dictionary.
@@ -576,6 +592,16 @@ def accept_ai_suggestion(
             return None
 
         sug = dict(sug_row)
+
+        if sug["object_type"] != "dict.column":
+            return {
+                "blocked": True,
+                "reason": (
+                    "Accept is only supported for dict.column suggestions; "
+                    f"'{sug['object_type']}' suggestions must be reviewed manually "
+                    "(e.g. via the domain/entity lock endpoints) or rejected."
+                ),
+            }
 
         col_row = conn.execute(
             """SELECT is_approved FROM data_dictionary_columns
