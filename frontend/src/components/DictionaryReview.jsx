@@ -81,7 +81,7 @@ export default function DictionaryReview({ C = {}, token, sourceId: sourceIdProp
   // Load dictionary tables when source changes
   useEffect(() => {
     if (!sourceId) return
-    setTables([]); setSelectedFqn(null); setDetails(null)
+    setTables([]); setSelectedFqn(null); setDetails(null); setVisibleCount(100)
     setLoadingTbls(true); setError(null)
     listDictionaryTables(sourceId, token)
       .then(d => setTables(d?.data ?? []))

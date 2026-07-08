@@ -324,6 +324,12 @@ class TestPromptBuilder:
         user_p = self.builder.build_metadata_analysis_prompt(self.ctx)
         assert system_p != user_p
 
+    def test_system_prompt_contains_anti_echo_rule(self):
+        """System prompt must instruct the model not to copy the existing description."""
+        sp = self.builder.get_system_prompt()
+        assert "meaningfully different" in sp
+        assert "Do not copy" in sp or "not copy" in sp
+
     def test_top_values_capped_at_ten(self):
         many_values = [
             {"value": f"val_{i}", "count": 1, "percentage": 0.1}

@@ -17,7 +17,14 @@ _SYSTEM_PROMPT = (
     "(3) confidence must be a float between 0.0 and 1.0. "
     "(4) reasoning must be a non-empty JSON array of concise strings, "
     "ordered from the strongest signal to the weakest. "
-    "(5) Set review_required to true whenever confidence < 1.0."
+    "(5) Set review_required to true whenever confidence < 1.0. "
+    "(6) Your description MUST be meaningfully different from and better than "
+    "the Current Description. Do not copy, restate, or lightly paraphrase it. "
+    "Write a specific, human-readable definition explaining what business concept "
+    "this column captures and how it is used. "
+    "If the available signals are insufficient to produce a genuinely better "
+    "description, set confidence to 0.0 and explain in reasoning what additional "
+    "context (e.g. sample values, table purpose) would be needed."
 )
 
 _OUTPUT_SCHEMA = """\

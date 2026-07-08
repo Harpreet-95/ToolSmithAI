@@ -99,13 +99,23 @@ _AI_CONFIDENCE_THRESHOLD: float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.
 _AI_LOW_QUALITY_THRESHOLD: float = 60.0
 _WEAK_SEMANTIC_TYPES: frozenset[str] = frozenset({"other", "unknown"})
 
+# Per-run safety caps — prevent unbounded AI calls on large schemas.
+# Override in .env: AI_SEMANTIC_MAX_SUGGESTIONS_PER_RUN, AI_SEMANTIC_MAX_TABLES_PER_RUN
+_AI_MAX_SUGGESTIONS_PER_RUN: int = int(os.getenv("AI_SEMANTIC_MAX_SUGGESTIONS_PER_RUN", "25"))
+_AI_MAX_TABLES_PER_RUN:      int = int(os.getenv("AI_SEMANTIC_MAX_TABLES_PER_RUN", "10"))
+
 
 def _column_needs_ai(entry: ColumnDictEntry, prof: dict | None) -> bool:
     """Return True when this column dictionary entry should be sent to the AI layer.
 
-    Checks four independent signals; any single True triggers AI.
+    Three independent signals — any single True triggers AI.
     Never called unless ENABLE_AI_SEMANTIC_INTELLIGENCE=true.
     PII columns are filtered out by the caller before this is reached.
+
+    Note: low semantic_confidence alone is NOT a trigger.  A column with a formed,
+    specific description (semantic_type='dimension', confidence=0.42) already has
+    something useful to show; AI would just echo it back.  AI is reserved for
+    columns whose description is provably useless or where quality is very poor.
     """
     # Weak rule-engine semantic type — classifier couldn't determine meaning
     if entry.semantic_type in _WEAK_SEMANTIC_TYPES:
@@ -113,12 +123,8 @@ def _column_needs_ai(entry: ColumnDictEntry, prof: dict | None) -> bool:
     # Generic meaning — produced by the _make_meaning else-branch for 'other' columns
     if entry.meaning.startswith("Stores "):
         return True
+    # Very low quality — data issues may need AI interpretation
     if prof is not None:
-        # Low profiling confidence — rule engine isn't sure about this column
-        conf = prof.get("semantic_confidence")
-        if conf is not None and conf < _AI_CONFIDENCE_THRESHOLD:
-            return True
-        # Low quality — column needs human-intelligible interpretation caveats
         quality = prof.get("quality_score")
         if quality is not None and quality < _AI_LOW_QUALITY_THRESHOLD:
             return True
@@ -207,41 +213,61 @@ def _build_ai_context(
 def _enrich_with_ai(
     result: DictionaryResult,
     profiling_context: dict[tuple[str, str], dict] | None,
-) -> list[dict]:
+) -> dict:
     """Run AI enrichment after rule-based generation completes.
 
     Pipeline contract:
     - Rule engine always runs first (caller guarantees this).
     - AI only runs when ENABLE_AI_SEMANTIC_INTELLIGENCE=true.
-    - AI only runs for columns that fail _column_needs_ai eligibility.
+    - AI only runs for columns that pass _column_needs_ai eligibility.
     - PII columns are never sent to the AI provider.
-    - Results are returned as a suggestion list — never written to the database.
+    - Results are returned in a dict — never written to the database here.
     - Any AI failure is logged and skipped; dictionary generation is unaffected.
-    - review_required is always True in every suggestion (enforced by validate_result_json).
+    - Per-run caps (max_suggestions, max_tables) prevent unbounded API calls.
+
+    Returns a dict with keys:
+        suggestions:          list[dict] — AI suggestion payloads
+        eligible_count:       int  — columns that passed eligibility check
+        processed_count:      int  — columns where svc.analyze() was called
+        skipped_due_to_limit: int  — eligible columns skipped by safety caps
     """
+    _empty: dict = {
+        "suggestions":          [],
+        "eligible_count":       0,
+        "processed_count":      0,
+        "skipped_due_to_limit": 0,
+    }
+
     if not os.getenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "false").lower() == "true":
-        return []
+        return _empty
 
     try:
         from core.ai.providers.openai_provider import OpenAISemanticProvider
         from core.ai.semantic_intelligence import SemanticIntelligenceService
     except ImportError:
         logger.warning("core.ai imports unavailable; skipping AI dictionary enrichment")
-        return []
+        return _empty
 
     try:
         provider = OpenAISemanticProvider()
         svc = SemanticIntelligenceService(provider=provider)
     except Exception as exc:
         logger.warning("AI provider initialisation failed: %s", exc)
-        return []
+        return _empty
+
+    max_suggestions: int = _AI_MAX_SUGGESTIONS_PER_RUN
+    max_tables:      int = _AI_MAX_TABLES_PER_RUN
 
     # Build table_fqn → TableDictEntry for domain / business_name lookups
     table_lookup: dict[str, TableDictEntry] = {
         t.table_fqn: t for t in result.table_entries
     }
 
-    suggestions: list[dict] = []
+    suggestions:          list[dict]  = []
+    eligible_count:       int         = 0
+    processed_count:      int         = 0
+    skipped_due_to_limit: int         = 0
+    tables_allowed:       set[str]    = set()
 
     for entry in result.column_entries:
         # Never send PII column context to an external AI provider
@@ -256,6 +282,21 @@ def _enrich_with_ai(
         if not _column_needs_ai(entry, prof):
             continue
 
+        eligible_count += 1
+
+        # Table-level cap: only process eligible columns from the first max_tables
+        # distinct tables encountered.  Columns from later tables are skipped.
+        if entry.table_fqn not in tables_allowed:
+            if len(tables_allowed) >= max_tables:
+                skipped_due_to_limit += 1
+                continue
+            tables_allowed.add(entry.table_fqn)
+
+        # Suggestion-level cap: stop calling AI once enough have been collected.
+        if len(suggestions) >= max_suggestions:
+            skipped_due_to_limit += 1
+            continue
+
         try:
             ctx = _build_ai_context(
                 entry, table_lookup.get(entry.table_fqn), prof, result.source_id
@@ -263,6 +304,7 @@ def _enrich_with_ai(
             if ctx is None:
                 continue
 
+            processed_count += 1
             ai_result = svc.analyze(ctx)
             if ai_result is None:
                 continue
@@ -286,7 +328,20 @@ def _enrich_with_ai(
                 entry.table_fqn, entry.column_name, exc,
             )
 
-    return suggestions
+    if skipped_due_to_limit:
+        logger.info(
+            "AI enrichment: %d eligible, %d processed, %d skipped "
+            "(limits: max_suggestions=%d, max_tables=%d)",
+            eligible_count, processed_count, skipped_due_to_limit,
+            max_suggestions, max_tables,
+        )
+
+    return {
+        "suggestions":          suggestions,
+        "eligible_count":       eligible_count,
+        "processed_count":      processed_count,
+        "skipped_due_to_limit": skipped_due_to_limit,
+    }
 
 
 # ── Public service functions ───────────────────────────────────────────────────
@@ -371,21 +426,28 @@ def generate_and_save_dictionary(
     _upsert_dictionary(result)
 
     # Stage 2: AI enrichment — runs after rule-based upsert, never writes to dictionary.
-    ai_suggestions = _enrich_with_ai(result, profiling_context)
+    ai_result        = _enrich_with_ai(result, profiling_context)
+    ai_suggestions   = ai_result["suggestions"]
+    ai_eligible      = ai_result["eligible_count"]
+    ai_processed     = ai_result["processed_count"]
+    ai_skipped       = ai_result["skipped_due_to_limit"]
 
     # Stage 3: Persist suggestions to review queue (deduped; not auto-approved).
     inserted = _insert_ai_suggestions(source_id, user_id, ai_suggestions)
 
     summary: dict = {
-        "snapshot_id":          snapshot_id,
-        "tables_generated":     len(result.table_entries),
-        "columns_generated":    len(result.column_entries),
-        "pii_column_count":     result.pii_column_count,
-        "generation_method":    result.generation_method,
-        "generated_at":         result.generated_at,
-        "coverage":             _coverage(source_id),
-        "ai_suggestions_count": len(ai_suggestions),
-        "ai_suggestions_queued": inserted,
+        "snapshot_id":             snapshot_id,
+        "tables_generated":        len(result.table_entries),
+        "columns_generated":       len(result.column_entries),
+        "pii_column_count":        result.pii_column_count,
+        "generation_method":       result.generation_method,
+        "generated_at":            result.generated_at,
+        "coverage":                _coverage(source_id),
+        "ai_eligible_count":       ai_eligible,
+        "ai_processed_count":      ai_processed,
+        "ai_suggestions_count":    len(ai_suggestions),
+        "ai_suggestions_queued":   inserted,
+        "ai_skipped_due_to_limit": ai_skipped,
     }
     if ai_suggestions:
         summary["ai_suggestions"] = ai_suggestions

@@ -897,3 +897,225 @@ def test_ai_context_includes_profiling_signals(db, monkeypatch):
     # Sample values are never included (PII safety)
     assert ctx.sample_values == []
     assert ctx.top_values == []
+
+
+# ===========================================================================
+# Phase 3D Performance — Safe limits on AI enrichment
+# Tests 17–20
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 17: AI_SEMANTIC_MAX_SUGGESTIONS_PER_RUN is enforced
+# ---------------------------------------------------------------------------
+
+def test_max_suggestions_limit_enforced(db, monkeypatch):
+    """When eligible columns exceed AI_SEMANTIC_MAX_SUGGESTIONS_PER_RUN, suggestions
+    must be capped and ai_skipped_due_to_limit must reflect the remainder."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # 30 NVARCHAR columns with generic names → semantic_type='other' → all eligible
+    cols = [_col(f"col_{i}", "NVARCHAR") for i in range(30)]
+    tables = [_table("dbo", "signals", cols)]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+
+    mock_ai = _make_ai_result()
+
+    with patch("data.dictionary_service._AI_MAX_SUGGESTIONS_PER_RUN", 5), \
+         patch("data.dictionary_service._AI_MAX_TABLES_PER_RUN", 99), \
+         patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze",
+               return_value=mock_ai):
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    assert result["ai_eligible_count"]       == 30, "All 30 NVARCHAR columns must be eligible"
+    assert result["ai_suggestions_count"]    == 5,  "Suggestions must be capped at 5"
+    assert result["ai_processed_count"]      == 5,  "Only 5 API calls should be made"
+    assert result["ai_skipped_due_to_limit"] == 25, "Remaining 25 must be recorded as skipped"
+
+
+# ---------------------------------------------------------------------------
+# Test 18: AI_SEMANTIC_MAX_TABLES_PER_RUN is enforced
+# ---------------------------------------------------------------------------
+
+def test_max_tables_limit_enforced(db, monkeypatch):
+    """Eligible columns spread across more tables than AI_SEMANTIC_MAX_TABLES_PER_RUN
+    must only be processed for the first max_tables tables encountered."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # 10 tables × 2 eligible NVARCHAR columns = 20 eligible total
+    tables = [
+        _table("dbo", f"tbl_{i}", [_col("raw_a", "NVARCHAR"), _col("raw_b", "NVARCHAR")])
+        for i in range(10)
+    ]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+
+    mock_ai = _make_ai_result()
+
+    with patch("data.dictionary_service._AI_MAX_TABLES_PER_RUN", 3), \
+         patch("data.dictionary_service._AI_MAX_SUGGESTIONS_PER_RUN", 100), \
+         patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze",
+               return_value=mock_ai):
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    # Only first 3 tables processed → 3×2=6 suggestions; 7×2=14 skipped
+    assert result["ai_eligible_count"]       == 20, "All 20 columns must be counted as eligible"
+    assert result["ai_suggestions_count"]    == 6,  "Only 3 tables × 2 columns = 6 suggestions"
+    assert result["ai_skipped_due_to_limit"] == 14, "Remaining 14 from 7 skipped tables"
+
+
+# ---------------------------------------------------------------------------
+# Test 19: All four summary fields present and correct
+# ---------------------------------------------------------------------------
+
+def test_summary_ai_count_fields_present(db, monkeypatch):
+    """generate_and_save_dictionary must always return all four AI count fields,
+    with correct values for a mixed schema (eligible + ineligible columns)."""
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # order_id (PK → semantic_type='id' → NOT eligible)
+    # raw_data (NVARCHAR → semantic_type='other' → eligible)
+    tables = [_table("dbo", "misc", [_col("order_id", pk=True), _col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+
+    mock_ai = _make_ai_result()
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze",
+               return_value=mock_ai):
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    for field in ("ai_eligible_count", "ai_processed_count",
+                  "ai_suggestions_count", "ai_skipped_due_to_limit"):
+        assert field in result, f"Summary field '{field}' is missing"
+
+    assert result["ai_eligible_count"]       == 1, "Only raw_data is eligible"
+    assert result["ai_processed_count"]      == 1, "One API call must be made"
+    assert result["ai_suggestions_count"]    == 1, "One suggestion returned"
+    assert result["ai_skipped_due_to_limit"] == 0, "No columns skipped — within limits"
+
+
+# ---------------------------------------------------------------------------
+# Test 20: All four summary fields present when AI is disabled (all zero)
+# ---------------------------------------------------------------------------
+
+def test_summary_ai_fields_zero_when_disabled(db, monkeypatch):
+    """All four AI summary fields must be present and zero when
+    ENABLE_AI_SEMANTIC_INTELLIGENCE is not set."""
+    monkeypatch.delenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", raising=False)
+    source_id = _seed_source(db)
+    tables = [_table("dbo", "misc", [_col("raw_data", "NVARCHAR")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+
+    result = generate_and_save_dictionary(source_id, "user-1")
+
+    for field in ("ai_eligible_count", "ai_processed_count",
+                  "ai_suggestions_count", "ai_skipped_due_to_limit"):
+        assert field in result, f"'{field}' must be present even when AI is disabled"
+        assert result[field] == 0, f"'{field}' must be 0 when AI is disabled"
+
+
+# ===========================================================================
+# Phase 3D Quality Fix — Stricter AI eligibility
+# Tests 21–24
+# ===========================================================================
+
+from data.dictionary_service import _column_needs_ai
+from core.dictionary.generator import ColumnDictEntry
+
+
+def _make_col_entry(
+    semantic_type: str = "other",
+    meaning: str = "Stores raw data.",
+    pii_risk: bool = False,
+) -> ColumnDictEntry:
+    """Minimal ColumnDictEntry for _column_needs_ai unit tests."""
+    return ColumnDictEntry(
+        source_id=1,
+        snapshot_id=1,
+        table_fqn="dbo.test",
+        column_name="col",
+        business_label="Col",
+        meaning=meaning,
+        semantic_type=semantic_type,
+        is_metric=False,
+        is_dimension=False,
+        is_date=False,
+        is_id=False,
+        pii_risk=pii_risk,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 21: Moderate confidence + non-generic description → AI NOT called
+# ---------------------------------------------------------------------------
+
+def test_moderate_confidence_specific_description_does_not_call_ai(db, monkeypatch):
+    """A column with moderate rule-engine confidence (0.42 < 0.75) but a specific,
+    non-generic description and sufficient quality must NOT trigger AI.
+
+    Before the fix, semantic_confidence < 0.75 alone was a trigger.
+    After the fix, AI only runs when: semantic_type in {other,unknown}
+    OR meaning starts with 'Stores ' OR quality_score < 60.
+    """
+    monkeypatch.setenv("ENABLE_AI_SEMANTIC_INTELLIGENCE", "true")
+    source_id = _seed_source(db)
+    # 'status' TEXT → rule classifier gives semantic_type='dimension' with
+    # a specific "Categorizes ..." description (not "Stores ...").
+    tables = [_table("dbo", "orders", [_col("status")])]
+    _seed_schema_snapshot(db, source_id, _snapshot(source_id, tables))
+    prof_id = _seed_profiling_snapshot(db, source_id)
+    _seed_col_profile(
+        db, prof_id, source_id, "dbo.orders", "status",
+        semantic_type="STATUS",
+        semantic_confidence=0.42,   # below the old 0.75 threshold
+        quality_score=80.0,         # above the 60 quality threshold
+        quality_grade="B",
+    )
+
+    with patch("core.ai.semantic_intelligence.SemanticIntelligenceService.analyze") as mock_analyze:
+        result = generate_and_save_dictionary(source_id, "user-1")
+
+    mock_analyze.assert_not_called()
+    assert result["ai_eligible_count"]    == 0
+    assert result["ai_suggestions_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 22: 'Stores ...' description triggers AI regardless of semantic_type
+# ---------------------------------------------------------------------------
+
+def test_stores_description_triggers_ai_eligibility():
+    """_column_needs_ai must return True when meaning starts with 'Stores '
+    even when semantic_type is a non-weak category like 'dimension'."""
+    entry = _make_col_entry(semantic_type="dimension", meaning="Stores category data.")
+    assert _column_needs_ai(entry, None) is True
+
+
+# ---------------------------------------------------------------------------
+# Test 23: other/unknown semantic type triggers AI eligibility
+# ---------------------------------------------------------------------------
+
+def test_other_semantic_type_triggers_ai_eligibility():
+    """_column_needs_ai must return True when semantic_type is 'other'."""
+    entry_other   = _make_col_entry(semantic_type="other",   meaning="Categorizes x.")
+    entry_unknown = _make_col_entry(semantic_type="unknown", meaning="Categorizes x.")
+    assert _column_needs_ai(entry_other,   None) is True
+    assert _column_needs_ai(entry_unknown, None) is True
+
+
+# ---------------------------------------------------------------------------
+# Test 24: Low quality_score triggers AI; sufficient quality does not
+# ---------------------------------------------------------------------------
+
+def test_low_quality_score_triggers_ai_eligibility():
+    """_column_needs_ai must return True when quality_score < 60,
+    and False when quality_score >= 60 and no other weak signal is present."""
+    entry = _make_col_entry(semantic_type="dimension", meaning="Categorizes status.")
+
+    # Low quality → AI eligible
+    assert _column_needs_ai(entry, {"quality_score": 35.0}) is True
+    assert _column_needs_ai(entry, {"quality_score": 59.9}) is True
+
+    # Sufficient quality and no other weak signal → NOT eligible
+    assert _column_needs_ai(entry, {"quality_score": 60.0}) is False
+    assert _column_needs_ai(entry, {"quality_score": 95.0}) is False
+
+    # No profiling at all → NOT eligible (dimension + specific description)
+    assert _column_needs_ai(entry, None) is False
