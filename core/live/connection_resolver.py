@@ -79,6 +79,13 @@ class LiveConnectionResolver:
                 ),
             )
 
+        if required_capability == "sql_query" and not record.get("live_query_enabled"):
+            return ResolutionResult(
+                status=ResolutionStatus.UNAUTHORIZED,
+                context=None,
+                message="Live query execution is not enabled for this connection.",
+            )
+
         context = ConnectionContext(
             source_id=source_id,
             source_type=record["source_type"],

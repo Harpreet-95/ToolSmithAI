@@ -476,6 +476,7 @@ def init_db() -> None:
             metadata_json         TEXT    NOT NULL DEFAULT '{}',
             source_status         TEXT    NOT NULL DEFAULT 'ACTIVE',
             is_active             INTEGER NOT NULL DEFAULT 1,
+            live_query_enabled    INTEGER NOT NULL DEFAULT 0,
             last_tested_at        TEXT,
             last_test_status      TEXT,
             last_test_message     TEXT,
@@ -526,6 +527,7 @@ def init_db() -> None:
     dsc_migrations = [
         ("last_discovered_at", "ALTER TABLE data_source_connections ADD COLUMN last_discovered_at TEXT"),
         ("last_snapshot_id",   "ALTER TABLE data_source_connections ADD COLUMN last_snapshot_id INTEGER"),
+        ("live_query_enabled", "ALTER TABLE data_source_connections ADD COLUMN live_query_enabled INTEGER NOT NULL DEFAULT 0"),
     ]
     for col, stmt in dsc_migrations:
         if col not in dsc_existing:

@@ -215,6 +215,7 @@ def _mssql_record(**overrides):
         "is_active": True,
         "source_status": "ACTIVE",
         "capabilities": ["connection_test", "schema_discovery", "sql_query"],
+        "live_query_enabled": True,
         "params": {"host": "db.internal", "database": "CCPP"},
     }
     base.update(overrides)
@@ -350,6 +351,26 @@ class TestLiveQueryEngineExecute:
         )
         result = LiveQueryEngine().execute(1, "user-1", "SELECT 1")
         assert result.status == QueryStatus.BLOCKED
+
+    def test_blocked_when_live_query_not_enabled(self, monkeypatch):
+        # sql_query capability is present (connector supports it) but the
+        # per-connection opt-in flag is off — must block before opening a
+        # connection, same as any other resolution failure.
+        monkeypatch.setattr(
+            datasource_service, "get_connection_config",
+            lambda sid, uid: _mssql_record(live_query_enabled=False),
+        )
+        opened = {"called": False}
+
+        def _track_open(self, config):
+            opened["called"] = True
+            raise AssertionError("open_connection must not be called when live_query_enabled is False")
+        monkeypatch.setattr(SQLServerConnector, "open_connection", _track_open)
+
+        result = LiveQueryEngine().execute(1, "user-1", "SELECT 1")
+        assert result.status == QueryStatus.BLOCKED
+        assert "not enabled" in result.error.lower()
+        assert opened["called"] is False
 
     def test_rate_limit_exceeded_returns_rate_limited(self, monkeypatch):
         # Overrides the module's autouse bypass to verify the reused

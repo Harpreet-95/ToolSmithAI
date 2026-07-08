@@ -140,6 +140,7 @@ class TestLiveConnectionResolver:
             "is_active": True,
             "source_status": "ACTIVE",
             "capabilities": ["connection_test", "schema_discovery"],
+            "live_query_enabled": False,
             "params": {"host": "db.internal", "database": "CCPP"},
         }
         base.update(overrides)
@@ -219,6 +220,48 @@ class TestLiveConnectionResolver:
         # connector use — the safety property under test is the *message*,
         # which is the only field of ResolutionResult ever surfaced upward.
         assert "hunter2" not in result.message
+
+    def test_live_query_blocked_when_flag_disabled(self, monkeypatch):
+        # sql_query is a supported capability but the per-connection opt-in
+        # flag defaults to False — must block with UNAUTHORIZED, not silently
+        # allow just because the connector type supports SQL execution.
+        monkeypatch.setattr(
+            datasource_service, "get_connection_config",
+            lambda sid, uid: self._record(
+                capabilities=["connection_test", "schema_discovery", "sql_query"],
+                live_query_enabled=False,
+            ),
+        )
+        result = LiveConnectionResolver().resolve(1, "user-1", required_capability="sql_query")
+        assert result.status == ResolutionStatus.UNAUTHORIZED
+        assert result.context is None
+        assert "not enabled" in result.message.lower()
+
+    def test_live_query_allowed_when_flag_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            datasource_service, "get_connection_config",
+            lambda sid, uid: self._record(
+                capabilities=["connection_test", "schema_discovery", "sql_query"],
+                live_query_enabled=True,
+            ),
+        )
+        result = LiveConnectionResolver().resolve(1, "user-1", required_capability="sql_query")
+        assert result.status == ResolutionStatus.RESOLVED
+
+    def test_live_query_flag_does_not_affect_other_capabilities(self, monkeypatch):
+        # Regression guard: the flag must gate sql_query only. Metadata
+        # discovery (and, by the same logic, profiling/report generation,
+        # which don't call resolve() with required_capability="sql_query"
+        # at all) must be unaffected by live_query_enabled being False.
+        monkeypatch.setattr(
+            datasource_service, "get_connection_config",
+            lambda sid, uid: self._record(live_query_enabled=False),
+        )
+        result = LiveConnectionResolver().resolve(1, "user-1", required_capability="schema_discovery")
+        assert result.status == ResolutionStatus.RESOLVED
+
+        result_no_capability = LiveConnectionResolver().resolve(1, "user-1")
+        assert result_no_capability.status == ResolutionStatus.RESOLVED
 
 
 # ---------------------------------------------------------------------------

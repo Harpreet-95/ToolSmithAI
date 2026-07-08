@@ -292,7 +292,7 @@ def get_connection_config(source_id: int, user_id: str) -> dict | None:
     try:
         row = conn.execute(
             "SELECT source_type, source_category, display_name, is_active, "
-            "source_status, capabilities_json, encrypted_config_json "
+            "source_status, capabilities_json, encrypted_config_json, live_query_enabled "
             "FROM data_source_connections WHERE id = ? AND user_id = ?",
             (source_id, user_id),
         ).fetchone()
@@ -315,6 +315,7 @@ def get_connection_config(source_id: int, user_id: str) -> dict | None:
         "is_active": bool(row["is_active"]),
         "source_status": row["source_status"],
         "capabilities": json.loads(row["capabilities_json"] or "[]"),
+        "live_query_enabled": bool(row["live_query_enabled"]),
         "params": params,
     }
 
