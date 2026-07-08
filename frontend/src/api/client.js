@@ -1191,3 +1191,16 @@ export async function executeDataSourceQuery(sourceId, question, token) {
   })
   return parseResponse(res)
 }
+
+// ---------------------------------------------------------------------------
+// Enterprise Composer API — metadata / catalog / governance queries
+// ---------------------------------------------------------------------------
+
+export async function askComposer(token, payload) {
+  const res = await fetch('/v1/composer/ask', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(res)
+}

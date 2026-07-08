@@ -406,3 +406,48 @@ class TestCancel:
         t.join(timeout=5)
         assert fake_conn.closed is True
 
+
+# ---------------------------------------------------------------------------
+# Orchestrator integration
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorIntegration:
+    def test_registry_has_at_least_the_live_query_service(self):
+        # Exact count is asserted in tests/test_semantic_query_planner.py,
+        # which tracks the current total (17, after Phase 8 added
+        # "semantic_query_plan"). This test only pins the Phase 7 addition
+        # so it doesn't need updating every time a later phase registers
+        # another service.
+        service_ids = [s.service_id for s in ServiceRegistry().get_all()]
+        assert "live_query" in service_ids
+
+    def test_run_live_query_selects_live_query_service(self, monkeypatch):
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        description = [("id",)]
+        fake_conn = _FakeConnection(_FakeCursor(description, [(1,)]))
+        monkeypatch.setattr(SQLServerConnector, "open_connection", lambda self, config: fake_conn)
+
+        req = OrchestratorRequest(
+            query="run this SQL", source_id=1, user_id="user-1",
+            params={"sql": "SELECT id FROM orders"},
+        )
+        package = EnterpriseOrchestrator().run_live_query(req)
+
+        assert package.intent.intent_type == IntentType.SQL_REQUEST
+        service_ids = [c.service_id for c in package.service_calls]
+        assert "live_query" in service_ids
+        live_item = next(e for e in package.evidence if e.source_service == "live_query")
+        assert live_item.data["status"] == "success"
+
+    def test_process_nl_path_unaffected_by_live_query_addition(self):
+        # Regression: the ordinary NL path must not accidentally select
+        # live_query for an unrelated dictionary question.
+        req = OrchestratorRequest(query="show me the dictionary definitions", source_id=None, user_id="user-1")
+        package = EnterpriseOrchestrator().process(req)
+        service_ids = [c.service_id for c in package.service_calls]
+        assert "live_query" not in service_ids
+
+    def test_live_query_adapter_returns_none_without_sql(self):
+        from core.orchestrator.context_builder import _live_query
+        req = OrchestratorRequest(query="anything", source_id=1, user_id="user-1", params={})
+        assert _live_query(req) is None

@@ -15,6 +15,7 @@ from core.config import (
     SCHEDULER_MAX_RUNS_PER_TICK,
 )
 from api.v1.routes import router as v1_router
+from api.v1.composer import composer_router
 from data.models import init_db
 from data.scheduled_workflow_service import run_due_workflows
 from core.errors.exception_handler import global_exception_handler, validation_exception_handler
@@ -72,3 +73,4 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_exception_handler(Exception, global_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.include_router(v1_router, prefix="/v1")
+app.include_router(composer_router, prefix="/v1")

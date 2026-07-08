@@ -362,3 +362,55 @@ class TestExecutionPlanStructure:
         assert "dbo.orders" in strategy["table_roles"]
 
 
+# ---------------------------------------------------------------------------
+# Orchestrator integration
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorIntegration:
+    def test_registry_has_at_least_the_semantic_query_plan_service(self):
+        # Exact count is asserted in tests/test_execution_planner.py, which
+        # tracks the current total (18, after Phase 9 added
+        # "execution_planner"). This test only pins the Phase 8 addition so
+        # it doesn't need updating every time a later phase registers
+        # another service.
+        service_ids = [s.service_id for s in ServiceRegistry().get_all()]
+        assert "semantic_query_plan" in service_ids
+
+    def test_run_semantic_query_plan_selects_service(self, tmp_path, monkeypatch):
+        db = env(tmp_path, monkeypatch)
+        _add_table(db, "dbo.orders")
+        _add_column(db, "dbo.orders", "amount", data_type="DECIMAL", is_metric=True,
+                    business_label="Revenue", approved=True)
+
+        req = OrchestratorRequest(
+            query="anything", source_id=1, user_id="u1",
+            params={"question": "revenue"},
+        )
+        package = EnterpriseOrchestrator().run_semantic_query_plan(req)
+        assert package.intent.intent_type == IntentType.SEMANTIC_QUERY_PLAN
+        service_ids = [c.service_id for c in package.service_calls]
+        assert "semantic_query_plan" in service_ids
+        item = next(e for e in package.evidence if e.source_service == "semantic_query_plan")
+        assert item.data["question"] == "revenue"
+
+    def test_chat_phrase_routes_to_semantic_query_plan_intent(self, tmp_path, monkeypatch):
+        db = env(tmp_path, monkeypatch)
+        _add_table(db, "dbo.orders")
+        _add_column(db, "dbo.orders", "amount", data_type="DECIMAL", is_metric=True,
+                    business_label="Revenue", approved=True)
+
+        req = OrchestratorRequest(
+            query="give me a query plan for revenue by region", source_id=1, user_id="u1",
+        )
+        package = EnterpriseOrchestrator().process(req)
+        assert package.intent.intent_type == IntentType.SEMANTIC_QUERY_PLAN
+
+    def test_existing_chat_phrases_unaffected(self):
+        # Regression: unrelated existing intents must still resolve unchanged.
+        req = OrchestratorRequest(query="show me the dictionary definitions", source_id=None, user_id="u1")
+        package = EnterpriseOrchestrator().process(req)
+        assert package.intent.intent_type == IntentType.DICTIONARY
+
+        req2 = OrchestratorRequest(query="governance compliance pii sensitive stewardship", source_id=None, user_id="u1")
+        package2 = EnterpriseOrchestrator().process(req2)
+        assert package2.intent.intent_type == IntentType.GOVERNANCE

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { composeIntent, interpretTask, askReport, askDataset, planEngineTool, saveEngineTool, listEngineTools, executeEngineTool, getEngineRun, submitEngineTool, approveEngineTool } from '../api/client'
+import { composeIntent, interpretTask, askComposer, askReport, askDataset, planEngineTool, saveEngineTool, listEngineTools, executeEngineTool, getEngineRun, submitEngineTool, approveEngineTool, listDataSources } from '../api/client'
 import ProposalPreview from './ProposalPreview'
 import ChartSection from './ChartSection'
 
@@ -110,6 +110,25 @@ const TOOL_CREATION_RE = /\b(create|build|make|set ?up|develop|design)\b.{0,60}\
 
 function isToolCreationIntent(input) {
   return TOOL_CREATION_RE.test(input || '')
+}
+
+// Routes metadata/catalog/governance questions to POST /v1/composer/ask.
+// Fires only for lookup/question patterns — never for analytics or creation intents.
+const COMPOSER_INTENT_RE = /\b(what|which|show|list|explain|describe|find|tell me|how many|are there|do we have)\b.{0,100}\b(table[s]?|column[s]?|field[s]?|schema[s]?|dictionary|domain[s]?|entit(?:y|ies)|pii|relationship[s]?|profil(?:e|ing)|lineage|catalog|metadata|governance)\b|\bshow\s+(dictionary|domain|entity|profil)\b|\bdictionary\s+status\b|\bdomain\s+assignment[s]?\b|\bentity\s+assignment[s]?\b|\bprofiling\s+status\b|\bpii\s+exists?\b|\bwhat\s+pii\b|\bwhat\s+needs\s+review\b|\bneeds?\s+review\b|\brelationship[s]?\s+exist\b|\bexplain\s+this\s+table\b|\bexplain.{0,30}table\b/i
+
+function isComposerIntent(input) {
+  if (!input) return false
+  return COMPOSER_INTENT_RE.test(input)
+}
+
+// Routes report-generation prompts to POST /v1/composer/ask with dataset_id.
+// Matches the 7 supported generation intents. Requires a dataset to be selected
+// (enforced in handleRun before calling handleComposerAsk).
+const REPORT_GEN_RE = /\b(generate|create|build|make)\s+(a\s+)?(report|intelligence\s+report|kpi\s+report|quality\s+report|pdf\s+report|executive\s+summary)\b|\banalyze\s+(this\s+)?(dataset|data)\b|\banalyse\s+(this\s+)?(dataset|data)\b|\bshow\s+trends?\b|\bcreate\s+executive\s+summary\b|\bbuild\s+kpi\s+report\b|\bgenerate\s+quality\s+report\b|\bcreate\s+pdf\s+report\b/i
+
+function isReportGenerationIntent(input) {
+  if (!input) return false
+  return REPORT_GEN_RE.test(input)
 }
 
 const SCHEDULE_TYPE_MAP = [
@@ -3687,6 +3706,436 @@ function ContextualIntelligenceStrip({ workflowCount, datasetCount, reportsToday
   )
 }
 
+// ─── Enterprise Composer result components ────────────────────────────────────
+
+function ComposerLoading({ C }) {
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.border}`, borderRadius: '18px',
+      padding: '48px 36px', textAlign: 'center', animation: 'ws-fadein 0.3s ease',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.08)',
+    }}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '52px', height: '52px', borderRadius: '14px', background: 'rgba(99,102,241,0.1)', marginBottom: '16px' }}>
+        <div style={{ width: '22px', height: '22px', borderRadius: '50%', border: '2.5px solid rgba(99,102,241,0.25)', borderTopColor: '#6366f1', animation: 'ws-spin 0.75s linear infinite' }} />
+      </div>
+      <div style={{ fontSize: '0.6rem', fontWeight: '800', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.16em', marginBottom: '8px' }}>Catalog Intelligence</div>
+      <div style={{ fontSize: '0.95rem', fontWeight: '600', color: C.text, marginBottom: '6px' }}>Querying enterprise catalog…</div>
+      <div style={{ fontSize: '0.75rem', color: C.textMuted }}>Resolving intent and collecting evidence from registered services</div>
+    </div>
+  )
+}
+
+const COMPOSER_NEXT_ACTION = {
+  dictionary_query:   'Review dictionary entries and approve pending AI suggestions.',
+  domain_query:       'Navigate to Domain Assignments to review and approve domain classifications.',
+  entity_query:       'Navigate to Entity Assignments to review entity mappings.',
+  pii_detection:      'Review PII columns and apply appropriate data classification policies.',
+  profile_query:      'Check profiling status and schedule a fresh profile run if needed.',
+  relationship_query: 'Explore the Knowledge Graph for full relationship details.',
+  governance_query:   'Open the Governance Command Center for the full compliance view.',
+  metadata_search:    'Use Enterprise Search for deeper cross-source metadata queries.',
+  table_explanation:  'Navigate to the specific table in the Data Catalog for full context.',
+}
+
+const ANSWER_TYPE_COLORS = {
+  dictionary_status:  { bg: 'rgba(99,102,241,0.10)',  text: '#6366f1', border: 'rgba(99,102,241,0.25)'  },
+  domain_assignments: { bg: 'rgba(59,130,246,0.10)',  text: '#3b82f6', border: 'rgba(59,130,246,0.25)'  },
+  entity_assignments: { bg: 'rgba(16,185,129,0.10)',  text: '#10b981', border: 'rgba(16,185,129,0.25)'  },
+  profiling_status:   { bg: 'rgba(245,158,11,0.10)',  text: '#f59e0b', border: 'rgba(245,158,11,0.25)'  },
+  governance:         { bg: 'rgba(16,185,129,0.10)',  text: '#10b981', border: 'rgba(16,185,129,0.25)'  },
+  relationship_map:   { bg: 'rgba(139,92,246,0.10)',  text: '#8b5cf6', border: 'rgba(139,92,246,0.25)'  },
+  review_needed:      { bg: 'rgba(249,115,22,0.10)',  text: '#f97316', border: 'rgba(249,115,22,0.25)'  },
+  metadata_lookup:    { bg: 'rgba(99,102,241,0.10)',  text: '#6366f1', border: 'rgba(99,102,241,0.25)'  },
+  no_data:            { bg: 'rgba(248,113,113,0.10)', text: '#f87171', border: 'rgba(248,113,113,0.25)' },
+  access_restricted:  { bg: 'rgba(248,113,113,0.10)', text: '#f87171', border: 'rgba(248,113,113,0.25)' },
+  unknown_intent:     { bg: 'rgba(148,163,184,0.10)', text: '#94a3b8', border: 'rgba(148,163,184,0.25)' },
+}
+
+function BusinessAnswerBlock({ answer: ba, C }) {
+  if (!ba) return null
+  const typeColors = ANSWER_TYPE_COLORS[ba.answer_type] ?? ANSWER_TYPE_COLORS.metadata_lookup
+  const conf       = ba.confidence ?? 0
+  const typeLabel  = (ba.answer_type ?? 'unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '20px', marginBottom: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+
+      {/* header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Business Answer</span>
+        <span style={{ marginLeft: 'auto', background: typeColors.bg, border: `1px solid ${typeColors.border}`, color: typeColors.text, borderRadius: '20px', padding: '2px 9px', fontSize: '0.60rem', fontWeight: '700' }}>{typeLabel}</span>
+      </div>
+
+      {/* answer text */}
+      <div style={{ fontSize: '0.90rem', fontWeight: '500', color: C.text, lineHeight: 1.55, marginBottom: '12px' }}>{ba.answer}</div>
+
+      {/* source summary + confidence row */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '12px', alignItems: 'center', marginBottom: (ba.limitations?.length > 0 || ba.next_suggested_action) ? '12px' : 0 }}>
+        <div style={{ fontSize: '0.70rem', color: C.textMuted }}>{ba.source_summary}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', flexShrink: 0 }}>
+          <div style={{ width: '80px', height: '5px', background: C.border, borderRadius: '3px', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${Math.round(conf * 100)}%`, background: conf >= 0.7 ? '#10b981' : conf >= 0.4 ? '#f59e0b' : '#f87171', borderRadius: '3px', transition: 'width 0.4s ease' }} />
+          </div>
+          <span style={{ fontSize: '0.68rem', fontWeight: '700', color: C.textSec, minWidth: '28px' }}>{Math.round(conf * 100)}%</span>
+        </div>
+      </div>
+
+      {/* limitations */}
+      {ba.limitations?.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: ba.next_suggested_action ? '10px' : 0 }}>
+          {ba.limitations.map((lim, i) => (
+            <div key={i} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', fontSize: '0.70rem', color: C.textMuted, lineHeight: 1.45 }}>
+              <span style={{ flexShrink: 0, marginTop: '1px', color: '#f59e0b' }}>&#9432;</span>
+              <span>{lim}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* next suggested action */}
+      {ba.next_suggested_action && (
+        <div style={{ padding: '9px 13px', background: 'rgba(99,102,241,0.05)', border: '1px solid rgba(99,102,241,0.15)', borderRadius: '9px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          <span style={{ fontSize: '0.72rem', color: C.text, lineHeight: 1.4 }}>{ba.next_suggested_action}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ComposerReportCard({ result, wsInput, C, onBack, onOpenReport }) {
+  const reportId    = result.report_id ?? null
+  const reportTitle = result.report_title ?? result.business_answer?.report_title ?? 'Intelligence Report'
+  const ba          = result.business_answer ?? {}
+  const status      = result.status ?? 'unknown'
+  const failed      = ba.answer_type === 'report_generation_failed'
+
+  const limitationColor = '#f59e0b'
+  const successColor    = '#10b981'
+  const failColor       = '#f87171'
+
+  return (
+    <div style={{ animation: 'ws-fadeup 0.35s ease' }}>
+
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', padding: '14px 20px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', boxShadow: '0 2px 12px rgba(0,0,0,0.07)' }}>
+        <div style={{ width: '40px', height: '40px', borderRadius: '11px', background: failed ? 'rgba(248,113,113,0.12)' : 'rgba(16,185,129,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          {failed
+            ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={failColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={successColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          }
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '0.55rem', fontWeight: '700', color: failed ? failColor : successColor, textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '2px' }}>
+            {failed ? 'Report Generation Failed' : 'Enterprise Report Generated'}
+          </div>
+          <div style={{ fontSize: '0.88rem', fontWeight: '600', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wsInput || 'Report generation'}</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: failed ? 'rgba(248,113,113,0.08)' : 'rgba(16,185,129,0.08)', border: `1px solid ${failed ? failColor : successColor}55`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.57rem', fontWeight: '700', color: failed ? failColor : successColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: failed ? failColor : successColor }} />
+            {status}
+          </span>
+          <button onClick={onBack} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '6px 14px', fontSize: '0.72rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
+            New Query
+          </button>
+        </div>
+      </div>
+
+      {failed ? (
+        /* ── Error state ── */
+        <div style={{ background: 'rgba(248,113,113,0.07)', border: '1px solid rgba(248,113,113,0.25)', borderRadius: '14px', padding: '22px 24px', marginBottom: '12px' }}>
+          <div style={{ fontSize: '0.57rem', fontWeight: '700', color: failColor, textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '8px' }}>Error</div>
+          <div style={{ fontSize: '0.86rem', color: C.text, lineHeight: 1.6 }}>{ba.answer}</div>
+          {(ba.limitations ?? []).map((l, i) => (
+            <div key={i} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', fontSize: '0.72rem', color: C.textMuted, lineHeight: 1.45, marginTop: '8px' }}>
+              <span style={{ flexShrink: 0, color: limitationColor }}>&#9432;</span>
+              <span>{l}</span>
+            </div>
+          ))}
+          <div style={{ marginTop: '14px', fontSize: '0.74rem', color: '#6366f1' }}>{ba.next_suggested_action}</div>
+        </div>
+      ) : (
+        <>
+          {/* ── Report details card ── */}
+          <div style={{ background: C.surface, border: '1px solid rgba(16,185,129,0.25)', borderRadius: '14px', padding: '20px 24px', marginBottom: '12px', boxShadow: '0 2px 8px rgba(16,185,129,0.07)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={successColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Report Details</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '10px 20px', marginBottom: '16px' }}>
+              <span style={{ fontSize: '0.69rem', color: C.textMuted, fontWeight: '600', alignSelf: 'center' }}>Title</span>
+              <span style={{ fontSize: '0.85rem', fontWeight: '600', color: C.text }}>{reportTitle}</span>
+              {reportId && (
+                <>
+                  <span style={{ fontSize: '0.69rem', color: C.textMuted, fontWeight: '600', alignSelf: 'center' }}>Report ID</span>
+                  <span style={{ fontSize: '0.82rem', color: C.textSec, fontFamily: MONO }}>{reportId}</span>
+                </>
+              )}
+              <span style={{ fontSize: '0.69rem', color: C.textMuted, fontWeight: '600', alignSelf: 'center' }}>Source</span>
+              <span style={{ fontSize: '0.82rem', color: C.textSec }}>Uploaded dataset — report pipeline</span>
+            </div>
+            {/* Action buttons */}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {reportId && onOpenReport && (
+                <button
+                  onClick={() => onOpenReport(reportId)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', background: successColor, border: 'none', borderRadius: '9px', padding: '8px 16px', fontSize: '0.74rem', fontWeight: '700', color: '#fff', cursor: 'pointer', fontFamily: FONT }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                  View Report
+                </button>
+              )}
+              <button
+                onClick={onBack}
+                style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '8px 16px', fontSize: '0.74rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}
+              >
+                New Query
+              </button>
+            </div>
+          </div>
+
+          {/* ── Summary from business_answer ── */}
+          {ba.answer && (
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '18px 20px', marginBottom: '12px' }}>
+              <div style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '10px' }}>Executive Summary</div>
+              <div style={{ fontSize: '0.86rem', color: C.text, lineHeight: 1.6 }}>{ba.answer.replace(/^Report generated successfully\.\s*/i, '')}</div>
+            </div>
+          )}
+
+          {/* ── Export suggestion ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 20px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '14px' }}>
+            <div style={{ width: '32px', height: '32px', borderRadius: '9px', background: 'rgba(99,102,241,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+            <div>
+              <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '3px' }}>Export Suggestion</div>
+              <div style={{ fontSize: '0.78rem', color: C.text, lineHeight: 1.5 }}>
+                {ba.next_suggested_action || 'Open the Reports tab to export as PDF, CSV, or Excel.'}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Limitations ── */}
+          {(ba.limitations ?? []).length > 0 && (
+            <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {ba.limitations.map((l, i) => (
+                <div key={i} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', fontSize: '0.70rem', color: C.textMuted, lineHeight: 1.45 }}>
+                  <span style={{ flexShrink: 0, color: limitationColor, marginTop: '1px' }}>&#9432;</span>
+                  <span>{l}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function ComposerResultPanel({ result, wsInput, C, onBack, onOpenReport }) {
+  const [evidenceExpanded, setEvidenceExpanded] = useState(false)
+
+  if (!result) return null
+
+  const intent          = result.resolved_intent ?? {}
+  const intentType      = intent.intent_type ?? 'unknown'
+  const confidence      = intent.confidence ?? 0
+  const keywords        = intent.keywords_matched ?? []
+  const services        = result.services_selected ?? []
+  const evidenceSummary = result.evidence_summary ?? {}
+  const governanceState = result.governance_state ?? null
+  const warnings        = result.warnings ?? []
+  const errors          = result.errors ?? []
+  const status          = result.status ?? 'unknown'
+  const evidenceItems   = result.evidence_package?.evidence ?? []
+  const nextAction      = COMPOSER_NEXT_ACTION[intentType] ?? null
+  const intentLabel     = intentType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const businessAnswer  = result.business_answer ?? null
+
+  // Route report_generation intent to the dedicated enterprise report card.
+  if (intentType === 'report_generation') {
+    return <ComposerReportCard result={result} wsInput={wsInput} C={C} onBack={onBack} onOpenReport={onOpenReport} />
+  }
+
+  const statusColor = status === 'success' ? '#10b981' : status === 'partial' ? '#f59e0b' : '#f87171'
+  const statusBg    = status === 'success' ? 'rgba(16,185,129,0.08)' : status === 'partial' ? 'rgba(245,158,11,0.08)' : 'rgba(248,113,113,0.08)'
+
+  return (
+    <div style={{ animation: 'ws-fadeup 0.35s ease' }}>
+
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px', padding: '14px 20px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: '16px', boxShadow: '0 2px 12px rgba(0,0,0,0.07)' }}>
+        <div style={{ width: '40px', height: '40px', borderRadius: '11px', background: 'rgba(99,102,241,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '0.55rem', fontWeight: '700', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '2px' }}>Enterprise Catalog Intelligence</div>
+          <div style={{ fontSize: '0.88rem', fontWeight: '600', color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wsInput || 'Catalog query'}</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', background: statusBg, border: `1px solid ${statusColor}55`, borderRadius: '20px', padding: '3px 10px', fontSize: '0.57rem', fontWeight: '700', color: statusColor, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: statusColor }} />
+            {status}
+          </span>
+          <button onClick={onBack} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '6px 14px', fontSize: '0.72rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
+            New Query
+          </button>
+        </div>
+      </div>
+
+      {/* Business Answer — deterministic, evidence-based, displayed first */}
+      <BusinessAnswerBlock answer={businessAnswer} C={C} />
+
+      {/* Row 1: Answer Context + Services Consulted */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+
+        {/* Answer Context */}
+        <div className="ws-section ws-s1" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '18px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '14px' }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+            <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Answer Context</span>
+          </div>
+          <div style={{ marginBottom: '11px' }}>
+            <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '3px' }}>Resolved Intent</div>
+            <div style={{ fontSize: '0.86rem', fontWeight: '600', color: C.text }}>{intentLabel}</div>
+          </div>
+          <div style={{ marginBottom: '11px' }}>
+            <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '5px' }}>Confidence</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ flex: 1, height: '5px', background: C.border, borderRadius: '3px', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${Math.round(confidence * 100)}%`, background: confidence >= 0.7 ? '#10b981' : confidence >= 0.4 ? '#f59e0b' : '#f87171', borderRadius: '3px', transition: 'width 0.5s ease' }} />
+              </div>
+              <span style={{ fontSize: '0.72rem', fontWeight: '700', color: C.text, minWidth: '30px' }}>{Math.round(confidence * 100)}%</span>
+            </div>
+          </div>
+          {keywords.length > 0 && (
+            <div>
+              <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '6px' }}>Keywords Matched</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {keywords.slice(0, 6).map(k => (
+                  <span key={k} style={{ background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '20px', padding: '2px 8px', fontSize: '0.63rem', color: '#6366f1', fontWeight: '500' }}>{k}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Services Consulted */}
+        <div className="ws-section ws-s2" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '18px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '14px' }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Services Consulted</span>
+          </div>
+          {services.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {services.map((svc, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.14)', borderRadius: '8px' }}>
+                  <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#3b82f6', flexShrink: 0 }} />
+                  <span style={{ fontSize: '0.74rem', color: C.text, fontFamily: MONO, fontWeight: '500' }}>{svc}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: '0.77rem', color: C.textMuted, padding: '10px 0' }}>No services invoked</div>
+          )}
+        </div>
+      </div>
+
+      {/* Evidence Summary */}
+      <div className="ws-section ws-s3" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '18px 20px', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '14px' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Evidence Summary</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: evidenceItems.length > 0 ? '14px' : 0 }}>
+          {[
+            { label: 'Total Items',        value: evidenceSummary.total_items        ?? 0,   color: '#6366f1' },
+            { label: 'Attempted',          value: evidenceSummary.services_attempted ?? 0,   color: '#3b82f6' },
+            { label: 'Succeeded',          value: evidenceSummary.services_succeeded ?? 0,   color: '#10b981' },
+            { label: 'Has Errors',         value: evidenceSummary.has_errors ? 'Yes' : 'No', color: evidenceSummary.has_errors ? '#f87171' : '#10b981' },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ textAlign: 'center', padding: '12px 8px', background: `${color}0d`, border: `1px solid ${color}22`, borderRadius: '10px' }}>
+              <div style={{ fontSize: '1.25rem', fontWeight: '700', color, fontFamily: MONO, lineHeight: 1 }}>{value}</div>
+              <div style={{ fontSize: '0.61rem', color: C.textMuted, marginTop: '5px', lineHeight: 1.3 }}>{label}</div>
+            </div>
+          ))}
+        </div>
+        {evidenceItems.length > 0 && (
+          <div>
+            <button onClick={() => setEvidenceExpanded(o => !o)} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: C.textSec, fontFamily: FONT, fontSize: '0.72rem', fontWeight: '600' }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: evidenceExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}><path d="m9 18 6-6-6-6"/></svg>
+              {evidenceExpanded ? 'Hide' : 'Show'} evidence items ({evidenceItems.length})
+            </button>
+            {evidenceExpanded && (
+              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {evidenceItems.map((item, i) => (
+                  <div key={item.evidence_id ?? i} style={{ padding: '9px 13px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px', display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: '10px', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.63rem', color: C.textMuted, fontFamily: MONO }}>{item.source_service}</span>
+                    <span style={{ fontSize: '0.72rem', color: C.text, fontWeight: '500' }}>{item.capability}</span>
+                    <span style={{ fontSize: '0.63rem', fontWeight: '700', color: (item.confidence ?? 0) >= 0.7 ? '#10b981' : (item.confidence ?? 0) >= 0.4 ? '#f59e0b' : '#f87171' }}>{Math.round((item.confidence ?? 0) * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Governance + Warnings */}
+      {(governanceState || warnings.length > 0 || errors.length > 0) && (
+        <div style={{ display: 'grid', gridTemplateColumns: governanceState && (warnings.length > 0 || errors.length > 0) ? '1fr 1fr' : '1fr', gap: '12px', marginBottom: '12px' }}>
+          {governanceState && (
+            <div className="ws-section ws-s4" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '18px 20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '12px' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Governance</span>
+              </div>
+              <div style={{ fontSize: '0.85rem', fontWeight: '600', color: C.text }}>{governanceState}</div>
+            </div>
+          )}
+          {(warnings.length > 0 || errors.length > 0) && (
+            <div className="ws-section ws-s5" style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '18px 20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '12px' }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Warnings</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {warnings.map((w, i) => (
+                  <div key={i} style={{ display: 'flex', gap: '7px', alignItems: 'flex-start', fontSize: '0.76rem', color: '#d97706', lineHeight: 1.45 }}>
+                    <span style={{ marginTop: '1px', flexShrink: 0 }}>&#9888;</span>
+                    <span>{w}</span>
+                  </div>
+                ))}
+                {errors.map((e, i) => (
+                  <div key={`err_${i}`} style={{ display: 'flex', gap: '7px', alignItems: 'flex-start', fontSize: '0.76rem', color: '#f87171', lineHeight: 1.45 }}>
+                    <span style={{ marginTop: '1px', flexShrink: 0 }}>&#10005;</span>
+                    <span>{typeof e === 'string' ? e : JSON.stringify(e)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Next Suggested Action */}
+      {nextAction && (
+        <div className="ws-section ws-s6" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '16px 20px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '14px' }}>
+          <div style={{ width: '34px', height: '34px', borderRadius: '9px', background: 'rgba(99,102,241,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.57rem', fontWeight: '700', color: '#6366f1', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '3px' }}>Next Suggested Action</div>
+            <div style={{ fontSize: '0.79rem', color: C.text, lineHeight: 1.5 }}>{nextAction}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── AI Workspace — main export ───────────────────────────────────────────────
 
 export default function AIWorkspace({
@@ -3731,22 +4180,32 @@ export default function AIWorkspace({
   const [dsPendingRun,      setDsPendingRun]      = useState(null) // pending run args awaiting dataset confirmation
   const [noDsWarning,       setNoDsWarning]       = useState(false)
   const [dsSearch,          setDsSearch]          = useState('')
+  const [composerResult,    setComposerResult]    = useState(null)
+  const [composerLoading,   setComposerLoading]   = useState(false)
+  const [dataSourceList,      setDataSourceList]      = useState([])
+  const [selectedDataSourceId, setSelectedDataSourceId] = useState(null)
+  const [sourcePicker,        setSourcePicker]        = useState(false)
+  const [sourceSearch,        setSourceSearch]        = useState('')
 
   useEffect(() => { if (externalLoading) { setWsResult(null); setWsError(null) } }, [externalLoading])
   useEffect(() => { if (externalResult) setWsResult(externalResult) }, [externalResult])
   useEffect(() => { if (externalError) setWsError(externalError) }, [externalError])
   useEffect(() => { if (token) loadEngineTools() }, [token])
+  useEffect(() => { if (token) loadDataSources() }, [token])
   useEffect(() => { if (!dsPicker) setDsSearch('') }, [dsPicker])
+  useEffect(() => { if (!sourcePicker) setSourceSearch('') }, [sourcePicker])
 
-  const activeResult  = wsResult
-  const activeLoading = wsLoading || externalLoading
-  const activeError   = wsError
-  const intel         = extractIntel(activeResult)
-  const hasResult     = !!activeResult && !activeLoading
-  const showComposer  = !activeLoading && (backToComposer || (!hasResult && !wsProposal && !enginePlan))
-  const activeDs      = datasetList?.find(d => d.id === selectedDatasetId) || null
-  const isEmailIntent = ['email', 'send', 'mail'].some(kw => wsInput.toLowerCase().includes(kw))
-  const disabled             = wsLoading || wsProposalLoading || enginePlanLoading || !wsInput.trim()
+  const activeResult       = wsResult
+  const activeLoading      = wsLoading || externalLoading
+  const activeError        = wsError
+  const intel              = extractIntel(activeResult)
+  const hasResult          = !!activeResult && !activeLoading
+  const hasComposerResult  = !!composerResult && !composerLoading
+  const showComposer       = !activeLoading && !composerLoading && (backToComposer || (!hasResult && !hasComposerResult && !wsProposal && !enginePlan))
+  const activeDs           = datasetList?.find(d => d.id === selectedDatasetId) || null
+  const activeSource       = dataSourceList?.find(s => s.id === selectedDataSourceId) || null
+  const isEmailIntent      = ['email', 'send', 'mail'].some(kw => wsInput.toLowerCase().includes(kw))
+  const disabled           = wsLoading || wsProposalLoading || enginePlanLoading || composerLoading || !wsInput.trim()
   const workflowAlreadySaved = wsInput.trim().length > 0 && savedWorkflows.some(wf => wf.intent === wsInput.trim())
 
   // Merge session-saved workflows (rich metadata) with backend engine tools loaded on mount.
@@ -3816,6 +4275,32 @@ export default function AIWorkspace({
     } finally { setEnginePlanLoading(false) }
   }
 
+  async function handleComposerAsk(query, datasetId = null) {
+    setWsError(null)
+    setWsResult(null)
+    setComposerResult(null)
+    setWsProposal(null)
+    setComposerLoading(true)
+    setBackToComposer(false)
+    execStartedAtRef.current = Date.now()
+    try {
+      const sessionId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+      const payload = {
+        session_id:           sessionId,
+        message:              query,
+        selected_data_source: selectedDataSourceId ?? null,
+      }
+      if (datasetId != null) payload.dataset_id = datasetId
+      const data = await askComposer(token, payload)
+      setComposerResult(data)
+    } catch (err) {
+      if (err?.message?.startsWith('401:')) { onSessionExpired(); return }
+      setWsError(err.message?.replace(/^\d+:\s*/, '') || 'Catalog query failed.')
+    } finally {
+      setComposerLoading(false)
+    }
+  }
+
   async function handleSaveTool() {
     if (!enginePlan) return
     setEngineBusy('save')
@@ -3872,7 +4357,18 @@ export default function AIWorkspace({
       handleEnginePlan()
       return
     }
+    // Route catalog/metadata/governance questions to the Enterprise Composer API.
+    if (overrideIntent === null && sections === null && proposal === null && isComposerIntent(trimmed)) {
+      handleComposerAsk(trimmed)
+      return
+    }
     const dsId = overrideDsId !== undefined ? overrideDsId : (selectedDatasetId || null)
+    // Route report-generation prompts through the Enterprise Composer when a dataset is selected.
+    // Falls through to the standard interpretTask path when no dataset is available.
+    if (overrideIntent === null && sections === null && proposal === null && isReportGenerationIntent(trimmed) && dsId) {
+      handleComposerAsk(trimmed, dsId)
+      return
+    }
 
     // ── Dataset trust guards ──────────────────────────────────────────────────
     // Only apply when using the ambient selectedDatasetId (not an explicit override
@@ -3924,6 +4420,7 @@ export default function AIWorkspace({
     setWsResult(null); setWsError(null); setWsProposal(null); setWsProposalError(null); setWsInput(''); setWsExecDurationMs(null)
     setEnginePlan(null); setSavedToolId(null); setToolStatus(null)
     setEngineBusy(null); setToast(null); setShowRawJson(false); setPlanDatasetId(null); setBackToComposer(false); setWsRunSource(null)
+    setComposerResult(null); setComposerLoading(false)
     // savedWorkflows + engineTools intentionally preserved — they are the persistent library
   }
 
@@ -3932,6 +4429,14 @@ export default function AIWorkspace({
       const data  = await listEngineTools(token)
       const tools = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []
       setEngineTools(tools)
+    } catch { /* silently ignore — don't block primary UX */ }
+  }
+
+  async function loadDataSources() {
+    try {
+      const data    = await listDataSources(token)
+      const sources = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []
+      setDataSourceList(sources)
     } catch { /* silently ignore — don't block primary UX */ }
   }
 
@@ -4094,7 +4599,7 @@ export default function AIWorkspace({
       />
 
       {/* ── Page header — only on composer/workspace, hidden during execution, result, and plan screen ── */}
-      {!activeLoading && (!hasResult || backToComposer) && !enginePlan && (
+      {!activeLoading && !composerLoading && (!hasResult || backToComposer) && !hasComposerResult && !enginePlan && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '12px', marginTop: '2px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
@@ -4344,6 +4849,91 @@ export default function AIWorkspace({
                   </div>
                 </div>
 
+                {/* ── SELECT DATA SOURCE section ── */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                    <span style={{ fontSize: '0.63rem', fontWeight: '600', color: C.text, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Select Data Source</span>
+                  </div>
+
+                  <div style={{ position: 'relative', maxWidth: '320px' }}>
+                    {sourcePicker && <div style={{ position: 'fixed', inset: 0, zIndex: 998 }} onClick={() => setSourcePicker(false)} />}
+                    <button className="ws-ghost-btn" onClick={() => setSourcePicker(o => !o)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', background: activeSource ? 'rgba(99,102,241,0.07)' : C.bg, border: `1px solid ${activeSource ? 'rgba(99,102,241,0.35)' : C.border}`, borderRadius: '10px', padding: '9px 14px', fontSize: '0.76rem', color: activeSource ? '#6366f1' : C.textSec, cursor: 'pointer', fontFamily: FONT, fontWeight: '400', textAlign: 'left', position: 'relative', zIndex: 999 }}>
+                      <span style={{ flex: 1 }}>{activeSource ? activeSource.display_name : 'None (catalog/dictionary only)'}</span>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5, flexShrink: 0 }}><path d="m6 9 6 6 6-6"/></svg>
+                    </button>
+
+                    {sourcePicker && (
+                      <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 999, width: '100%', minWidth: '260px', background: C.surface, border: `1px solid ${C.borderAlt}`, borderRadius: '12px', boxShadow: '0 8px 28px rgba(0,0,0,0.16)', overflow: 'hidden', animation: 'ws-fadeup 0.15s ease' }}>
+                        {/* Search */}
+                        <div style={{ padding: '8px 10px', borderBottom: `1px solid ${C.border}` }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '7px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '7px', padding: '5px 9px' }}>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                            <input
+                              autoFocus
+                              type="text"
+                              placeholder="Search…"
+                              value={sourceSearch}
+                              onChange={e => setSourceSearch(e.target.value)}
+                              style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: '0.74rem', color: C.text, fontFamily: FONT, caretColor: '#6366f1' }}
+                            />
+                            {sourceSearch && (
+                              <button onClick={() => setSourceSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', color: C.textMuted }}>
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {/* List */}
+                        <div style={{ maxHeight: '240px', overflowY: 'auto', overscrollBehavior: 'contain' }}>
+                          {/* Clear selection */}
+                          <div onClick={() => { setSelectedDataSourceId(null); setSourcePicker(false) }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: !activeSource ? 'rgba(99,102,241,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}` }}
+                            onMouseEnter={e => { if (activeSource) e.currentTarget.style.background = C.borderAlt }}
+                            onMouseLeave={e => { if (activeSource) e.currentTarget.style.background = 'transparent' }}>
+                            <div style={{ flex: 1, fontSize: '0.75rem', fontWeight: '500', color: !activeSource ? '#6366f1' : C.text }}>None (catalog/dictionary only)</div>
+                            {!activeSource && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                          </div>
+                          {(() => {
+                            const q = sourceSearch.toLowerCase().trim()
+                            const filtered = (dataSourceList || []).filter(s => (s.display_name || '').toLowerCase().includes(q) || (s.source_type || '').toLowerCase().includes(q))
+                            if (!dataSourceList?.length) return (
+                              <div style={{ padding: '18px', textAlign: 'center', color: C.textMuted, fontSize: '0.76rem' }}>No data sources connected.</div>
+                            )
+                            if (!filtered.length) return (
+                              <div style={{ padding: '18px', textAlign: 'center', color: C.textMuted, fontSize: '0.76rem' }}>No matches for "{sourceSearch}"</div>
+                            )
+                            return filtered.map(src => {
+                              const isSel = src.id === selectedDataSourceId
+                              return (
+                                <div key={src.id} onClick={() => { setSelectedDataSourceId(src.id); setSourcePicker(false) }}
+                                  style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: isSel ? 'rgba(99,102,241,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
+                                  onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = C.borderAlt }}
+                                  onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent' }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontSize: '0.75rem', fontWeight: '500', color: isSel ? '#6366f1' : C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.3 }}>{src.display_name}</div>
+                                    <div style={{ fontSize: '0.60rem', color: C.textMuted, lineHeight: 1.2 }}>{src.source_type}{src.status ? ` · ${src.status}` : ''}</div>
+                                  </div>
+                                  {isSel && <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                                </div>
+                              )
+                            })
+                          })()}
+                        </div>
+                        {/* Footer */}
+                        <div onClick={() => { setSourcePicker(false); setActiveNav('data-sources') }}
+                          style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#6366f1', fontSize: '0.74rem', fontWeight: '500', borderTop: `1px solid ${C.border}`, transition: 'background 0.12s' }}
+                          onMouseEnter={e => e.currentTarget.style.background = 'rgba(99,102,241,0.07)'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                          Manage data sources
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* ── No-dataset inline warning ── */}
                 {noDsWarning && !activeDs && (
                   <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -4447,6 +5037,20 @@ export default function AIWorkspace({
             />
           )}
 
+          {/* ── Composer loading indicator ── */}
+          {composerLoading && <ComposerLoading C={C} />}
+
+          {/* ── Composer result panel ── */}
+          {hasComposerResult && !backToComposer && (
+            <ComposerResultPanel
+              result={composerResult}
+              wsInput={wsInput}
+              C={C}
+              onBack={handleReset}
+              onOpenReport={onOpenReport}
+            />
+          )}
+
           {/* ── Execution Console — loading and completion (single persistent instance) ── */}
           {(activeLoading || (hasResult && !backToComposer)) && (
             <ExecutionConsole
@@ -4477,13 +5081,13 @@ export default function AIWorkspace({
 
         </div>
 
-        {/* ── Right column — hidden during execution (console is full-width), shown otherwise ── */}
-        {!activeLoading && (!hasResult || backToComposer) && (
+        {/* ── Right column — hidden during execution or composer result (those are full-width) ── */}
+        {!activeLoading && !composerLoading && !hasComposerResult && (!hasResult || backToComposer) && (
           <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
             <EmptyAssistantPanel proposal={wsProposal} C={C} onSuggestionSelect={q => setWsInput(q)} activeDs={activeDs} wsInput={wsInput} token={token} />
           </div>
         )}
-        {!activeLoading && hasResult && !backToComposer && (
+        {!activeLoading && hasResult && !backToComposer && !hasComposerResult && (
           <div style={{ width: '280px', flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
             <CopilotPanel
               reportId={intel?.reportId ?? null}

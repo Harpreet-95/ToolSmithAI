@@ -278,3 +278,37 @@ class TestSemanticPlanDrivenSqlRequired:
         strategy = ExecutionPlanner().plan("total revenue by region", source_id=999, user_id="u1")
         assert strategy is not None
 
+
+# ---------------------------------------------------------------------------
+# Orchestrator integration
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorIntegration:
+    def test_registry_has_at_least_the_execution_planner_service(self):
+        # Exact count is asserted in tests/test_answering.py, which tracks
+        # the current total (19, after Phase 10 added "enterprise_answer").
+        # This test only pins the Phase 9 addition so it doesn't need
+        # updating every time a later phase registers another service.
+        service_ids = [s.service_id for s in ServiceRegistry().get_all()]
+        assert "execution_planner" in service_ids
+
+    def test_run_execution_planning_selects_service(self):
+        req = OrchestratorRequest(
+            query="anything", source_id=None, user_id="u1",
+            params={"question": "What is Customer?"},
+        )
+        package = EnterpriseOrchestrator().run_execution_planning(req)
+        assert package.intent.intent_type == IntentType.EXECUTION_PLANNER
+        service_ids = [c.service_id for c in package.service_calls]
+        assert "execution_planner" in service_ids
+        item = next(e for e in package.evidence if e.source_service == "execution_planner")
+        assert item.data["strategy_type"] == "dictionary_lookup"
+
+    def test_existing_intents_unaffected(self):
+        req = OrchestratorRequest(query="show me the dictionary definitions", source_id=None, user_id="u1")
+        package = EnterpriseOrchestrator().process(req)
+        assert package.intent.intent_type == IntentType.DICTIONARY
+
+        req2 = OrchestratorRequest(query="governance compliance pii sensitive stewardship", source_id=None, user_id="u1")
+        package2 = EnterpriseOrchestrator().process(req2)
+        assert package2.intent.intent_type == IntentType.GOVERNANCE

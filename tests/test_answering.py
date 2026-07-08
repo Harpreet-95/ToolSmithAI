@@ -264,3 +264,70 @@ class TestNoAI:
                 else:
                     continue
                 assert not (names & banned), f"{path} imports {names & banned}"
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator integration + backward compatibility
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorIntegration:
+    def test_registry_has_nineteen_services(self):
+        assert len(ServiceRegistry().get_all()) == 19
+
+    def test_run_enterprise_answer_is_additive_over_process(self):
+        req = OrchestratorRequest(query="show me the dictionary definitions", source_id=None, user_id="u1")
+        orchestrator = EnterpriseOrchestrator()
+        baseline = orchestrator.process(req)
+        enriched = orchestrator.run_enterprise_answer(req)
+
+        assert enriched.total_evidence_items == baseline.total_evidence_items + 1
+        baseline_services = [e.source_service for e in baseline.evidence]
+        enriched_services = [e.source_service for e in enriched.evidence]
+        assert enriched_services[:-1] == baseline_services
+        assert enriched_services[-1] == "enterprise_answer"
+
+        extra = enriched.evidence[-1].data
+        assert "enterprise_answer" in extra
+        assert "execution_strategy" in extra
+
+
+# ---------------------------------------------------------------------------
+# Composer API backward compatibility — calls the real endpoint function
+# ---------------------------------------------------------------------------
+
+class TestComposerBackwardCompatibility:
+    _ORIGINAL_KEYS = {
+        "status", "request_id", "session_id", "business_answer", "resolved_intent",
+        "services_selected", "evidence_summary", "evidence_package",
+        "governance_state", "confidence", "execution_time", "warnings", "errors",
+    }
+
+    def test_response_keeps_all_original_keys_and_adds_two_new_ones(self):
+        from auth.api_key import AuthenticatedUser
+        from api.v1.composer import ComposerRequest, composer_ask
+
+        body = ComposerRequest(session_id="sess-1", message="show me the dictionary")
+        user = AuthenticatedUser(role="user", user_id="u1")
+
+        response = composer_ask(body, user)
+
+        assert self._ORIGINAL_KEYS.issubset(response.keys())
+        assert "enterprise_answer" in response
+        assert "execution_strategy" in response
+        assert response["business_answer"] is not None  # existing field unaffected
+
+    def test_enterprise_answer_present_and_shaped_correctly(self):
+        from auth.api_key import AuthenticatedUser
+        from api.v1.composer import ComposerRequest, composer_ask
+
+        body = ComposerRequest(session_id="sess-2", message="show me the dictionary")
+        user = AuthenticatedUser(role="user", user_id="u1")
+
+        response = composer_ask(body, user)
+
+        assert response["enterprise_answer"] is not None
+        for key in ("answer", "summary", "answer_type", "confidence", "citations",
+                    "recommendations", "follow_up_questions", "next_actions"):
+            assert key in response["enterprise_answer"]
+        assert response["execution_strategy"] is not None
+        assert "strategy_type" in response["execution_strategy"]
