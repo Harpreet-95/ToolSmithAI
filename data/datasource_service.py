@@ -260,6 +260,43 @@ def test_data_source(source_id: int, user_id: str) -> dict | None:
     }
 
 
+def get_connection_config(source_id: int, user_id: str) -> dict | None:
+    """
+    Read-only lookup for live connection resolution. Returns decrypted
+    connection params alongside source status/capabilities, scoped to the
+    owning user. Never includes encrypted_config_json.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT source_type, source_category, display_name, is_active, "
+            "source_status, capabilities_json, encrypted_config_json "
+            "FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    try:
+        params = json.loads(get_secret_manager().decrypt_secret(row["encrypted_config_json"]))
+    except Exception:
+        logger.error("get_connection_config: failed to decrypt config for source id=%s", source_id)
+        return None
+
+    return {
+        "source_type": row["source_type"],
+        "source_category": row["source_category"],
+        "display_name": row["display_name"],
+        "is_active": bool(row["is_active"]),
+        "source_status": row["source_status"],
+        "capabilities": json.loads(row["capabilities_json"] or "[]"),
+        "params": params,
+    }
+
+
 def delete_data_source(source_id: int, user_id: str) -> dict | None:
     conn = get_connection()
     try:
