@@ -63,7 +63,16 @@ _SIGNALS: Dict[IntentType, Tuple[List[str], List[str]]] = {
         ],
     ),
     IntentType.SQL_REQUEST: (
-        ["sql", "query", "select", "generate sql", "write query", "generate query"],
+        # Primary: literal SQL vocabulary plus the same analytical signal
+        # words core.execution.rules.is_analytical_question already uses to
+        # detect an aggregation question (top N, total, average, highest,
+        # lowest, sum of, count of) — reused here, not reinvented, so a
+        # bare "top 10 X" / "average X" question resolves as SQL_REQUEST
+        # the same way it already resolves as analytical for ExecutionPlanner.
+        [
+            "sql", "query", "select", "generate sql", "write query", "generate query",
+            "top ", "average", "highest", "lowest", "total", "sum of", "count of",
+        ],
         ["from table", "where clause", "join query", "fetch data", "run query"],
     ),
     IntentType.WORKFLOW: (
