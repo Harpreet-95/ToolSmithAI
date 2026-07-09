@@ -3749,6 +3749,12 @@ const ANSWER_TYPE_COLORS = {
   no_data:            { bg: 'rgba(248,113,113,0.10)', text: '#f87171', border: 'rgba(248,113,113,0.25)' },
   access_restricted:  { bg: 'rgba(248,113,113,0.10)', text: '#f87171', border: 'rgba(248,113,113,0.25)' },
   unknown_intent:     { bg: 'rgba(148,163,184,0.10)', text: '#94a3b8', border: 'rgba(148,163,184,0.25)' },
+  // core.answering.models.AnswerType values (enterprise_answer.answer_type) —
+  // distinct vocabulary from the legacy business_answer types above.
+  live_query:         { bg: 'rgba(16,185,129,0.10)',  text: '#10b981', border: 'rgba(16,185,129,0.25)'  },
+  live_metadata:      { bg: 'rgba(99,102,241,0.10)',  text: '#6366f1', border: 'rgba(99,102,241,0.25)'  },
+  restricted:         { bg: 'rgba(248,113,113,0.10)', text: '#f87171', border: 'rgba(248,113,113,0.25)' },
+  unknown:            { bg: 'rgba(148,163,184,0.10)', text: '#94a3b8', border: 'rgba(148,163,184,0.25)' },
 }
 
 function BusinessAnswerBlock({ answer: ba, C }) {
@@ -3798,6 +3804,90 @@ function BusinessAnswerBlock({ answer: ba, C }) {
         <div style={{ padding: '9px 13px', background: 'rgba(99,102,241,0.05)', border: '1px solid rgba(99,102,241,0.15)', borderRadius: '9px', display: 'flex', gap: '8px', alignItems: 'center' }}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           <span style={{ fontSize: '0.72rem', color: C.text, lineHeight: 1.4 }}>{ba.next_suggested_action}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Renders result.enterprise_answer (core.answering.models.EnterpriseAnswer) —
+// the Enterprise Answer Layer's deterministic, evidence-grounded answer,
+// preferred over the legacy business_answer whenever present (e.g. SQL_REQUEST/
+// live_query results, which business_answer has no dedicated branch for and
+// otherwise renders as a generic "Catalog metadata retrieved..." fallback).
+// Note: enterprise_answer.confidence is already 0-100 (unlike business_answer's
+// 0-1 scale) — do not multiply by 100 again.
+function EnterpriseAnswerBlock({ answer: ea, C }) {
+  if (!ea) return null
+  const typeColors = ANSWER_TYPE_COLORS[ea.answer_type] ?? ANSWER_TYPE_COLORS.metadata_lookup
+  const conf       = Math.round(ea.confidence ?? 0)
+  const typeLabel  = (ea.answer_type ?? 'unknown').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const citations  = ea.citations ?? []
+  const limitations = ea.limitations ?? []
+  const nextActions = ea.next_actions ?? []
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '20px', marginBottom: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+
+      {/* header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Enterprise Answer</span>
+        <span style={{ marginLeft: 'auto', background: typeColors.bg, border: `1px solid ${typeColors.border}`, color: typeColors.text, borderRadius: '20px', padding: '2px 9px', fontSize: '0.60rem', fontWeight: '700' }}>{typeLabel}</span>
+      </div>
+
+      {/* answer text */}
+      <div style={{ fontSize: '0.90rem', fontWeight: '500', color: C.text, lineHeight: 1.55, marginBottom: ea.summary ? '6px' : '12px' }}>{ea.answer}</div>
+
+      {/* summary */}
+      {ea.summary && (
+        <div style={{ fontSize: '0.72rem', color: C.textMuted, lineHeight: 1.45, marginBottom: '12px' }}>{ea.summary}</div>
+      )}
+
+      {/* confidence row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: (citations.length || limitations.length || nextActions.length) ? '12px' : 0 }}>
+        <div style={{ fontSize: '0.68rem', color: C.textMuted, flexShrink: 0 }}>Confidence</div>
+        <div style={{ flex: 1, height: '5px', background: C.border, borderRadius: '3px', overflow: 'hidden', maxWidth: '160px' }}>
+          <div style={{ height: '100%', width: `${conf}%`, background: conf >= 70 ? '#10b981' : conf >= 40 ? '#f59e0b' : '#f87171', borderRadius: '3px', transition: 'width 0.4s ease' }} />
+        </div>
+        <span style={{ fontSize: '0.68rem', fontWeight: '700', color: C.textSec, minWidth: '28px' }}>{conf}%</span>
+      </div>
+
+      {/* citations */}
+      {citations.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: '10px', marginBottom: (limitations.length || nextActions.length) ? '10px' : 0 }}>
+          <div style={{ fontSize: '0.68rem', color: C.textMuted, marginBottom: '6px' }}>Citations</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
+            {citations.map((c, i) => (
+              <span key={i} title={c.reference || ''} style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.18)', borderRadius: '20px', padding: '3px 9px', fontSize: '0.65rem', color: C.textSec, fontWeight: '500' }}>
+                {c.label || c.source_type || 'source'}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* limitations */}
+      {limitations.length > 0 && (
+        <div style={{ borderTop: citations.length ? 'none' : `1px solid ${C.border}`, paddingTop: citations.length ? 0 : '10px', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: nextActions.length ? '10px' : 0 }}>
+          {limitations.map((lim, i) => (
+            <div key={i} style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', fontSize: '0.70rem', color: C.textMuted, lineHeight: 1.45 }}>
+              <span style={{ flexShrink: 0, marginTop: '1px', color: '#f59e0b' }}>&#9432;</span>
+              <span>{lim}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* next actions */}
+      {nextActions.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {nextActions.map((action, i) => (
+            <div key={i} style={{ padding: '9px 13px', background: 'rgba(99,102,241,0.05)', border: '1px solid rgba(99,102,241,0.15)', borderRadius: '9px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              <span style={{ fontSize: '0.72rem', color: C.text, lineHeight: 1.4 }}>{action}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -3953,6 +4043,7 @@ function ComposerResultPanel({ result, wsInput, C, onBack, onOpenReport }) {
   const nextAction      = COMPOSER_NEXT_ACTION[intentType] ?? null
   const intentLabel     = intentType.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
   const businessAnswer  = result.business_answer ?? null
+  const enterpriseAnswer = result.enterprise_answer ?? null
 
   // Route report_generation intent to the dedicated enterprise report card.
   if (intentType === 'report_generation') {
@@ -3985,8 +4076,15 @@ function ComposerResultPanel({ result, wsInput, C, onBack, onOpenReport }) {
         </div>
       </div>
 
-      {/* Business Answer — deterministic, evidence-based, displayed first */}
-      <BusinessAnswerBlock answer={businessAnswer} C={C} />
+      {/* Enterprise Answer takes priority when present (e.g. SQL_REQUEST/live_query
+          results) — it's the Enterprise Answer Layer's deterministic, evidence-
+          grounded answer. business_answer has no dedicated branch for those
+          intents and would otherwise show a generic metadata fallback. Falls
+          back to business_answer when enterprise_answer is absent (e.g. its
+          server-side generation failed, or for intents it doesn't cover). */}
+      {enterpriseAnswer
+        ? <EnterpriseAnswerBlock answer={enterpriseAnswer} C={C} />
+        : <BusinessAnswerBlock answer={businessAnswer} C={C} />}
 
       {/* Row 1: Answer Context + Services Consulted */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
