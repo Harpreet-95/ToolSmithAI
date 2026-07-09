@@ -126,6 +126,7 @@ def env(tmp_path, monkeypatch):
         (103, "revenue_tier",   0, 1, "Revenue Tier", "LOW"),
         (104, "region",         0, 1, "Region",       "LOW"),
         (105, "order_month",    0, 1, "Order Month",  "LOW"),
+        (106, "client_count",   1, 0, "Clients",      "HIGH"),
     ]
     for cid, name, is_metric, is_dim, label, tier in columns:
         conn.execute(
@@ -335,3 +336,143 @@ class TestOtherIntentsUnaffected:
         assert result["resolved_intent"]["intent_type"] == IntentType.REPORT_GENERATION.value
         assert called.get("ran") is True
         assert "services_selected" not in result or result["services_selected"] == ["report_pipeline"]
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Convergence Phase A1.4 — AI Workspace -> Composer unification.
+#
+# The frontend change (AIWorkspace.jsx handleRun: a selected live data source
+# always calls handleComposerAsk(), before any regex classification) is not
+# independently testable here — there is no frontend test framework in this
+# repo (verified: no vitest/jest config, no .test files, no test script).
+# These tests instead prove the backend contract that change relies on:
+# once a question reaches composer_ask() with selected_data_source set, it
+# resolves correctly and never needs the legacy dataset/report path — and
+# that the "how many" / "number of" SQL_REQUEST keyword addition (moved to
+# secondary weight after collision analysis — see intent_resolver.py) doesn't
+# regress metadata/workflow/governance/dictionary classification.
+# ---------------------------------------------------------------------------
+
+class TestHowManyClientsRoutesThroughComposer:
+    """Reproduces the exact bug scenario: CCPP selected, 'How many clients
+    are in the system?' — must resolve SQL_REQUEST and execute live, not
+    fall back to a report generated from an unrelated CSV dataset."""
+
+    def test_resolves_sql_request_and_executes_through_live_query_engine(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_client_count",)], rows=[(42,)])
+
+        result = _ask("How many clients are in the system?")
+
+        assert result["resolved_intent"]["intent_type"] == IntentType.SQL_REQUEST.value
+        assert "live_query" in result["services_selected"]
+        live_evidence = next(
+            e for e in result["evidence_package"]["evidence"] if e["source_service"] == "live_query"
+        )
+        assert live_evidence["data"]["status"] == QueryStatus.SUCCESS.value
+        assert live_evidence["data"]["generated_sql"]
+        assert "client_count" in live_evidence["data"]["generated_sql"].lower()
+
+    def test_returns_enterprise_answer_with_live_query_citation(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_client_count",)], rows=[(42,)])
+
+        result = _ask("How many clients are in the system?")
+
+        enterprise_answer = result["enterprise_answer"]
+        assert enterprise_answer is not None
+        assert enterprise_answer["answer_type"] == "live_query"
+        live_citations = [
+            c for c in enterprise_answer["citations"] if c["source_type"] == CitationType.LIVE_QUERY.value
+        ]
+        assert live_citations
+
+    def test_composer_receives_selected_data_source(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_client_count",)], rows=[(42,)])
+
+        result = _ask("How many clients are in the system?")
+
+        assert result["evidence_package"]["source_id"] == 1
+
+    def test_legacy_dataset_interpret_path_not_used(self, tmp_path, monkeypatch):
+        """The legacy CSV report pipeline (run_dataset_report_plan /
+        interpret_task, reached via /v1/interpret -> handle_input) must never
+        be invoked when the question is answered through Composer with a
+        live source selected — this is what previously produced a report
+        from an unrelated CSV dataset instead of a live answer."""
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_client_count",)], rows=[(42,)])
+
+        def _forbidden(*a, **k):
+            raise AssertionError("legacy dataset report/interpret path must not be invoked")
+        monkeypatch.setattr("core.workflows.workflow_runner.run_dataset_report_plan", _forbidden)
+        monkeypatch.setattr("core.interpreter.task_interpreter.interpret_task", _forbidden)
+
+        result = _ask("How many clients are in the system?")
+
+        assert result["resolved_intent"]["intent_type"] == IntentType.SQL_REQUEST.value
+        assert "report_id" not in result
+
+
+class TestHowManyCollisionRegression:
+    """The 'how many'/'number of' SQL_REQUEST keywords were deliberately
+    weighted secondary (0.2), not primary, because collision analysis found
+    they otherwise tie 0.4-vs-0.4 with METADATA_LOOKUP/WORKFLOW/GOVERNANCE
+    and hijack those intents via specificity/insertion-order tie-breaks.
+    These prove the fix holds through the full composer_ask() call, not
+    just IntentResolver.resolve() in isolation."""
+
+    def test_how_many_tables_still_resolves_metadata_lookup(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        result = _ask("how many tables are in this schema")
+        assert result["resolved_intent"]["intent_type"] == IntentType.METADATA_LOOKUP.value
+        assert "live_query" not in result["services_selected"]
+
+    def test_how_many_governance_objects_still_resolves_governance(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        result = _ask("how many governance objects are pending")
+        assert result["resolved_intent"]["intent_type"] == IntentType.GOVERNANCE.value
+        assert "live_query" not in result["services_selected"]
+
+
+class TestDatasetOnlyWorkflowsStillWork:
+    """Requirement: 'Do not remove dataset support' / 'existing dataset
+    workflow remains unchanged'. Exercises the legacy /v1/interpret ->
+    handle_input() path directly (untouched by this phase) to reconfirm
+    Path 1 (direct dataset report shortcut) still fires exactly as before
+    for a dataset-only session with no live source selected."""
+
+    def test_dataset_report_hint_still_routes_to_direct_dataset_shortcut(self, monkeypatch):
+        from core.input.input_handler import handle_input
+
+        monkeypatch.setattr("data.audit.log_audit_event", lambda *a, **k: None)
+        monkeypatch.setattr("data.execution_history.log_execution_history", lambda *a, **k: None)
+        monkeypatch.setattr("data.usage_service.log_usage_event", lambda *a, **k: None)
+        # input_handler imports these names directly, so patch its own module
+        # namespace too (the calls above patch the source modules, which is
+        # enough since input_handler calls them via `from ... import ...`
+        # re-bound names — patch those bindings directly for safety).
+        monkeypatch.setattr("core.input.input_handler.log_audit_event", lambda *a, **k: None)
+        monkeypatch.setattr("core.input.input_handler.log_execution_history", lambda *a, **k: None)
+        monkeypatch.setattr("core.input.input_handler.log_usage_event", lambda *a, **k: None)
+
+        called = {}
+
+        def _fake_run_report(plan, user_id, dataset_id=None, selected_sections=None, report_type=None):
+            called["dataset_id"] = dataset_id
+            return {"status": "success", "report_id": 99, "dataset_report": {"sections": []}}
+        monkeypatch.setattr("core.input.input_handler.run_dataset_report_plan", _fake_run_report)
+
+        response = handle_input("generate a report on clients", user_id="user-1", dataset_id=77)
+        result = response["data"]
+
+        assert called.get("dataset_id") == 77
+        assert result["planner_source"] == "legacy_interpreter"
+        assert result["fallback_used"] is False

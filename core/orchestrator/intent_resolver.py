@@ -73,7 +73,17 @@ _SIGNALS: Dict[IntentType, Tuple[List[str], List[str]]] = {
             "sql", "query", "select", "generate sql", "write query", "generate query",
             "top ", "average", "highest", "lowest", "total", "sum of", "count of",
         ],
-        ["from table", "where clause", "join query", "fetch data", "run query"],
+        # "how many" / "number of" are weighted secondary (0.2), not primary —
+        # collision analysis found they tie 0.4-vs-0.4 with METADATA_LOOKUP's
+        # "schema", WORKFLOW's "workflow", RELATIONSHIP's "relationship",
+        # GOVERNANCE's "governance", etc. on phrases like "how many workflows
+        # do I have", and specificity/insertion-order tie-breaks then wrongly
+        # hand those to SQL_REQUEST. At secondary weight, a bare "how many X"
+        # with no other intent's keyword still clears SQL_REQUEST's own
+        # confidence floor (0.2 >= 0.15), but a genuine metadata/workflow/
+        # relationship/governance question keeps winning on its own stronger
+        # primary-keyword match instead of being overridden.
+        ["from table", "where clause", "join query", "fetch data", "run query", "how many", "number of"],
     ),
     IntentType.WORKFLOW: (
         ["workflow", "schedule", "automate", "run workflow"],

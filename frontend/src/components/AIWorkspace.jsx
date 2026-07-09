@@ -4357,6 +4357,17 @@ export default function AIWorkspace({
       handleEnginePlan()
       return
     }
+    // A selected live data source always routes through the Enterprise Composer —
+    // Composer + IntentResolver decide SQL/metadata/governance/dictionary/answer
+    // classification server-side; the frontend no longer pre-classifies this case
+    // with a regex. Mutual exclusion in the dataset/source pickers guarantees
+    // selectedDatasetId is null whenever selectedDataSourceId is set, so this
+    // never competes with the dataset-oriented path below.
+    if (overrideIntent === null && sections === null && proposal === null && selectedDataSourceId) {
+      handleComposerAsk(trimmed)
+      return
+    }
+    // ── Dataset-only workflow (no live source selected) — unchanged ──────────
     // Route catalog/metadata/governance questions to the Enterprise Composer API.
     if (overrideIntent === null && sections === null && proposal === null && isComposerIntent(trimmed)) {
       handleComposerAsk(trimmed)
@@ -4813,7 +4824,7 @@ export default function AIWorkspace({
                                 const tc    = DS_COLOR[type] || C.textSec
                                 const tbg   = DS_BG[type] || C.borderAlt
                                 return (
-                                  <div key={ds.id} onClick={() => { setSelectedDatasetId(ds.id); setDatasetExplicit(true); setDsPendingRun(null); setNoDsWarning(false); setDsPicker(false) }}
+                                  <div key={ds.id} onClick={() => { setSelectedDatasetId(ds.id); setSelectedDataSourceId(null); setDatasetExplicit(true); setDsPendingRun(null); setNoDsWarning(false); setDsPicker(false) }}
                                     style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: isSel ? 'rgba(99,102,241,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
                                     onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = C.borderAlt }}
                                     onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent' }}>
@@ -4907,7 +4918,7 @@ export default function AIWorkspace({
                             return filtered.map(src => {
                               const isSel = src.id === selectedDataSourceId
                               return (
-                                <div key={src.id} onClick={() => { setSelectedDataSourceId(src.id); setSourcePicker(false) }}
+                                <div key={src.id} onClick={() => { setSelectedDataSourceId(src.id); setSelectedDatasetId(null); setSourcePicker(false) }}
                                   style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', cursor: 'pointer', background: isSel ? 'rgba(99,102,241,0.08)' : 'transparent', borderBottom: `1px solid ${C.border}`, transition: 'background 0.1s' }}
                                   onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = C.borderAlt }}
                                   onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent' }}>
