@@ -167,6 +167,92 @@ class TestSupportedAnswers:
 
 
 # ---------------------------------------------------------------------------
+# live_query SQL-generation-refusal — the evidence shape
+# core.orchestrator.context_builder._live_query() returns when
+# generate_sql() refuses (no "status" key at all, unlike a real QueryResult).
+# Previously fell through to the status check and rendered
+# "status: None"; must now be detected before that and explained clearly.
+# ---------------------------------------------------------------------------
+
+class TestLiveQuerySqlGenerationRefusal:
+    def test_refusal_shows_clear_answer_via_reason(self):
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {
+                "executed": False,
+                "reason": "sql_generation_refused",
+                "explanation": [
+                    "Generation refused: Unresolved term(s) cannot be planned: clients, system.",
+                ],
+                "warnings": [
+                    {"type": "missing_measure", "severity": "MEDIUM",
+                     "message": "No measure candidate found for 'clients'."},
+                ],
+            }),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert answer.answer_type == AnswerType.LIVE_QUERY
+        assert "could not be translated into a sql query" in answer.answer.lower()
+        assert "unresolved term" in answer.answer.lower()
+        assert answer.confidence < 50
+
+    def test_refusal_shows_clear_answer_via_executed_false_only(self):
+        # "executed": False alone (no "reason" key) must also be detected —
+        # proves the "or" branch, not just the "reason" check.
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {"executed": False, "explanation": [], "warnings": []}),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert answer.answer_type == AnswerType.LIVE_QUERY
+        assert "could not be translated into a sql query" in answer.answer.lower()
+
+    def test_refusal_does_not_display_status_none(self):
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {
+                "executed": False,
+                "reason": "sql_generation_refused",
+                "explanation": ["Generation refused: No measures or dimensions resolved."],
+                "warnings": [],
+            }),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert "status: none" not in answer.answer.lower()
+        assert "None" not in answer.answer
+
+    def test_successful_live_query_answer_unchanged(self):
+        # Regression: a genuine QueryResult-shaped success dict (has "status",
+        # no "executed"/"reason" keys) must take the original path unchanged.
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {"execution_id": "abc123", "status": "success",
+                                  "row_count": 10, "columns": [{"name": "id"}], "duration_ms": 42,
+                                  "truncated": False}),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert answer.answer_type == AnswerType.LIVE_QUERY
+        assert "10 row" in answer.answer
+        assert answer.confidence == 95
+        assert "could not be translated" not in answer.answer.lower()
+        assert "status: none" not in answer.answer.lower()
+
+    def test_failed_execution_status_still_shows_status_value(self):
+        # Regression: a real QueryResult that executed but failed/blocked
+        # (has "status" != "success") must still take the original
+        # "did not complete successfully" path, unaffected by the new check.
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {"execution_id": "abc123", "status": "blocked",
+                                  "error": "live_query_enabled is not enabled for this source."}),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert answer.answer_type == AnswerType.LIVE_QUERY
+        assert "status: blocked" in answer.answer.lower()
+        assert "not enabled" in answer.answer.lower()
+
+
+# ---------------------------------------------------------------------------
 # Recommendation rules
 # ---------------------------------------------------------------------------
 

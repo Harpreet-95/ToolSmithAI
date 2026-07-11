@@ -316,6 +316,28 @@ def _explain_live_query(package) -> dict:
     data = item.data if item and isinstance(item.data, dict) else None
     if not data:
         return _no_evidence_result(AnswerType.LIVE_QUERY)
+
+    # SQL generation was refused before any execution was attempted — a
+    # distinct outcome from a QueryResult that executed and failed/blocked.
+    # This dict has no "status" key at all (see context_builder._live_query),
+    # so falling through to the status check below rendered "status: None".
+    if data.get("executed") is False or data.get("reason") == "sql_generation_refused":
+        reasons = list(data.get("explanation") or [])
+        warning_messages = [
+            w.get("message") for w in (data.get("warnings") or [])
+            if isinstance(w, dict) and w.get("message")
+        ]
+        details = reasons or warning_messages
+        answer = "This question could not be translated into a SQL query."
+        if details:
+            answer += " " + " ".join(details)
+        return {
+            "answer": answer.strip(),
+            "summary": "SQL could not be generated for this question.",
+            "answer_type": AnswerType.LIVE_QUERY, "confidence": 10,
+            "limitations": warning_messages or reasons or ["No SQL was generated or executed."],
+        }
+
     status = data.get("status")
     if status != "success":
         return {
