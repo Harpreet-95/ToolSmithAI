@@ -13,3 +13,7 @@ test_email_renderer.txt
 # Local SQLite runtime files
 *.db-shm
 *.db-wal
+
+*.db.*
+*.pre-m3-backup
+docs/validation/results/rollout_dry_run_m23.json
