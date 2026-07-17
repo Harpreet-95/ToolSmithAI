@@ -365,3 +365,222 @@ def test_unresolvable_question_refuses_without_executing(tmp_path, monkeypatch):
     assert data is not None
     assert data.get("executed") is False
     assert data.get("reason") == "sql_generation_refused"
+
+
+# ---------------------------------------------------------------------------
+# 7-11. Enterprise Implementation — CCPP Safe Enrollment Question Support.
+#
+# "Which classes/courses have the highest enrollment?" is intercepted
+# before plan_business_query ever runs — neither branch depends on the
+# generic semantic pipeline or on the source having any tables profiled at
+# all, since detection is purely a question-text pattern match
+# (core.semantic.concept_resolver.derive_analytics_intent) and the "classes"
+# SQL is a fixed, verified business model, not resolved from candidates.
+# ---------------------------------------------------------------------------
+
+def test_classes_enrollment_question_generates_correct_sql_and_executes(tmp_path, monkeypatch):
+    env(tmp_path, monkeypatch)
+    monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+
+    captured = {}
+
+    def _on_execute(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+
+    _wire_fake_connector(
+        monkeypatch,
+        description=[("ClassID",), ("ClassName",), ("enrolled_student_count",)],
+        rows=[(101, "Intro to Python", 42)],
+        on_execute=_on_execute,
+    )
+
+    req = OrchestratorRequest(
+        query="Which classes have the highest enrollment?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert data is not None
+    assert data["status"] == QueryStatus.SUCCESS.value
+
+    sql = data["generated_sql"]
+    assert "ADF_ClassSignups" in sql
+    assert "ADF_Class" in sql
+    assert "COUNT(DISTINCT" in sql and "StudentID" in sql
+    assert "CancelID" in sql and "IS NULL" in sql
+    assert "GROUP BY" in sql and "ClassID" in sql and "ClassName" in sql
+    assert "ORDER BY" in sql and "enrolled_student_count" in sql and "DESC" in sql
+    assert "TOP (10)" in sql
+    # Never touches the wrong tables.
+    assert "ADF_Enrollment_Tracking" not in sql
+    assert "ADF_Course" not in sql
+    assert "ADF_Path" not in sql
+
+    assert captured["sql"] == sql
+
+
+def test_courses_enrollment_question_returns_clarification_without_executing(tmp_path, monkeypatch):
+    env(tmp_path, monkeypatch)
+    monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+
+    def _forbidden_execute(self, *a, **k):
+        raise AssertionError("LiveQueryEngine.execute must not be called for the courses phrasing")
+    import core.live.query_engine as query_engine_module
+    monkeypatch.setattr(query_engine_module.LiveQueryEngine, "execute", _forbidden_execute)
+
+    def _forbidden_plan(*a, **k):
+        raise AssertionError("plan_business_query must not run for the courses phrasing — "
+                              "it would silently build the flawed Path-based query")
+    import data.query_planning_service as qps
+    monkeypatch.setattr(qps, "plan_business_query", _forbidden_plan)
+
+    req = OrchestratorRequest(
+        query="Which courses have the highest enrollment?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert data is not None
+    assert data.get("executed") is False
+    assert data.get("reason") == "ambiguous_enrollment_entity"
+    assert any("Did you mean: Which classes have the highest enrollment?" in e for e in data["explanation"])
+
+
+def test_classes_enrollment_question_still_blocked_when_live_query_disabled(tmp_path, monkeypatch):
+    env(tmp_path, monkeypatch, live_query_enabled=False)
+    monkeypatch.setattr(
+        datasource_service, "get_connection_config",
+        lambda sid, uid: _mssql_record(live_query_enabled=False),
+    )
+    opened = {"called": False}
+
+    def _track_open(self, config):
+        opened["called"] = True
+        raise AssertionError("open_connection must not be called when live_query_enabled is False")
+    monkeypatch.setattr(SQLServerConnector, "open_connection", _track_open)
+
+    req = OrchestratorRequest(
+        query="Which classes have the highest enrollment?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert data is not None
+    assert data["status"] == QueryStatus.BLOCKED.value
+    assert "not enabled" in data["error"].lower()
+    assert opened["called"] is False
+
+
+def test_unrelated_ranking_question_unaffected_by_enrollment_guard(tmp_path, monkeypatch):
+    # "revenue" ranking, not "enrollment" — must fall through to the normal
+    # pipeline exactly as before, proving the new guard is narrowly scoped.
+    env(tmp_path, monkeypatch)
+    monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+    _wire_fake_connector(
+        monkeypatch,
+        description=[("sum_amount",), ("status",)],
+        rows=[(1500.0, "Approved")],
+    )
+
+    req = OrchestratorRequest(
+        query="Which status has the highest revenue?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert data is not None
+    assert "generated_sql" in data
+    assert "ADF_ClassSignups" not in data["generated_sql"]
+
+
+# ---------------------------------------------------------------------------
+# 12-14. Safety correction — the CCPP enrollment override (both the "classes"
+# hardcoded SQL and the "courses" clarification) must only apply to the
+# verified CCPP source (params["database"] == "CCPP"), never to another
+# tenant's source purely from question text, and must fail closed (fall
+# through to the generic pipeline) when datasource identity can't be
+# confirmed.
+# ---------------------------------------------------------------------------
+
+def _spy_plan_business_query(monkeypatch):
+    import data.query_planning_service as qps
+    original_plan = qps.plan_business_query
+    calls = {"count": 0}
+
+    def _spy(*a, **k):
+        calls["count"] += 1
+        return original_plan(*a, **k)
+    monkeypatch.setattr(qps, "plan_business_query", _spy)
+    return calls
+
+
+def test_non_ccpp_source_classes_question_falls_through_to_generic_pipeline(tmp_path, monkeypatch):
+    env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        datasource_service, "get_connection_config",
+        lambda sid, uid: _mssql_record(params={"host": "db.internal", "database": "OtherCustomerDB"}),
+    )
+    calls = _spy_plan_business_query(monkeypatch)
+
+    req = OrchestratorRequest(
+        query="Which classes have the highest enrollment?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert calls["count"] == 1  # fell through to the generic pipeline, not the CCPP override
+    assert data is not None
+    assert data.get("reason") != "ambiguous_enrollment_entity"
+    generated_sql = data.get("generated_sql", "")
+    assert "ADF_ClassSignups" not in generated_sql
+    assert "ADF_Class" not in generated_sql
+
+
+def test_non_ccpp_source_courses_question_falls_through_to_generic_pipeline(tmp_path, monkeypatch):
+    env(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        datasource_service, "get_connection_config",
+        lambda sid, uid: _mssql_record(params={"host": "db.internal", "database": "OtherCustomerDB"}),
+    )
+    calls = _spy_plan_business_query(monkeypatch)
+
+    req = OrchestratorRequest(
+        query="Which courses have the highest enrollment?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert calls["count"] == 1  # fell through to the generic pipeline, not the CCPP clarification
+    assert data is not None
+    assert data.get("reason") != "ambiguous_enrollment_entity"
+    assert not any(
+        "Did you mean: Which classes have the highest enrollment?" in e
+        for e in (data.get("explanation") or [])
+    )
+
+
+def test_datasource_lookup_failure_fails_closed_and_falls_through(tmp_path, monkeypatch):
+    env(tmp_path, monkeypatch)
+
+    def _broken_lookup(sid, uid):
+        raise RuntimeError("simulated datasource lookup failure")
+    monkeypatch.setattr(datasource_service, "get_connection_config", _broken_lookup)
+    calls = _spy_plan_business_query(monkeypatch)
+
+    req = OrchestratorRequest(
+        query="Which classes have the highest enrollment?", source_id=1, user_id=_USER, params={},
+    )
+    data = _live_query(req)
+
+    assert calls["count"] == 1  # failed closed: no CCPP override, generic pipeline still ran
+    assert data is not None
+    assert data.get("reason") != "ambiguous_enrollment_entity"
+    generated_sql = data.get("generated_sql", "")
+    assert "ADF_ClassSignups" not in generated_sql
+    assert "ADF_Class" not in generated_sql
+
+
+def test_class_enrollment_ranking_entity_detection():
+    from core.orchestrator.context_builder import _class_enrollment_ranking_entity
+
+    assert _class_enrollment_ranking_entity("Which classes have the highest enrollment?") == "class"
+    assert _class_enrollment_ranking_entity("Which class has the most enrollment?") == "class"
+    assert _class_enrollment_ranking_entity("Which courses have the highest enrollment?") == "course"
+    assert _class_enrollment_ranking_entity("Which course has the most enrollment?") == "course"
+    assert _class_enrollment_ranking_entity("Which clients have the highest revenue?") is None
+    assert _class_enrollment_ranking_entity("how many students are there") is None

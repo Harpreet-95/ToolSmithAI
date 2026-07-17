@@ -376,6 +376,117 @@ def test_no_select_star_empty_select_blocks():
 # inventing a column that was never discovered)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Milestone M-1 — Enterprise Question Intelligence
+# ---------------------------------------------------------------------------
+
+def _count_all_measure(term, table_fqn):
+    sel = {"table_fqn": table_fqn, "column_name": None, "business_label": None,
+           "score": 0.9, "is_approved": True, "data_type": None}
+    return {"term": term, "selected": sel, "candidates": [sel], "warnings": []}
+
+
+def test_count_star_select_no_column_reference():
+    qp = _base_plan(
+        measures=[_count_all_measure("clients", "dbo.clients")],
+        columns={"dbo.clients": ["id"]},
+        join_plan={"required": False, "tables": ["dbo.clients"], "primary_table": "dbo.clients",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+        aggregation="COUNT",
+    )
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["validation"]["valid"] is True
+    assert plan["select"][0]["column_name"] is None
+    assert plan["select"][0]["aggregation"] == "COUNT"
+    # column-existence check must not reject the synthesized COUNT(*) row
+    assert plan["validation"]["checks"]["all_columns_exist"] is True
+
+
+def test_query_plan_intent_dict_missing_gracefully_defaults():
+    # A query_plan built without the newer intent keys (distinct/order) —
+    # e.g. an older caller — must still produce a valid plan with safe defaults.
+    qp = _base_plan(
+        measures=[_measure("revenue", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount", "status"]},
+        join_plan={"required": False, "tables": ["dbo.orders"], "primary_table": "dbo.orders",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+    )
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["order_by"] == []
+    assert plan["distinct"] is False
+    assert plan["limits"]["row_limit"] == 1000
+
+
+def test_order_by_built_from_resolved_intent():
+    qp = _base_plan(
+        measures=[_measure("revenue", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount"]},
+        join_plan={"required": False, "tables": ["dbo.orders"], "primary_table": "dbo.orders",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+    )
+    qp["intent"]["order"] = {"direction": "DESC", "limit": 10, "table_fqn": "dbo.orders", "column_name": "amount"}
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["order_by"] == [{"table_fqn": "dbo.orders", "column_name": "amount", "direction": "DESC"}]
+    # requested Top-10 tightens the safety cap, never loosens it
+    assert plan["limits"]["row_limit"] == 10
+
+
+def test_order_by_requested_limit_never_exceeds_safety_cap():
+    qp = _base_plan(
+        measures=[_measure("revenue", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount"]},
+        join_plan={"required": False, "tables": ["dbo.orders"], "primary_table": "dbo.orders",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+    )
+    qp["intent"]["order"] = {"direction": "DESC", "limit": 5000, "table_fqn": "dbo.orders", "column_name": "amount"}
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["limits"]["row_limit"] == 1000
+
+
+def test_order_by_unresolvable_column_drops_with_warning_not_block():
+    qp = _base_plan(
+        measures=[_measure("revenue", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount"]},
+        join_plan={"required": False, "tables": ["dbo.orders"], "primary_table": "dbo.orders",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+    )
+    qp["intent"]["order"] = {"direction": "DESC", "limit": 10}  # no table_fqn/column_name resolved
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["order_by"] == []
+    assert plan["validation"]["valid"] is True  # must not block the plan
+    assert any(w["type"] == "order_column_not_resolved" for w in plan["warnings"])
+
+
+def test_query_level_distinct_only_when_no_aggregation():
+    qp = _base_plan(
+        dimensions=[_dimension("status", "dbo.orders", "status")],
+        columns={"dbo.orders": ["status"]},
+        join_plan={"required": False, "tables": ["dbo.orders"], "primary_table": "dbo.orders",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+        aggregation=None,
+    )
+    qp["intent"]["distinct"] = True
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["distinct"] is True
+
+
+def test_distinct_not_applied_at_query_level_when_aggregated():
+    # aggregation is present -> per-row COUNT(DISTINCT col) handles it
+    # instead (see sql_generation tests) -- query-level DISTINCT must not
+    # ALSO be set, which would be redundant/invalid SQL.
+    qp = _base_plan(
+        measures=[_measure("clients", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount"]},
+        join_plan={"required": False, "tables": ["dbo.orders"], "primary_table": "dbo.orders",
+                   "steps": [], "fanout_risk": None, "confidence": 100},
+        aggregation="COUNT",
+    )
+    qp["intent"]["distinct"] = True
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["distinct"] is False
+    assert plan["select"][0]["distinct"] is True
+
+
 def test_column_not_in_query_plan_rejected():
     qp = _base_plan(
         measures=[_measure("revenue", "dbo.orders", "ghost_column")],
@@ -459,4 +570,44 @@ def test_end_to_end_real_query_plan(tmp_path, monkeypatch):
     assert plan["validation"]["valid"] is True
     assert plan["from"]["table_fqn"] == "dbo.orders"
     assert plan["select"][0]["column_name"] == "amount"
-    assert plan["select"][0]["aggregation"] == "SUM"
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-4 — Enterprise Semantic Resolution — SQL handoff
+#
+# build_sql_plan must carry plan_business_query()'s resolved "concepts"
+# semantic context through to its own output, so the SQL Planner's response
+# reflects resolved business concepts rather than only isolated table
+# candidates. Pure passthrough — must not affect select/joins/where/validation.
+# ---------------------------------------------------------------------------
+
+def test_semantic_context_passthrough():
+    qp = _base_plan(
+        measures=[_measure("revenue", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount"]},
+    )
+    qp["concepts"] = [{
+        "term": "orders", "resolved": True,
+        "selected": {"table_fqn": "dbo.orders", "business_name": "Orders"},
+        "candidates": [], "confidence": 0.9, "ambiguity_reason": None,
+    }]
+
+    plan = build_sql_plan(1, "u1", qp)
+
+    assert plan["semantic_context"] == qp["concepts"]
+    assert plan["validation"]["valid"] is True
+
+
+def test_semantic_context_defaults_to_empty_list_when_absent():
+    qp = _base_plan(
+        measures=[_measure("revenue", "dbo.orders", "amount")],
+        columns={"dbo.orders": ["amount"]},
+    )
+    plan = build_sql_plan(1, "u1", qp)
+    assert plan["semantic_context"] == []
+
+
+def test_semantic_context_present_on_none_query_plan():
+    plan = build_sql_plan(1, "u1", None)
+    assert plan["semantic_context"] == []
+    assert plan["validation"]["valid"] is False

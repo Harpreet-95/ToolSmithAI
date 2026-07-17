@@ -8,6 +8,8 @@ need no temp-DB fixture. A final test proves that by patching get_connection
 to raise and confirming the function still succeeds.
 """
 import pathlib
+import re
+
 import pytest
 
 import data.db as db_module
@@ -369,6 +371,100 @@ def test_filter_value_not_inlined_in_sql():
 # 16 — None join_type defaults to INNER JOIN
 # ===========================================================================
 
+# ===========================================================================
+# Milestone M-1 — Enterprise Question Intelligence
+# ===========================================================================
+
+def test_count_star_renders_without_column_reference():
+    select = [{"table_fqn": "main.clients", "column_name": None,
+               "alias": "row_count", "aggregation": "COUNT", "distinct": False}]
+    plan = _valid_plan(select=select, from_=_ORDERS_FROM)
+    result = generate_sql(1, "user1", plan)
+
+    sql = result["sql"]
+    assert "COUNT(*)" in sql
+    assert "COUNT(*) AS" in sql
+    # No fabricated column reference anywhere for the count-all row
+    assert "None" not in sql
+
+
+def test_count_distinct_renders_for_aggregated_row():
+    select = [{"table_fqn": "main.orders", "column_name": "customer_id",
+               "alias": "count_customer_id", "aggregation": "COUNT", "distinct": True}]
+    plan = _valid_plan(select=select, from_=_ORDERS_FROM)
+    result = generate_sql(1, "user1", plan)
+
+    sql = result["sql"]
+    assert "COUNT(DISTINCT" in sql
+    assert '"main"."orders"."customer_id"' in sql
+
+
+def test_query_level_distinct_prefix():
+    select = [{"table_fqn": "main.orders", "column_name": "status",
+               "alias": "status", "aggregation": None, "distinct": False}]
+    plan = _valid_plan(select=select, from_=_ORDERS_FROM)
+    plan["distinct"] = True
+    result = generate_sql(1, "user1", plan)
+
+    sql = result["sql"]
+    assert sql.strip().upper().startswith("SELECT DISTINCT")
+
+
+def test_order_by_clause_sqlite():
+    order_by = [{"table_fqn": "main.orders", "column_name": "amount", "direction": "DESC"}]
+    plan = _valid_plan(select=_ORDERS_SELECT, from_=_ORDERS_FROM, limits={"row_limit": 10})
+    plan["order_by"] = order_by
+    result = generate_sql(1, "user1", plan, dialect="sqlite")
+
+    sql = result["sql"]
+    assert "ORDER BY" in sql
+    assert '"main"."orders"."amount" DESC' in sql
+    assert "LIMIT 10" in sql
+    # ORDER BY must appear before the trailing LIMIT clause
+    assert sql.index("ORDER BY") < sql.index("LIMIT 10")
+
+
+def test_order_by_clause_mssql_uses_top_not_limit():
+    order_by = [{"table_fqn": "main.orders", "column_name": "amount", "direction": "DESC"}]
+    plan = _valid_plan(select=_ORDERS_SELECT, from_=_ORDERS_FROM, limits={"row_limit": 10})
+    plan["order_by"] = order_by
+    result = generate_sql(1, "user1", plan, dialect="mssql")
+
+    sql = result["sql"]
+    assert "TOP (10)" in sql
+    assert "LIMIT" not in sql.upper()
+    assert "ORDER BY" in sql
+    assert '[main].[orders].[amount] DESC' in sql
+
+
+def test_order_by_ascending():
+    order_by = [{"table_fqn": "main.orders", "column_name": "amount", "direction": "ASC"}]
+    plan = _valid_plan(select=_ORDERS_SELECT, from_=_ORDERS_FROM)
+    plan["order_by"] = order_by
+    result = generate_sql(1, "user1", plan)
+    assert '"main"."orders"."amount" ASC' in result["sql"]
+
+
+def test_no_order_by_when_absent_unchanged_behavior():
+    plan = _valid_plan(select=_ORDERS_SELECT, from_=_ORDERS_FROM)
+    result = generate_sql(1, "user1", plan)
+    assert "ORDER BY" not in result["sql"]
+
+
+def test_between_date_filter_renders_parameterized():
+    where = [
+        {"table_fqn": "main.orders", "column_name": "order_date",
+         "operator": "BETWEEN", "value": ["2026-07-01", "2026-07-31"]},
+    ]
+    plan = _valid_plan(select=_ORDERS_SELECT, from_=_ORDERS_FROM, where=where)
+    result = generate_sql(1, "user1", plan)
+
+    sql = result["sql"]
+    assert "BETWEEN ? AND ?" in sql
+    assert result["parameters"]["values"] == ["2026-07-01", "2026-07-31"]
+    assert "2026-07-01" not in sql  # never inlined
+
+
 def test_null_join_type_defaults_to_inner():
     join_step = dict(_JOIN_STEP, join_type=None)
     select = [
@@ -381,3 +477,143 @@ def test_null_join_type_defaults_to_inner():
     result = generate_sql(1, "user1", plan)
 
     assert "INNER JOIN" in result["sql"]
+
+
+# ===========================================================================
+# Enterprise Implementation — Fan-in Join SQL Rendering
+#
+# join_plan edges are already oriented in true FK direction by
+# recommend_best_join_path (left_table references right_table) — that is
+# NOT the same as "the side already in the query always comes first". A
+# fan-in graph (two tables independently joining to a shared parent, e.g.
+# ADF_Enrollment_Tracking -> ADF_Path <- ADF_Course) produces a second edge
+# whose LEFT side is the new table and RIGHT side is already joined, which
+# used to make _build_join_clauses re-join the already-present table a
+# second time (unaliased/duplicate) while never joining the actually-new one.
+# ===========================================================================
+
+_FANIN_FROM = {"table_fqn": "main.a"}
+_FANIN_SELECT = [
+    {"table_fqn": "main.a", "column_name": None, "alias": "row_count", "aggregation": "COUNT"},
+    {"table_fqn": "main.c", "column_name": "name", "alias": "name", "aggregation": None},
+]
+# A -> B (left=a new, right=b new)
+_FANIN_EDGE_1 = {
+    "join_type": "INNER", "left_table": "main.a", "left_column": "b_id",
+    "right_table": "main.b", "right_column": "id",
+    "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 90,
+}
+# C -> B (left=c new, right=b ALREADY joined by edge 1 — the fan-in edge)
+_FANIN_EDGE_2 = {
+    "join_type": "INNER", "left_table": "main.c", "left_column": "b_id",
+    "right_table": "main.b", "right_column": "id",
+    "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 100,
+}
+
+
+def _joined_tables(sql: str) -> list[str]:
+    """Every quoted table reference immediately after FROM/JOIN, in order."""
+    return re.findall(r'(?:FROM|JOIN)\s+("(?:[^"]+)"(?:\."(?:[^"]+)")*)', sql)
+
+
+# ---------------------------------------------------------------------------
+# 1. Fan-in graph: A -> B <- C. Renders B once, includes C exactly once.
+# ---------------------------------------------------------------------------
+
+def test_fanin_graph_joins_shared_table_once_and_includes_both_sides():
+    plan = _valid_plan(
+        select=_FANIN_SELECT, from_=_FANIN_FROM, joins=[_FANIN_EDGE_1, _FANIN_EDGE_2],
+    )
+    result = generate_sql(1, "user1", plan)
+    sql = result["sql"]
+    assert sql is not None
+
+    tables = _joined_tables(sql)
+    assert tables.count('"main"."b"') == 1
+    assert tables.count('"main"."c"') == 1
+    assert tables.count('"main"."a"') == 1
+    assert len(tables) == 3  # FROM a, JOIN b, JOIN c — no fourth/duplicate clause
+
+    # C's join must be oriented correctly regardless of edge direction.
+    assert '"main"."c"."b_id" = "main"."b"."id"' in sql
+
+
+# ---------------------------------------------------------------------------
+# 2. Existing linear graph: A -> B -> C remains unchanged and valid.
+# ---------------------------------------------------------------------------
+
+def test_linear_multi_hop_graph_unchanged():
+    edge_1 = {
+        "join_type": "INNER", "left_table": "main.a", "left_column": "b_id",
+        "right_table": "main.b", "right_column": "id",
+        "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 100,
+    }
+    edge_2 = {
+        "join_type": "INNER", "left_table": "main.b", "left_column": "c_id",
+        "right_table": "main.c", "right_column": "id",
+        "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 100,
+    }
+    plan = _valid_plan(select=_FANIN_SELECT, from_=_FANIN_FROM, joins=[edge_1, edge_2])
+    result = generate_sql(1, "user1", plan)
+    sql = result["sql"]
+
+    tables = _joined_tables(sql)
+    assert tables == ['"main"."a"', '"main"."b"', '"main"."c"']
+    assert '"main"."a"."b_id" = "main"."b"."id"' in sql
+    assert '"main"."b"."c_id" = "main"."c"."id"' in sql
+
+
+# ---------------------------------------------------------------------------
+# 3. Repeated table without self-join intent is not emitted twice.
+# ---------------------------------------------------------------------------
+
+def test_redundant_edge_between_two_already_joined_tables_not_duplicated():
+    edge_ab = {
+        "join_type": "INNER", "left_table": "main.a", "left_column": "b_id",
+        "right_table": "main.b", "right_column": "id",
+        "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 100,
+    }
+    edge_ac = {
+        "join_type": "INNER", "left_table": "main.a", "left_column": "c_id",
+        "right_table": "main.c", "right_column": "id",
+        "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 100,
+    }
+    # Both main.b and main.c are already joined by the time this edge is
+    # processed — a structurally redundant duplicate, not a self-join.
+    edge_bc_redundant = {
+        "join_type": "INNER", "left_table": "main.b", "left_column": "c_id2",
+        "right_table": "main.c", "right_column": "id2",
+        "cardinality": "MANY_TO_ONE", "fanout_risk": "LOW", "confidence": 100,
+    }
+    plan = _valid_plan(
+        select=_FANIN_SELECT, from_=_FANIN_FROM,
+        joins=[edge_ab, edge_ac, edge_bc_redundant],
+    )
+    result = generate_sql(1, "user1", plan)
+    sql = result["sql"]
+
+    tables = _joined_tables(sql)
+    assert tables.count('"main"."b"') == 1
+    assert tables.count('"main"."c"') == 1
+    assert len(tables) == 3  # FROM a, JOIN b, JOIN c — redundant 3rd edge dropped
+    assert '"main"."c2"' not in sql
+
+
+# ---------------------------------------------------------------------------
+# 4. Every qualified table referenced in SELECT/GROUP BY appears in FROM/JOIN.
+# ---------------------------------------------------------------------------
+
+def test_every_select_and_group_by_table_present_in_from_join():
+    group_by = [{"table_fqn": "main.c", "column_name": "name"}]
+    plan = _valid_plan(
+        select=_FANIN_SELECT, from_=_FANIN_FROM,
+        joins=[_FANIN_EDGE_1, _FANIN_EDGE_2], group_by=group_by,
+    )
+    result = generate_sql(1, "user1", plan)
+    sql = result["sql"]
+
+    joined = set(_joined_tables(sql))
+    referenced = {f'"{row["table_fqn"].split(".")[0]}"."{row["table_fqn"].split(".")[1]}"'
+                  for row in _FANIN_SELECT if row.get("column_name")}
+    referenced |= {f'"{g["table_fqn"].split(".")[0]}"."{g["table_fqn"].split(".")[1]}"' for g in group_by}
+    assert referenced <= joined
