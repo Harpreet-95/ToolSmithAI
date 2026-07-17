@@ -22,7 +22,12 @@ _METADATA_RE = re.compile(
 )
 _REPORT_GEN_RE = re.compile(r"\b(generate|create|build|make)\b.*\breport\b", re.IGNORECASE)
 _ANALYTICAL_RE = re.compile(
-    r"\btop\s+\d+\b|\btotal\b|\bsum of\b|\baverage\b|\bhighest\b|\blowest\b|\bcount of\b",
+    r"\btop\s+\d+\b|\btotal\b|\bsum of\b|\baverage\b|\bhighest\b|\blowest\b|\bcount of\b|"
+    # Milestone M-1 (Enterprise Question Intelligence) additions — kept in
+    # sync with core/orchestrator/intent_resolver.py's SQL_REQUEST primary
+    # keyword additions so ExecutionPlanner's own analytical detection
+    # doesn't disagree with IntentResolver's routing for the same question.
+    r"\bdistinct\b|\bunique\b|\bbottom\s+\d+\b|\blatest\b|\bnewest\b|\bearliest\b|\boldest\b",
     re.IGNORECASE,
 )
 
