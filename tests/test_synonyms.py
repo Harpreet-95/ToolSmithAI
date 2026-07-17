@@ -28,6 +28,7 @@ from data.search_service import (
     _expand_tokens,
     search_metadata,
 )
+from data.vocabulary_service import normalize_term, expand_concept
 
 
 # ---------------------------------------------------------------------------
@@ -344,3 +345,64 @@ def test_synonym_backward_compat_projects_still_found():
     assert any("Project" in n for n in names), (
         f"Backward compat broken: 'Projects' returned no project results. Got: {names}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-5, Part 2 — shared vocabulary_service (normalization + expansion
+# used by BOTH search_metadata (above) and the SQL-answering path in
+# data/query_planning_service.py, so a term expands identically everywhere)
+# ---------------------------------------------------------------------------
+
+def test_normalize_term_lowercases_and_squashes_whitespace():
+    assert normalize_term("  Clients  ") == "client"
+    assert normalize_term("Job   Order") == "job order"
+
+
+def test_normalize_term_strips_punctuation():
+    assert normalize_term("client's") == "client"
+    assert normalize_term("job-order") == "job order"
+
+
+def test_normalize_term_singular_plural():
+    assert normalize_term("clients") == normalize_term("client") == "client"
+    assert normalize_term("companies") == "company"
+    assert normalize_term("class") == "class"  # ends in "ss" — not stripped
+    assert normalize_term("courses") == "course"
+
+
+def test_expand_concept_uses_same_synonym_dictionary_as_search():
+    """The SQL-answering path's expansion must reuse the exact same
+    _SYNONYM_EXPANDER search_metadata already uses — not a second,
+    possibly-diverging dictionary."""
+    expanded = expand_concept("clients")
+    assert "client" in expanded
+    assert "customer" in expanded
+    assert "account" in expanded
+    # Same synonym set _expand_tokens would produce for the singular form.
+    assert set(expanded) - {"clients"} == set(_expand_tokens(["client"])) - {"clients"}
+
+
+def test_expand_concept_multi_word_phrase_stays_intact():
+    """'job order' must expand as one phrase, not decompose into 'job' +
+    'order' (which would incorrectly pull in the unrelated invoice/billing/
+    finance/purchase/order synonym group)."""
+    expanded = expand_concept("job order")
+    assert "job order" in expanded
+    assert "opening" in expanded
+    assert "position" in expanded
+    assert "invoice" not in expanded
+    assert "billing" not in expanded
+
+
+def test_expand_concept_deterministic_same_input_same_output():
+    assert expand_concept("candidates") == expand_concept("candidates")
+    assert expand_concept("Candidates") == expand_concept("candidates")
+
+
+def test_expand_concept_empty_input():
+    assert expand_concept("") == []
+    assert expand_concept("   ") == []
+
+
+def test_expand_concept_unknown_term_returns_normalized_self():
+    assert expand_concept("zzz_nonexistent_term") == ["zzz_nonexistent_term"]
