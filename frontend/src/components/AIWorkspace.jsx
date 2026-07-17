@@ -3755,6 +3755,7 @@ const ANSWER_TYPE_COLORS = {
   live_metadata:      { bg: 'rgba(99,102,241,0.10)',  text: '#6366f1', border: 'rgba(99,102,241,0.25)'  },
   restricted:         { bg: 'rgba(248,113,113,0.10)', text: '#f87171', border: 'rgba(248,113,113,0.25)' },
   unknown:            { bg: 'rgba(148,163,184,0.10)', text: '#94a3b8', border: 'rgba(148,163,184,0.25)' },
+  clarification_needed: { bg: 'rgba(245,158,11,0.10)', text: '#f59e0b', border: 'rgba(245,158,11,0.25)' },
 }
 
 function BusinessAnswerBlock({ answer: ba, C }) {
@@ -3817,6 +3818,41 @@ function BusinessAnswerBlock({ answer: ba, C }) {
 // otherwise renders as a generic "Catalog metadata retrieved..." fallback).
 // Note: enterprise_answer.confidence is already 0-100 (unlike business_answer's
 // 0-1 scale) — do not multiply by 100 again.
+// Milestone M-25 — Enterprise Answer Value Rendering: bounded preview table
+// for grouped/ranked/tabular result_preview rows. Row objects already carry
+// business-labeled keys from core/answering/result_formatter.py — no raw
+// column identifiers to hide here.
+function ResultPreviewTable({ rows, C }) {
+  if (!rows?.length) return null
+  const shown = rows.slice(0, 10)
+  const columns = Object.keys(shown[0])
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: '10px', marginBottom: '12px', overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.74rem' }}>
+        <thead>
+          <tr>
+            {columns.map(col => (
+              <th key={col} style={{ textAlign: 'left', padding: '6px 10px', color: C.textMuted, fontWeight: '700', borderBottom: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>{col}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((row, i) => (
+            <tr key={i}>
+              {columns.map(col => (
+                <td key={col} style={{ padding: '6px 10px', color: C.text, borderBottom: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>{String(row[col] ?? '')}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > shown.length && (
+        <div style={{ fontSize: '0.66rem', color: C.textMuted, marginTop: '6px' }}>+{rows.length - shown.length} more row(s) not shown.</div>
+      )}
+    </div>
+  )
+}
+
 function EnterpriseAnswerBlock({ answer: ea, C }) {
   if (!ea) return null
   const typeColors = ANSWER_TYPE_COLORS[ea.answer_type] ?? ANSWER_TYPE_COLORS.metadata_lookup
@@ -3825,6 +3861,12 @@ function EnterpriseAnswerBlock({ answer: ea, C }) {
   const citations  = ea.citations ?? []
   const limitations = ea.limitations ?? []
   const nextActions = ea.next_actions ?? []
+  const resultPreview = ea.result_preview ?? []
+  const appliedFilters = ea.applied_filters ?? []
+  const dateContext = ea.date_context ?? null
+  const sourceTables = ea.source_tables ?? []
+  const sourceColumns = ea.source_columns ?? []
+  const hasTechnicalDetails = sourceTables.length > 0 || sourceColumns.length > 0
 
   return (
     <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '20px', marginBottom: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
@@ -3842,6 +3884,33 @@ function EnterpriseAnswerBlock({ answer: ea, C }) {
       {/* summary */}
       {ea.summary && (
         <div style={{ fontSize: '0.72rem', color: C.textMuted, lineHeight: 1.45, marginBottom: '12px' }}>{ea.summary}</div>
+      )}
+
+      {/* applied filters + date context */}
+      {(appliedFilters.length > 0 || dateContext) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px', marginBottom: '12px' }}>
+          {dateContext && (
+            <span title={`${dateContext.start ?? ''} – ${dateContext.end ?? ''}`} style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.18)', borderRadius: '20px', padding: '3px 9px', fontSize: '0.65rem', color: C.textSec, fontWeight: '500' }}>
+              📅 {dateContext.label}
+            </span>
+          )}
+          {appliedFilters.map((f, i) => (
+            <span key={i} style={{ background: 'rgba(148,163,184,0.10)', border: `1px solid ${C.border}`, borderRadius: '20px', padding: '3px 9px', fontSize: '0.65rem', color: C.textSec, fontWeight: '500' }}>
+              {f.label} {f.operator} {Array.isArray(f.value) ? f.value.join(' – ') : String(f.value ?? '')}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* result preview (grouped/ranked/tabular rows) */}
+      <ResultPreviewTable rows={resultPreview} C={C} />
+
+      {/* truncation notice */}
+      {ea.truncation_notice && (
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-start', fontSize: '0.70rem', color: C.textMuted, lineHeight: 1.45, marginBottom: '12px' }}>
+          <span style={{ flexShrink: 0, marginTop: '1px', color: '#f59e0b' }}>&#9432;</span>
+          <span>{ea.truncation_notice}</span>
+        </div>
       )}
 
       {/* confidence row */}
@@ -3889,6 +3958,183 @@ function EnterpriseAnswerBlock({ answer: ea, C }) {
             </div>
           ))}
         </div>
+      )}
+
+      {/* technical details — raw table/column identifiers, hidden from the
+          primary answer by design, available here for anyone who needs them */}
+      {hasTechnicalDetails && (
+        <details style={{ marginTop: nextActions.length ? '12px' : 0, borderTop: `1px solid ${C.border}`, paddingTop: '10px' }}>
+          <summary style={{ cursor: 'pointer', fontSize: '0.68rem', color: C.textMuted, fontWeight: '600' }}>Technical details</summary>
+          <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {sourceTables.length > 0 && (
+              <div style={{ fontSize: '0.68rem', color: C.textSec }}>
+                <span style={{ color: C.textMuted }}>Source table(s): </span>{sourceTables.join(', ')}
+              </div>
+            )}
+            {sourceColumns.length > 0 && (
+              <div style={{ fontSize: '0.68rem', color: C.textSec, wordBreak: 'break-word' }}>
+                <span style={{ color: C.textMuted }}>Source column(s): </span>{sourceColumns.join(', ')}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+// Renders EnterpriseAnswer.clarification (Phase 6.6 Enterprise Clarification
+// Intelligence) — shown instead of EnterpriseAnswerBlock whenever answer_type
+// is "clarification_needed". clarification.options is a flat list that can
+// span multiple ambiguous terms (each option carries its own `term`), so
+// options are grouped by term and one selection is required per group before
+// resubmission is allowed. The backend matches a resubmitted selection by
+// {term, table_fqn, column_name} (core.orchestrator.context_builder
+// ._apply_clarification_overrides) — NOT by the option's `id`, which exists
+// only as a UI list key.
+export function ClarificationCard({ clarification, wsInput, C, onBack, onResolve, onCancel, resubmitted }) {
+  const options = clarification?.options ?? []
+  const [picked, setPicked]           = useState({})   // term -> option
+  const [expanded, setExpanded]       = useState({})   // option.id -> bool
+  const [submitting, setSubmitting]   = useState(false)
+
+  const groups = {}
+  for (const opt of options) {
+    const t = opt.term ?? ''
+    if (!groups[t]) groups[t] = []
+    groups[t].push(opt)
+  }
+  const termNames = Object.keys(groups)
+  const allPicked = termNames.length > 0 && termNames.every(t => picked[t])
+
+  function handleSubmit(e) {
+    e.preventDefault()
+    if (!allPicked || submitting) return
+    setSubmitting(true)
+    const selections = termNames.map(t => ({
+      term:        picked[t].term,
+      table_fqn:   picked[t].table_fqn,
+      column_name: picked[t].column_name ?? null,
+    }))
+    onResolve(selections)
+  }
+
+  function handleCancel() {
+    if (submitting) return
+    setSubmitting(true)
+    onCancel()
+  }
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '20px', marginBottom: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)', animation: 'ws-fadeup 0.35s ease' }}>
+
+      {/* header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span style={{ fontSize: '0.57rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.14em' }}>Clarification Needed</span>
+      </div>
+
+      {/* original question */}
+      {wsInput && (
+        <div style={{ fontSize: '0.72rem', color: C.textMuted, marginBottom: '10px' }}>For: <span style={{ color: C.text, fontWeight: '600' }}>{wsInput}</span></div>
+      )}
+
+      {/* stale/invalid-selection notice */}
+      {resubmitted && (
+        <div role="status" style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '9px 13px', background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: '9px', marginBottom: '12px', fontSize: '0.74rem', color: C.text, lineHeight: 1.45 }}>
+          <span style={{ flexShrink: 0, marginTop: '1px', color: '#f87171' }}>&#9888;</span>
+          <span>That selection couldn&apos;t be applied. Please choose again below.</span>
+        </div>
+      )}
+
+      {/* reason */}
+      <div style={{ fontSize: '0.86rem', fontWeight: '500', color: C.text, lineHeight: 1.55, marginBottom: '16px' }}>
+        {clarification?.reason || 'This question could be answered in more than one way.'}
+      </div>
+
+      {termNames.length === 0 ? (
+        // empty options defensive state
+        <>
+          <div style={{ fontSize: '0.78rem', color: C.textMuted, lineHeight: 1.5, marginBottom: '16px' }}>
+            We couldn&apos;t find specific options to choose from. Please try rephrasing your question.
+          </div>
+          <button onClick={onBack} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '9px 16px', fontSize: '0.78rem', fontWeight: '600', color: C.textSec, cursor: 'pointer', fontFamily: FONT }}>
+            Try a different question
+          </button>
+        </>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          {termNames.map(term => (
+            <fieldset key={term} role="radiogroup" aria-label={`Choose a match for "${term}"`} style={{ border: `1px solid ${C.border}`, borderRadius: '10px', padding: '12px 14px', marginBottom: '12px' }}>
+              <legend style={{ fontSize: '0.68rem', fontWeight: '700', color: C.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '0 4px' }}>For &quot;{term}&quot;</legend>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
+                {groups[term].map(opt => {
+                  const isChecked = picked[term]?.id === opt.id
+                  return (
+                    <div key={opt.id} style={{ border: `1px solid ${isChecked ? '#6366f1' : C.border}`, borderRadius: '9px', padding: '10px 12px', background: isChecked ? 'rgba(99,102,241,0.06)' : 'transparent' }}>
+                      <label style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', cursor: 'pointer' }}>
+                        <input
+                          type="radio"
+                          name={`clarify_${term}`}
+                          value={opt.id}
+                          checked={isChecked}
+                          onChange={() => setPicked(p => ({ ...p, [term]: opt }))}
+                          style={{ marginTop: '3px', flexShrink: 0 }}
+                        />
+                        <span style={{ fontSize: '0.82rem', fontWeight: '600', color: C.text }}>{opt.label}</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setExpanded(x => ({ ...x, [opt.id]: !x[opt.id] }))}
+                        aria-expanded={!!expanded[opt.id]}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0 0 24px', color: C.textMuted, fontFamily: FONT, fontSize: '0.65rem', fontWeight: '600', textDecoration: 'underline' }}
+                      >
+                        {expanded[opt.id] ? 'Hide technical details' : 'Show technical details'}
+                      </button>
+                      {expanded[opt.id] && (
+                        <div style={{ marginLeft: '24px', marginTop: '6px', fontSize: '0.68rem', color: C.textMuted, fontFamily: MONO, lineHeight: 1.6 }}>
+                          <div>{opt.table_fqn}</div>
+                          {opt.column_name && <div>Column: {opt.column_name}</div>}
+                          {typeof opt.score === 'number' && <div>Confidence: {opt.score.toFixed(2)}</div>}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </fieldset>
+          ))}
+
+          {clarification?.expected_impact && (
+            <div style={{ fontSize: '0.70rem', color: C.textMuted, lineHeight: 1.45, marginBottom: '14px' }}>{clarification.expected_impact}</div>
+          )}
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="submit"
+              disabled={!allPicked || submitting}
+              style={{ background: (!allPicked || submitting) ? C.border : '#6366f1', border: 'none', borderRadius: '9px', padding: '9px 18px', fontSize: '0.78rem', fontWeight: '700', color: (!allPicked || submitting) ? C.textMuted : '#fff', cursor: (!allPicked || submitting) ? 'not-allowed' : 'pointer', fontFamily: FONT }}
+            >
+              {submitting ? 'Submitting…' : termNames.length > 1 ? 'Use these options' : 'Use this option'}
+            </button>
+            <button
+              type="button"
+              onClick={handleCancel}
+              disabled={submitting}
+              style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: '9px', padding: '9px 16px', fontSize: '0.78rem', fontWeight: '600', color: C.textSec, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: FONT }}
+            >
+              Cancel clarification
+            </button>
+            <button
+              type="button"
+              onClick={onBack}
+              disabled={submitting}
+              style={{ background: 'none', border: 'none', padding: '9px 4px', fontSize: '0.78rem', fontWeight: '600', color: C.textMuted, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: FONT }}
+            >
+              Ask a different question
+            </button>
+          </div>
+        </form>
       )}
     </div>
   )
@@ -4024,7 +4270,7 @@ function ComposerReportCard({ result, wsInput, C, onBack, onOpenReport }) {
   )
 }
 
-function ComposerResultPanel({ result, wsInput, C, onBack, onOpenReport }) {
+export function ComposerResultPanel({ result, wsInput, C, onBack, onOpenReport, onResolveClarification, onCancelClarification, clarificationResubmitted }) {
   const [evidenceExpanded, setEvidenceExpanded] = useState(false)
 
   if (!result) return null
@@ -4048,6 +4294,23 @@ function ComposerResultPanel({ result, wsInput, C, onBack, onOpenReport }) {
   // Route report_generation intent to the dedicated enterprise report card.
   if (intentType === 'report_generation') {
     return <ComposerReportCard result={result} wsInput={wsInput} C={C} onBack={onBack} onOpenReport={onOpenReport} />
+  }
+
+  // Phase 6.6 Enterprise Clarification Intelligence — a clarification_needed
+  // answer gets its own focused card (business-friendly options, no unrelated
+  // Evidence/Governance/Services sections) instead of the generic panel body.
+  if (enterpriseAnswer?.answer_type === 'clarification_needed' && enterpriseAnswer.clarification) {
+    return (
+      <ClarificationCard
+        clarification={enterpriseAnswer.clarification}
+        wsInput={wsInput}
+        C={C}
+        onBack={onBack}
+        onResolve={onResolveClarification}
+        onCancel={onCancelClarification}
+        resubmitted={clarificationResubmitted}
+      />
+    )
   }
 
   const statusColor = status === 'success' ? '#10b981' : status === 'partial' ? '#f59e0b' : '#f87171'
@@ -4280,6 +4543,7 @@ export default function AIWorkspace({
   const [dsSearch,          setDsSearch]          = useState('')
   const [composerResult,    setComposerResult]    = useState(null)
   const [composerLoading,   setComposerLoading]   = useState(false)
+  const [clarificationResubmitted, setClarificationResubmitted] = useState(false)
   const [dataSourceList,      setDataSourceList]      = useState([])
   const [selectedDataSourceId, setSelectedDataSourceId] = useState(null)
   const [sourcePicker,        setSourcePicker]        = useState(false)
@@ -4373,13 +4637,14 @@ export default function AIWorkspace({
     } finally { setEnginePlanLoading(false) }
   }
 
-  async function handleComposerAsk(query, datasetId = null) {
+  async function handleComposerAsk(query, datasetId = null, clarificationPayload = null) {
     setWsError(null)
     setWsResult(null)
     setComposerResult(null)
     setWsProposal(null)
     setComposerLoading(true)
     setBackToComposer(false)
+    setClarificationResubmitted(!!clarificationPayload)
     execStartedAtRef.current = Date.now()
     try {
       const sessionId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
@@ -4389,6 +4654,8 @@ export default function AIWorkspace({
         selected_data_source: selectedDataSourceId ?? null,
       }
       if (datasetId != null) payload.dataset_id = datasetId
+      if (clarificationPayload?.clarification_selection) payload.clarification_selection = clarificationPayload.clarification_selection
+      if (clarificationPayload?.cancel_clarification) payload.cancel_clarification = true
       const data = await askComposer(token, payload)
       setComposerResult(data)
     } catch (err) {
@@ -4397,6 +4664,19 @@ export default function AIWorkspace({
     } finally {
       setComposerLoading(false)
     }
+  }
+
+  // Phase 6.6 Enterprise Clarification Intelligence — resubmit the original
+  // question unchanged, plus the structured selection or cancellation. The
+  // backend is stateless: it re-derives the query plan from `message` and
+  // only reads clarification_selection/cancel_clarification (no session
+  // continuity required).
+  function handleClarificationResolve(selections) {
+    handleComposerAsk(wsInput, null, { clarification_selection: selections })
+  }
+
+  function handleClarificationCancel() {
+    handleComposerAsk(wsInput, null, { cancel_clarification: true })
   }
 
   async function handleSaveTool() {
@@ -4529,7 +4809,7 @@ export default function AIWorkspace({
     setWsResult(null); setWsError(null); setWsProposal(null); setWsProposalError(null); setWsInput(''); setWsExecDurationMs(null)
     setEnginePlan(null); setSavedToolId(null); setToolStatus(null)
     setEngineBusy(null); setToast(null); setShowRawJson(false); setPlanDatasetId(null); setBackToComposer(false); setWsRunSource(null)
-    setComposerResult(null); setComposerLoading(false)
+    setComposerResult(null); setComposerLoading(false); setClarificationResubmitted(false)
     // savedWorkflows + engineTools intentionally preserved — they are the persistent library
   }
 
@@ -5157,6 +5437,9 @@ export default function AIWorkspace({
               C={C}
               onBack={handleReset}
               onOpenReport={onOpenReport}
+              onResolveClarification={handleClarificationResolve}
+              onCancelClarification={handleClarificationCancel}
+              clarificationResubmitted={clarificationResubmitted}
             />
           )}
 
