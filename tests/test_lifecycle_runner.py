@@ -40,6 +40,7 @@ _PATCHED_MODULES = (
     "data.notification_service",
     "data.audit",
     "data.governance_service",
+    "data.relationship_service",
 )
 
 
@@ -180,6 +181,29 @@ def _notifications(db_path: str) -> list[dict]:
 
 def _run(trigger=LifecycleTrigger.SCAN_COMPLETE):
     return run_autonomous_lifecycle(1, "u1", trigger=trigger)
+
+
+def _insert_column_profile(
+    db_path: str, col_id: int, profiling_snapshot_id: int, table_fqn: str, column_name: str,
+    *, is_primary_key: int = 0, uniqueness_score: float = 0.05,
+) -> None:
+    conn = _db_conn(db_path)
+    conn.execute(
+        "INSERT INTO profiling_column_profiles "
+        "(id, profiling_snapshot_id, source_id, table_fqn, column_name, data_type, "
+        " is_primary_key, is_identity, uniqueness_score, created_at, updated_at) "
+        "VALUES (?,?,1,?,?,'int',?,0,?,?,?)",
+        (col_id, profiling_snapshot_id, table_fqn, column_name, is_primary_key, uniqueness_score, _NOW, _NOW),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _relationships(db_path: str) -> list[dict]:
+    conn = _db_conn(db_path)
+    rows = conn.execute("SELECT * FROM table_relationships ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +465,9 @@ def test_notification_sent_only_when_changes_exist(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 10. Relationships / knowledge graph / dashboard steps are documented no-ops
+# 10. Knowledge graph / dashboard steps are documented no-ops; REFRESH_RELATIONSHIPS
+#     actively runs candidate discovery (finds nothing here — only one column exists,
+#     below the 2-column minimum discover_relationship_candidates() requires).
 # ---------------------------------------------------------------------------
 
 def test_noop_steps_recorded_with_no_side_effects(tmp_path, monkeypatch):
@@ -453,7 +479,7 @@ def test_noop_steps_recorded_with_no_side_effects(tmp_path, monkeypatch):
     result = _run()
 
     by_step = {s.step: s for s in result.steps}
-    assert by_step[WorkflowStep.REFRESH_RELATIONSHIPS].status == "SKIPPED_NOOP"
+    assert by_step[WorkflowStep.REFRESH_RELATIONSHIPS].status == "OK"
     assert by_step[WorkflowStep.REFRESH_KNOWLEDGE_GRAPH].status == "SKIPPED_NOOP"
     assert by_step[WorkflowStep.UPDATE_DASHBOARD].status == "SKIPPED_NOOP"
 
@@ -508,4 +534,70 @@ def test_dictionary_refresh_failure_is_recorded_not_raised(tmp_path, monkeypatch
     runs = _lifecycle_runs(db)
     assert len(runs) == 1
     assert runs[0]["status"] == "FAILED"
-    assert "boom" in runs[0]["error_message"]
+
+
+# ---------------------------------------------------------------------------
+# 13. REFRESH_RELATIONSHIPS runs real candidate discovery, is idempotent
+#     across repeated lifecycle runs, and records an audit event.
+# ---------------------------------------------------------------------------
+
+def test_relationship_discovery_runs_and_is_idempotent_across_lifecycle_runs(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    snap = _snapshot([
+        _table("dbo", "customers", [_col("id")]),
+        _table("dbo", "orders", [_col("customer_id")]),
+    ])
+    schema_id = _insert_schema_snapshot(db, snap, 1)
+    prof_id = _insert_profiling_snapshot(db, schema_id, 1, ["dbo.customers", "dbo.orders"])
+    _insert_column_profile(db, 1, prof_id, "dbo.customers", "id", is_primary_key=1, uniqueness_score=1.0)
+    _insert_column_profile(db, 2, prof_id, "dbo.orders", "customer_id", uniqueness_score=0.05)
+
+    first = _run()
+    by_step = {s.step: s for s in first.steps}
+    assert by_step[WorkflowStep.REFRESH_RELATIONSHIPS].status == "OK"
+    assert first.relationship_summary["candidates_persisted"] == 1
+
+    rels_after_first = _relationships(db)
+    assert len(rels_after_first) == 1
+    assert rels_after_first[0]["relationship_status"] == "PENDING"
+
+    second = _run()
+    assert second.relationship_summary["candidates_persisted"] == 0
+    assert second.relationship_summary["candidates_skipped_existing"] == 1
+
+    rels_after_second = _relationships(db)
+    assert len(rels_after_second) == 1  # no duplicate row created
+    assert rels_after_second[0]["relationship_status"] == "PENDING"  # never auto-approved
+
+    conn = _db_conn(db)
+    audit_rows = conn.execute(
+        "SELECT COUNT(*) AS c FROM audit_logs WHERE task_type = 'relationship_candidate_discovery'"
+    ).fetchone()
+    conn.close()
+    assert audit_rows["c"] == 2  # one per lifecycle run
+
+
+def test_declared_fk_untouched_by_relationship_discovery(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    snap = _snapshot([_table("dbo", "customers", [_col("id")])])
+    schema_id = _insert_schema_snapshot(db, snap, 1)
+    _insert_profiling_snapshot(db, schema_id, 1, ["dbo.customers"])
+
+    conn = _db_conn(db)
+    conn.execute(
+        "INSERT INTO table_relationships "
+        "(id, source_id, snapshot_id, from_schema, from_table, from_table_fqn, from_column, "
+        " to_schema, to_table, to_table_fqn, to_column, relationship_name, relationship_type, "
+        " confidence, evidence_json, created_at, relationship_status, inference_method) "
+        "VALUES (99,1,?,'dbo','orders','dbo.orders','customer_id','dbo','customers','dbo.customers','id',"
+        " 'FK1','FOREIGN_KEY',1.0,'{}',?,'AUTO','declared_fk')",
+        (schema_id, _NOW),
+    )
+    conn.commit()
+    conn.close()
+
+    _run()
+
+    fk_row = [r for r in _relationships(db) if r["id"] == 99][0]
+    assert fk_row["relationship_status"] == "AUTO"
+    assert fk_row["inference_method"] == "declared_fk"

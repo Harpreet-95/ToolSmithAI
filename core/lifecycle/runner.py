@@ -77,8 +77,9 @@ def run_autonomous_lifecycle(
         result.steps.append(StepResult(step=WorkflowStep.REFRESH_DOMAINS, status="SKIPPED_NO_CHANGES"))
         result.steps.append(StepResult(step=WorkflowStep.REFRESH_ENTITIES, status="SKIPPED_NO_CHANGES"))
         result.steps.append(StepResult(
-            step=WorkflowStep.REFRESH_RELATIONSHIPS, status="SKIPPED_NOOP",
-            detail="FK relationships already refreshed automatically by schema_service.run_discovery()",
+            step=WorkflowStep.REFRESH_RELATIONSHIPS, status="SKIPPED_NO_CHANGES",
+            detail="Declared FK relationships already refreshed automatically by "
+                   "schema_service.run_discovery(); no schema change to re-run candidate discovery for",
         ))
         result.steps.append(StepResult(
             step=WorkflowStep.REFRESH_KNOWLEDGE_GRAPH, status="SKIPPED_NOOP",
@@ -198,11 +199,31 @@ def run_autonomous_lifecycle(
         ))
     after_entity = get_entity_values(source_id, affected)
 
-    # --- REFRESH_RELATIONSHIPS / REFRESH_KNOWLEDGE_GRAPH — legitimate no-ops ---
-    result.steps.append(StepResult(
-        step=WorkflowStep.REFRESH_RELATIONSHIPS, status="SKIPPED_NOOP",
-        detail="FK relationships already refreshed automatically by schema_service.run_discovery()",
-    ))
+    # --- REFRESH_RELATIONSHIPS ---------------------------------------------------
+    # Declared FK relationships are already refreshed automatically by
+    # schema_service.run_discovery(). This step covers the remaining piece: inferred
+    # (non-FK) relationship candidates, persisted as PENDING and never auto-trusted.
+    t0 = time.monotonic()
+    try:
+        from data.relationship_service import discover_relationship_candidates
+        result.relationship_summary = discover_relationship_candidates(source_id, user_id)
+        summary = result.relationship_summary or {}
+        result.steps.append(StepResult(
+            step=WorkflowStep.REFRESH_RELATIONSHIPS, status="OK",
+            detail=(
+                f"{summary.get('candidates_persisted', 0)} candidate(s) persisted as PENDING, "
+                f"{summary.get('candidates_discarded_low_confidence', 0)} discarded (low confidence), "
+                f"{summary.get('candidates_skipped_existing', 0)} already covered"
+            ),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        ))
+    except Exception as exc:
+        logger.exception("lifecycle: relationship discovery failed for source_id=%s", source_id)
+        result.steps.append(StepResult(
+            step=WorkflowStep.REFRESH_RELATIONSHIPS, status="FAILED", detail=str(exc),
+        ))
+
+    # --- REFRESH_KNOWLEDGE_GRAPH — legitimate no-op ---------------------------
     result.steps.append(StepResult(
         step=WorkflowStep.REFRESH_KNOWLEDGE_GRAPH, status="SKIPPED_NOOP",
         detail="Knowledge graph is computed live on read; no persisted artifact to refresh",

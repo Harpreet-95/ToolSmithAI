@@ -91,6 +91,7 @@ class LifecycleRunResult:
     dictionary_summary: dict | None = None
     domain_summary: dict | None = None
     entity_summary: dict | None = None
+    relationship_summary: dict | None = None
     review_tasks_created: int = 0
     notifications_sent: int = 0
     error_message: str | None = None
@@ -127,6 +128,7 @@ class LifecycleRunResult:
             "dictionary_summary": self.dictionary_summary,
             "domain_summary": self.domain_summary,
             "entity_summary": self.entity_summary,
+            "relationship_summary": self.relationship_summary,
             "review_tasks_created": self.review_tasks_created,
             "notifications_sent": self.notifications_sent,
             "error_message": self.error_message,
