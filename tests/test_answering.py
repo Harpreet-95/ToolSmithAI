@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from cryptography.fernet import Fernet
 
 os.environ.setdefault("ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -250,6 +251,363 @@ class TestLiveQuerySqlGenerationRefusal:
         assert answer.answer_type == AnswerType.LIVE_QUERY
         assert "status: blocked" in answer.answer.lower()
         assert "not enabled" in answer.answer.lower()
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-25 — Enterprise Answer Value Rendering.
+#
+# core.orchestrator.context_builder._live_query()'s success branch now
+# attaches a "business_plan" dict (see _build_business_plan) alongside the
+# QueryResult fields. These tests hand-build that combined evidence shape and
+# assert the resulting EnterpriseAnswer renders real business language
+# instead of a technical row/column-count sentence, across every result
+# shape in the milestone brief. A live_query dict with NO "business_plan" key
+# (the raw-SQL trusted-caller bypass, exercised above in
+# TestLiveQuerySqlGenerationRefusal) is intentionally left untouched — the
+# fallback branch reproduces the original count-only sentence.
+# ---------------------------------------------------------------------------
+
+def _business_plan(**overrides):
+    base = {
+        "aggregation": None, "aggregation_target": None, "distinct": False,
+        "entity_label": "clients", "measure_label": None,
+        "select": [], "where": [], "group_by": [], "order_by": [],
+        "order_intent": None, "dimension_labels": {}, "date_context": None,
+        "status_label": None, "source_tables": ["dbo.Client"],
+    }
+    base.update(overrides)
+    return base
+
+
+def _success_data(business_plan, **overrides):
+    base = {
+        "execution_id": "exec-1", "status": "success", "duration_ms": 12,
+        "row_count": 1, "columns": [], "rows": [], "truncated": False,
+        "business_plan": business_plan,
+    }
+    base.update(overrides)
+    return base
+
+
+def _build_live_query_answer(data):
+    pkg = _package(IntentType.SQL_REQUEST, [_item("live_query", data)])
+    return AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+
+class TestLiveQueryBusinessValueRendering:
+    def test_scalar_count(self):
+        plan = _business_plan(
+            aggregation="COUNT", aggregation_target="entity_count", entity_label="clients",
+            select=[{"table_fqn": "dbo.Client", "column_name": None, "alias": "row_count",
+                     "aggregation": "COUNT", "distinct": False}],
+        )
+        data = _success_data(plan, row_count=1, columns=[{"name": "row_count"}],
+                              rows=[{"row_count": 2218}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "There are 2,218 clients."
+        assert answer.actual_value == 2218
+        assert answer.business_entity == "clients"
+        assert answer.aggregation == "COUNT"
+
+    def test_scalar_count_distinct(self):
+        plan = _business_plan(
+            aggregation="COUNT", aggregation_target="distinct_entity_count", distinct=True,
+            entity_label="clients",
+            select=[{"table_fqn": "dbo.Client", "column_name": "client_id", "alias": "count_client_id",
+                     "aggregation": "COUNT", "distinct": True}],
+        )
+        data = _success_data(plan, row_count=1, columns=[{"name": "count_client_id"}],
+                              rows=[{"count_client_id": 150}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "There are 150 unique clients."
+        assert answer.actual_value == 150
+
+    def test_scalar_count_with_status_filter(self):
+        plan = _business_plan(
+            aggregation="COUNT", entity_label="clients", status_label="Active",
+            where=[{"table_fqn": "dbo.Client", "column_name": "status", "operator": "=", "value": "Active"}],
+            select=[{"table_fqn": "dbo.Client", "column_name": None, "alias": "row_count",
+                     "aggregation": "COUNT", "distinct": False}],
+        )
+        data = _success_data(plan, rows=[{"row_count": 42}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "There are 42 active clients."
+        assert len(answer.applied_filters) == 1
+
+    def test_scalar_sum(self):
+        plan = _business_plan(aggregation="SUM", measure_label="payroll",
+                               select=[{"table_fqn": "dbo.Payroll", "column_name": "amount",
+                                        "alias": "sum_amount", "aggregation": "SUM", "distinct": False}])
+        data = _success_data(plan, rows=[{"sum_amount": 1240550}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "The total payroll is 1,240,550."
+        assert answer.actual_value == 1240550
+        assert answer.measure == "payroll"
+        assert "$" not in answer.answer  # no governed currency metadata exists — never invent a symbol
+
+    def test_scalar_avg(self):
+        plan = _business_plan(aggregation="AVG", measure_label="order amount")
+        data = _success_data(plan, rows=[{"avg_amount": 523.4}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "The average order amount is 523.40."
+
+    def test_scalar_min_max(self):
+        plan = _business_plan(aggregation="MIN", measure_label="order amount")
+        data = _success_data(plan, rows=[{"min_amount": 12}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "The minimum order amount is 12."
+
+    def test_grouped_result(self):
+        plan = _business_plan(
+            aggregation="COUNT", aggregation_target="entity_count", entity_label="clients",
+            group_by=[{"table_fqn": "dbo.Client", "column_name": "region"}],
+            dimension_labels={"region": "Region"},
+            select=[
+                {"table_fqn": "dbo.Client", "column_name": "region", "alias": "region",
+                 "aggregation": None, "distinct": False},
+                {"table_fqn": "dbo.Client", "column_name": None, "alias": "row_count",
+                 "aggregation": "COUNT", "distinct": False},
+            ],
+        )
+        data = _success_data(
+            plan, row_count=2, columns=[{"name": "region"}, {"name": "row_count"}],
+            rows=[{"region": "West", "row_count": 10}, {"region": "East", "row_count": 5}],
+        )
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "Clients are grouped below by Region."
+        assert len(answer.result_preview) == 2
+        # raw column/alias keys must not leak into the preview unlabeled
+        assert "region" not in answer.result_preview[0]
+        assert "row_count" not in answer.result_preview[0]
+        assert "Region" in answer.result_preview[0]
+
+    def test_ranked_result(self):
+        plan = _business_plan(
+            aggregation="SUM", measure_label="revenue", entity_label="clients",
+            order_intent={"direction": "DESC", "limit": 10},
+            dimension_labels={"name": "Client Name"},
+            select=[
+                {"table_fqn": "dbo.Client", "column_name": "name", "alias": "name",
+                 "aggregation": None, "distinct": False},
+                {"table_fqn": "dbo.Orders", "column_name": "amount", "alias": "sum_amount",
+                 "aggregation": "SUM", "distinct": False},
+            ],
+        )
+        rows = [{"name": f"Client {i}", "sum_amount": 1000 * i} for i in range(10, 0, -1)]
+        data = _success_data(plan, row_count=10, truncated=True, rows=rows)
+        answer = _build_live_query_answer(data)
+        assert answer.answer.startswith("The top 10 clients by revenue are shown below.")
+        assert "truncated" in answer.answer.lower()
+        assert answer.truncation_notice is not None
+        assert len(answer.result_preview) == 10
+
+    def test_tabular_result(self):
+        plan = _business_plan(entity_label="orders",
+                               select=[{"table_fqn": "dbo.Orders", "column_name": "id", "alias": "id",
+                                        "aggregation": None, "distinct": False}])
+        data = _success_data(plan, row_count=3, rows=[{"id": 1}, {"id": 2}, {"id": 3}])
+        answer = _build_live_query_answer(data)
+        assert "3" in answer.answer
+        assert "orders" in answer.answer
+        assert answer.result_preview
+
+    def test_empty_result_with_filters(self):
+        plan = _business_plan(
+            entity_label="clients",
+            where=[{"table_fqn": "dbo.Client", "column_name": "status", "operator": "=", "value": "Closed"}],
+        )
+        data = _success_data(plan, row_count=0, rows=[])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "No matching clients were found for the selected filters."
+        assert answer.result_preview == []
+
+    def test_empty_result_without_filters(self):
+        plan = _business_plan(entity_label="clients")
+        data = _success_data(plan, row_count=0, rows=[])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "No matching clients were found."
+
+    def test_null_scalar_result(self):
+        plan = _business_plan(aggregation="SUM", measure_label="order amount")
+        data = _success_data(plan, row_count=1, rows=[{"sum_amount": None}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "The query completed, but no value was available for order amount."
+        assert answer.actual_value is None
+        assert answer.limitations
+
+    def test_null_scalar_is_distinct_from_empty(self):
+        # Empty (0 rows) and a NULL aggregate (1 row, NULL value) are
+        # different outcomes and must not share an answer.
+        null_plan = _business_plan(aggregation="SUM", measure_label="order amount")
+        empty_plan = _business_plan(entity_label="orders")
+        null_answer = _build_live_query_answer(_success_data(null_plan, row_count=1, rows=[{"sum_amount": None}]))
+        empty_answer = _build_live_query_answer(_success_data(empty_plan, row_count=0, rows=[]))
+        assert null_answer.answer != empty_answer.answer
+
+    def test_date_context_and_applied_filters(self):
+        plan = _business_plan(
+            aggregation="SUM", measure_label="payroll",
+            where=[{"table_fqn": "dbo.Payroll", "column_name": "pay_date", "operator": "BETWEEN",
+                    "value": ["2026-07-01", "2026-07-31"]}],
+            date_context={"label": "this month", "start": "2026-07-01", "end": "2026-07-31"},
+        )
+        data = _success_data(plan, rows=[{"sum_amount": 1240550}])
+        answer = _build_live_query_answer(data)
+        assert answer.date_context == {"label": "this month", "start": "2026-07-01", "end": "2026-07-31"}
+        assert len(answer.applied_filters) == 1
+        assert answer.applied_filters[0]["label"] == "Pay Date"
+
+    def test_execution_failure_not_shown_as_zero_result(self):
+        # Regression: a real failure must never render like an empty/zero
+        # business answer — this is the pre-existing non-success branch,
+        # untouched by the business_plan/result_formatter changes.
+        data = {"execution_id": "e1", "status": "failed", "error": "Connection timed out."}
+        answer = _build_live_query_answer(data)
+        assert "no matching" not in answer.answer.lower()
+        assert "did not complete successfully" in answer.answer.lower()
+
+    def test_raw_identifiers_hidden_from_primary_answer_text(self):
+        plan = _business_plan(
+            aggregation="COUNT", entity_label="clients",
+            select=[{"table_fqn": "dbo.Client", "column_name": None, "alias": "row_count",
+                     "aggregation": "COUNT", "distinct": False}],
+            source_tables=["dbo.Client"],
+        )
+        data = _success_data(plan, rows=[{"row_count": 5}])
+        answer = _build_live_query_answer(data)
+        assert "dbo.Client" not in answer.answer
+        assert "row_count" not in answer.answer
+        # raw identifiers are still available, just not in the primary text
+        assert answer.source_tables == ["dbo.Client"]
+
+    def test_clarification_resumed_final_answer_uses_same_templates(self):
+        # A clarification-resumed question re-enters _live_query()'s success
+        # branch exactly like any other query — no special-cased answer path
+        # exists or should exist for it.
+        plan = _business_plan(
+            aggregation="COUNT", aggregation_target="entity_count", entity_label="active clients",
+            select=[{"table_fqn": "dbo.ADF_Clients", "column_name": None, "alias": "row_count",
+                     "aggregation": "COUNT", "distinct": False}],
+        )
+        data = _success_data(plan, rows=[{"row_count": 87}])
+        answer = _build_live_query_answer(data)
+        assert answer.answer == "There are 87 active clients."
+
+
+# ---------------------------------------------------------------------------
+# Milestone Phase 6.6 — Enterprise Clarification Intelligence.
+#
+# core.orchestrator.context_builder._live_query() returns a
+# "clarification_required" evidence shape (see there) whenever
+# query_planning_service's own ranking left a measure/dimension ambiguous
+# (selected=None, an "ambiguous_*" warning, >=2 ranked candidates) instead
+# of guessing. These tests exercise the resulting EnterpriseAnswer directly
+# against that hand-built evidence shape, the same convention as
+# TestLiveQuerySqlGenerationRefusal above.
+# ---------------------------------------------------------------------------
+
+_AMBIGUOUS_DATASETS = [
+    ("clients", [
+        {"table_fqn": "dbo.active_clients", "column_name": None, "business_label": "Active Clients", "score": 0.62},
+        {"table_fqn": "dbo.legacy_clients", "column_name": None, "business_label": "Historical Clients", "score": 0.60},
+        {"table_fqn": "dbo.staffing_clients", "column_name": None, "business_label": "Staffing Clients", "score": 0.59},
+    ]),
+    ("payroll", [
+        {"table_fqn": "dbo.payroll_current", "column_name": None, "business_label": "Current Payroll", "score": 0.58},
+        {"table_fqn": "dbo.payroll_archive", "column_name": None, "business_label": "Archived Payroll", "score": 0.55},
+    ]),
+    ("candidates", [
+        {"table_fqn": "dbo.candidate_pool", "column_name": None, "business_label": "Candidate Pool", "score": 0.57},
+        {"table_fqn": "dbo.candidate_pipeline", "column_name": None, "business_label": "Candidate Pipeline", "score": 0.56},
+    ]),
+    ("invoices", [
+        {"table_fqn": "dbo.invoices_ar", "column_name": None, "business_label": "Accounts Receivable Invoices", "score": 0.60},
+        {"table_fqn": "dbo.invoices_billing", "column_name": None, "business_label": "Billing Invoices", "score": 0.59},
+    ]),
+    ("projects", [
+        {"table_fqn": "dbo.projects_active", "column_name": None, "business_label": "Active Projects", "score": 0.61},
+        {"table_fqn": "dbo.projects_closed", "column_name": None, "business_label": "Closed Projects", "score": 0.60},
+    ]),
+]
+
+
+class TestClarificationNeeded:
+    @pytest.mark.parametrize("term,candidates", _AMBIGUOUS_DATASETS)
+    def test_ambiguous_entity_count_returns_clarification(self, term, candidates):
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {
+                "executed": False,
+                "reason": "clarification_required",
+                "question": f"how many {term}",
+                "ambiguous_terms": [{"term": term, "kind": "measure", "candidates": candidates}],
+            }),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert answer.answer_type == AnswerType.CLARIFICATION_NEEDED
+        assert answer.confidence == 0
+        assert answer.clarification is not None
+        assert len(answer.clarification["options"]) == len(candidates)
+        for option, candidate in zip(answer.clarification["options"], candidates):
+            assert option["label"] == candidate["business_label"]
+            assert option["table_fqn"] == candidate["table_fqn"]
+        assert term in answer.clarification["reason"]
+        assert "no sql" in " ".join(answer.limitations).lower()
+        # Never silently executes — the answer text asks, it doesn't guess.
+        assert "which would you like to use" in answer.answer.lower()
+
+    def test_no_business_label_falls_back_to_humanized_table_name(self):
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {
+                "executed": False,
+                "reason": "clarification_required",
+                "question": "how many widgets",
+                "ambiguous_terms": [{
+                    "term": "widgets", "kind": "measure",
+                    "candidates": [
+                        {"table_fqn": "dbo.widget_orders", "column_name": None, "business_label": None, "score": 0.5},
+                        {"table_fqn": "dbo.widget_returns", "column_name": None, "business_label": None, "score": 0.49},
+                    ],
+                }],
+            }),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        labels = [o["label"] for o in answer.clarification["options"]]
+        assert labels == ["Widget Orders", "Widget Returns"]
+
+    def test_multiple_ambiguous_terms_in_one_question(self):
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {
+                "executed": False,
+                "reason": "clarification_required",
+                "question": "clients by region",
+                "ambiguous_terms": [
+                    {"term": "clients", "kind": "measure", "candidates": _AMBIGUOUS_DATASETS[0][1]},
+                    {"term": "region", "kind": "dimension", "candidates": [
+                        {"table_fqn": "dbo.region_current", "column_name": "region", "business_label": "Region", "score": 0.5},
+                        {"table_fqn": "dbo.region_legacy", "column_name": "region_code", "business_label": "Legacy Region", "score": 0.48},
+                    ]},
+                ],
+            }),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+
+        assert answer.answer_type == AnswerType.CLARIFICATION_NEEDED
+        assert len(answer.clarification["options"]) == 5
+        assert {o["term"] for o in answer.clarification["options"]} == {"clients", "region"}
+
+    def test_high_confidence_no_clarification_unchanged(self):
+        # Regression: a normal successful live query must not be affected by
+        # the new branch at all.
+        pkg = _package(IntentType.SQL_REQUEST, [
+            _item("live_query", {"execution_id": "abc123", "status": "success",
+                                  "row_count": 3, "columns": [{"name": "id"}], "duration_ms": 12,
+                                  "truncated": False}),
+        ])
+        answer = AnswerPlanner().build(_strategy(strategy_type=StrategyType.SQL_REQUIRED), pkg)
+        assert answer.answer_type == AnswerType.LIVE_QUERY
+        assert answer.clarification is None
 
 
 # ---------------------------------------------------------------------------

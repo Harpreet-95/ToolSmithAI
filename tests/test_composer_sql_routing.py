@@ -72,7 +72,7 @@ def env(tmp_path, monkeypatch):
     """Seed one mssql source owning dbo.sales with columns covering all
     three required test phrases without cross-resolution:
       amount          (metric, "Sales Value")   -> resolves "sales"/"value"
-      customer_count  (metric, "Customers")     -> exact-matches "customers"
+      product_count   (metric, "Products")      -> unrelated decoy column
       revenue_tier    (dimension, "Revenue Tier") -> resolves "revenue"
       region          (dimension, "Region")       -> resolves "region"
       order_month     (dimension, "Order Month")  -> resolves "month"
@@ -122,7 +122,15 @@ def env(tmp_path, monkeypatch):
     columns = [
         # (id, column_name, is_metric, is_dimension, business_label, cardinality_tier)
         (101, "amount",         1, 0, "Sales Value",  "HIGH"),
-        (102, "customer_count", 1, 0, "Customers",    "HIGH"),
+        # Milestone M-5, Part 2: "clients" and "customers" are a governed
+        # synonym pair (data/synonyms.json) now wired into the SQL-answering
+        # path, so a "product_count"/"Products" decoy (unrelated to
+        # clients/customers) is used here instead of the former
+        # "customer_count"/"Customers" one, which would now legitimately
+        # (and correctly) cross-resolve with "clients" via that synonym
+        # group — this fixture is verifying Count/Distinct SQL generation,
+        # not client/customer disambiguation.
+        (102, "product_count",  1, 0, "Products",     "HIGH"),
         (103, "revenue_tier",   0, 1, "Revenue Tier", "LOW"),
         (104, "region",         0, 1, "Region",       "LOW"),
         (105, "order_month",    0, 1, "Order Month",  "LOW"),
@@ -145,6 +153,42 @@ def env(tmp_path, monkeypatch):
             "VALUES (1,1,'dbo.sales',?,?,?,?,0,0,0,1,'rule_based',?,?)",
             (name, label, is_metric, is_dim, _NOW, _NOW),
         )
+
+    # Milestone M-1 (Enterprise Question Intelligence) additions — a real
+    # date column and a real status column so date-intelligence/status-filter
+    # end-to-end tests have something genuine to resolve against.
+    conn.execute(
+        "INSERT INTO profiling_column_profiles "
+        "(id, profiling_snapshot_id, source_id, table_fqn, column_name, data_type, "
+        " is_primary_key, is_identity, uniqueness_score, is_nullable, null_percentage, "
+        " cardinality_tier, pii_name_heuristic, pii_confirmed, semantic_type, created_at, updated_at) "
+        "VALUES (107,1,1,'dbo.sales','order_date','TEXT',0,0,0.9,0,0.0,'HIGH',0,0,'DATE',?,?)",
+        (_NOW, _NOW),
+    )
+    conn.execute(
+        "INSERT INTO data_dictionary_columns "
+        "(source_id, snapshot_id, table_fqn, column_name, business_label, "
+        " is_metric, is_dimension, is_date, is_id, pii_risk, is_approved, "
+        " generation_method, created_at, updated_at) "
+        "VALUES (1,1,'dbo.sales','order_date','Order Date',0,1,1,0,0,1,'rule_based',?,?)",
+        (_NOW, _NOW),
+    )
+    conn.execute(
+        "INSERT INTO profiling_column_profiles "
+        "(id, profiling_snapshot_id, source_id, table_fqn, column_name, data_type, "
+        " is_primary_key, is_identity, uniqueness_score, is_nullable, null_percentage, "
+        " cardinality_tier, pii_name_heuristic, pii_confirmed, semantic_type, created_at, updated_at) "
+        "VALUES (108,1,1,'dbo.sales','status','TEXT',0,0,0.02,0,0.0,'LOW',0,0,'STATUS',?,?)",
+        (_NOW, _NOW),
+    )
+    conn.execute(
+        "INSERT INTO data_dictionary_columns "
+        "(source_id, snapshot_id, table_fqn, column_name, business_label, "
+        " is_metric, is_dimension, is_date, is_id, pii_risk, is_approved, "
+        " generation_method, created_at, updated_at) "
+        "VALUES (1,1,'dbo.sales','status','Status',0,1,0,0,0,1,'rule_based',?,?)",
+        (_NOW, _NOW),
+    )
     conn.commit()
     conn.close()
     return db_path
@@ -359,11 +403,23 @@ class TestHowManyClientsRoutesThroughComposer:
     fall back to a report generated from an unrelated CSV dataset."""
 
     def test_resolves_sql_request_and_executes_through_live_query_engine(self, tmp_path, monkeypatch):
+        # Milestone Phase 6.2 note: this fixture's `dbo.sales` table has no
+        # "clients"-named table, only a `client_count` metric column — under
+        # Aggregation Shape Correctness, "How many clients" now correctly
+        # refuses rather than count that decoy column (see
+        # TestQuestionIntelligenceEndToEnd.test_distinct_count_generates_
+        # count_distinct_sql for that exact regression test). "How many
+        # sales are there?" is used here instead — "sales" IS the real
+        # table name, with no primary key in this fixture, so it correctly
+        # falls back to bare COUNT(*) — preserving this test's original
+        # purpose: proving SQL_REQUEST intent resolution and live execution
+        # wiring both work end to end through the real composer_ask() path,
+        # not a fallback to a report generated from an unrelated CSV dataset.
         env(tmp_path, monkeypatch)
         monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
-        _wire_fake_connector(monkeypatch, description=[("sum_client_count",)], rows=[(42,)])
+        _wire_fake_connector(monkeypatch, description=[("row_count",)], rows=[(42,)])
 
-        result = _ask("How many clients are in the system?")
+        result = _ask("How many sales are there?")
 
         assert result["resolved_intent"]["intent_type"] == IntentType.SQL_REQUEST.value
         assert "live_query" in result["services_selected"]
@@ -372,7 +428,16 @@ class TestHowManyClientsRoutesThroughComposer:
         )
         assert live_evidence["data"]["status"] == QueryStatus.SUCCESS.value
         assert live_evidence["data"]["generated_sql"]
-        assert "client_count" in live_evidence["data"]["generated_sql"].lower()
+        assert "COUNT(*)" in live_evidence["data"]["generated_sql"]
+        assert "dbo" in live_evidence["data"]["generated_sql"].lower()
+        assert "sales" in live_evidence["data"]["generated_sql"].lower()
+
+        # Milestone M-25 — Enterprise Answer Value Rendering: a bare COUNT(*)
+        # renders as real business language, not a row/column-count sentence.
+        enterprise_answer = result["enterprise_answer"]
+        assert enterprise_answer["answer"] == "There are 42 sales."
+        assert enterprise_answer["actual_value"] == 42
+        assert "row(s)" not in enterprise_answer["answer"]
 
     def test_returns_enterprise_answer_with_live_query_citation(self, tmp_path, monkeypatch):
         env(tmp_path, monkeypatch)
@@ -417,6 +482,116 @@ class TestHowManyClientsRoutesThroughComposer:
 
         assert result["resolved_intent"]["intent_type"] == IntentType.SQL_REQUEST.value
         assert "report_id" not in result
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-1 — Enterprise Question Intelligence: full-stack proof.
+#
+# Question Intent -> Structured Query Intent -> existing SQL Planner ->
+# existing SQL Generator -> existing Validator -> existing LiveQueryEngine,
+# through the real composer_ask() entry point — the same proof pattern
+# TestHowManyClientsRoutesThroughComposer already established, extended to
+# the new DISTINCT/Ranking/Date/Status capabilities.
+# ---------------------------------------------------------------------------
+
+class TestQuestionIntelligenceEndToEnd:
+    def test_distinct_count_generates_count_distinct_sql(self, tmp_path, monkeypatch):
+        # Milestone Phase 6.2 — Aggregation Shape Correctness supersedes this
+        # fixture's old behavior. `dbo.sales` has no "clients"-named table to
+        # count, and `client_count` is a stored per-row metric column, not an
+        # entity — the old COUNT(DISTINCT client_count) meant "distinct
+        # values of a count column", not "distinct clients", which is
+        # exactly the wrong-aggregation-shape class of bug this milestone
+        # exists to prevent. Entity-count questions with no confidently
+        # resolved authoritative table now refuse rather than fall back to
+        # a decoy metric column — see test_entity_count_still_uses_metric_
+        # column_when_question_asks_for_a_sum below for the case where
+        # summing that same column IS correct.
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("count_client_count",)], rows=[(17,)])
+
+        result = _ask("How many unique clients are there?")
+
+        assert result["resolved_intent"]["intent_type"] == IntentType.SQL_REQUEST.value
+        live_evidence = next(
+            e for e in result["evidence_package"]["evidence"] if e["source_service"] == "live_query"
+        )
+        assert live_evidence["data"]["executed"] is False
+        assert live_evidence["data"]["reason"] == "sql_generation_refused"
+
+    def test_entity_count_still_uses_metric_column_when_question_asks_for_a_sum(self, tmp_path, monkeypatch):
+        # The companion case for the test above: when the question explicitly
+        # asks to total/sum a stored metric ("total client count"), that is
+        # aggregation_target=measure_sum, not entity_count — it keeps the
+        # unchanged column-level _resolve_term path and correctly sums the
+        # client_count metric column. Preserves pre-Phase-6.2 SUM behavior.
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_client_count",)], rows=[(42,)])
+
+        result = _ask("Total client count")
+
+        live_evidence = next(
+            e for e in result["evidence_package"]["evidence"] if e["source_service"] == "live_query"
+        )
+        sql = live_evidence["data"]["generated_sql"]
+        assert "SUM(" in sql
+        assert "client_count" in sql
+        assert live_evidence["data"]["status"] == QueryStatus.SUCCESS.value
+
+        # Milestone M-25 — Enterprise Answer Value Rendering: a successful
+        # SUM renders as real business language, not a row/column-count
+        # sentence, and the raw column identifier stays out of the primary
+        # answer text (it's only exposed via source_columns).
+        enterprise_answer = result["enterprise_answer"]
+        assert enterprise_answer["actual_value"] == 42
+        assert enterprise_answer["aggregation"] == "SUM"
+        assert "42" in enterprise_answer["answer"]
+        assert "row(s)" not in enterprise_answer["answer"]
+        assert "$" not in enterprise_answer["answer"]
+
+    def test_top_n_generates_order_by_and_tightened_limit(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_amount",)], rows=[(1,)])
+
+        result = _ask("Top 10 sales by amount")
+
+        live_evidence = next(
+            e for e in result["evidence_package"]["evidence"] if e["source_service"] == "live_query"
+        )
+        sql = live_evidence["data"]["generated_sql"]
+        assert "ORDER BY" in sql
+        assert "TOP (10)" in sql  # mssql dialect for this fixture's data source
+
+    def test_status_filter_end_to_end(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_amount",)], rows=[(1,)])
+
+        result = _ask("Total amount for active sales")
+
+        live_evidence = next(
+            e for e in result["evidence_package"]["evidence"] if e["source_service"] == "live_query"
+        )
+        sql = live_evidence["data"]["generated_sql"]
+        assert '"status"' in sql or "[status]" in sql
+        assert live_evidence["data"]["status"] == QueryStatus.SUCCESS.value
+
+    def test_date_range_filter_end_to_end(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        monkeypatch.setattr(datasource_service, "get_connection_config", lambda sid, uid: _mssql_record())
+        _wire_fake_connector(monkeypatch, description=[("sum_amount",)], rows=[(1,)])
+
+        result = _ask("Total amount this month")
+
+        live_evidence = next(
+            e for e in result["evidence_package"]["evidence"] if e["source_service"] == "live_query"
+        )
+        sql = live_evidence["data"]["generated_sql"]
+        assert "BETWEEN" in sql
+        assert "order_date" in sql.lower()
 
 
 class TestHowManyCollisionRegression:

@@ -22,6 +22,7 @@ class AnswerType(str, Enum):
     SEARCH = "search"
     CROSS_SOURCE_SUMMARY = "cross_source_summary"
     RESTRICTED = "restricted"
+    CLARIFICATION_NEEDED = "clarification_needed"
     UNKNOWN = "unknown"
 
 
@@ -68,6 +69,22 @@ class EnterpriseAnswer:
     next_actions: list[str] = field(default_factory=list)
     related_objects: list[str] = field(default_factory=list)
     execution_summary: dict = field(default_factory=dict)
+    clarification: dict | None = None
+    # Milestone M-25 — Enterprise Answer Value Rendering. Optional business-
+    # value fields, populated only for successful live-query answers; every
+    # other answer type leaves these at their defaults so to_dict() stays
+    # backward compatible for existing consumers.
+    actual_value: Any = None
+    result_preview: list = field(default_factory=list)
+    business_entity: str | None = None
+    measure: str | None = None
+    aggregation: str | None = None
+    applied_filters: list = field(default_factory=list)
+    date_context: dict | None = None
+    source_tables: list = field(default_factory=list)
+    source_columns: list = field(default_factory=list)
+    assumptions: list = field(default_factory=list)
+    truncation_notice: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)

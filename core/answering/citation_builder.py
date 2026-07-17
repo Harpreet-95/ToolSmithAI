@@ -78,12 +78,33 @@ def _cite_reports(item) -> list[Citation]:
     ] or [Citation(CitationType.REPORT, "", "Reports")]
 
 
+def _humanize_table(table_fqn: str) -> str:
+    short = table_fqn.split(".")[-1]
+    words = short.replace("_", " ").split()
+    return " ".join(w.capitalize() for w in words) or table_fqn
+
+
 def _cite_live_query(item) -> list[Citation]:
     d = item.data if isinstance(item.data, dict) else {}
-    return [Citation(
+    citations = [Citation(
         source_type=CitationType.LIVE_QUERY, reference=d.get("execution_id", ""),
         label="Live query result", detail={"row_count": d.get("row_count")},
     )]
+    # Milestone M-25 — additive, business-labeled table citations alongside
+    # the existing generic one (never replacing it, per the brief's
+    # "preserve existing citations... add source table label" instruction).
+    plan = d.get("business_plan") if isinstance(d.get("business_plan"), dict) else None
+    source_tables = (plan or {}).get("source_tables") or []
+    entity_label = (plan or {}).get("entity_label")
+    citations.extend(
+        Citation(
+            source_type=CitationType.TABLE, reference=table_fqn,
+            label=entity_label if i == 0 and entity_label else _humanize_table(table_fqn),
+            detail={},
+        )
+        for i, table_fqn in enumerate(source_tables)
+    )
+    return citations
 
 
 _EXTRACTORS = {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from core.answering.models import AnswerType
 from core.orchestrator.models import IntentType
 
@@ -311,11 +313,80 @@ def _explain_metadata(package) -> dict:
     return _no_evidence_result(AnswerType.METADATA)
 
 
+def _humanize_table_label(table_fqn: str) -> str:
+    short = table_fqn.split(".")[-1]
+    words = re.split(r"[_\s]+", short)
+    return " ".join(w.capitalize() for w in words if w)
+
+
+def _clarification_option(index: int, term: str, candidate: dict) -> dict:
+    table_fqn = candidate.get("table_fqn") or ""
+    label = candidate.get("business_label") or _humanize_table_label(table_fqn)
+    score = candidate.get("score")
+    return {
+        "id": f"opt_{index}",
+        "term": term,
+        "table_fqn": table_fqn,
+        "column_name": candidate.get("column_name"),
+        "label": label,
+        "description": f"{table_fqn} — confidence {score:.2f}" if isinstance(score, (int, float)) else table_fqn,
+        "score": score,
+    }
+
+
+def _explain_clarification(data: dict) -> dict:
+    ambiguous_terms = data.get("ambiguous_terms") or []
+    terms = sorted({t.get("term") for t in ambiguous_terms if t.get("term")})
+    reason = (
+        f"I found multiple business concepts that match '{terms[0]}' with similar confidence."
+        if len(terms) == 1 else
+        "Multiple terms in this question have more than one possible business match: "
+        + ", ".join(f"'{t}'" for t in terms) + "."
+    )
+
+    options: list[dict] = []
+    lines: list[str] = []
+    idx = 1
+    for group in ambiguous_terms:
+        term = group.get("term")
+        candidates = group.get("candidates") or []
+        lines.append(f"For '{term}':")
+        for candidate in candidates:
+            option = _clarification_option(idx, term, candidate)
+            options.append(option)
+            lines.append(f"{idx}. {option['label']}")
+            idx += 1
+
+    answer = reason + " " + " ".join(lines) + " Which would you like to use?"
+    return {
+        "answer": answer.strip(),
+        "summary": "Clarification needed before this question can be answered.",
+        "answer_type": AnswerType.CLARIFICATION_NEEDED,
+        "confidence": 0,
+        "limitations": ["No SQL has been generated or executed pending your selection."],
+        "clarification": {
+            "reason": reason,
+            "options": options,
+            "expected_impact": (
+                "Selecting a different option resolves the question against a different underlying "
+                "table or column and may change the result."
+            ),
+        },
+    }
+
+
 def _explain_live_query(package) -> dict:
     item = _find(package, "live_query")
     data = item.data if item and isinstance(item.data, dict) else None
     if not data:
         return _no_evidence_result(AnswerType.LIVE_QUERY)
+
+    # Milestone Phase 6.6 — Enterprise Clarification Intelligence. Ambiguity
+    # detected by query_planning_service's own ranking (context_builder's
+    # _live_query short-circuit) is surfaced as a clarification question,
+    # never as a silent refusal or a best guess.
+    if data.get("reason") == "clarification_required":
+        return _explain_clarification(data)
 
     # SQL generation was refused before any execution was attempted — a
     # distinct outcome from a QueryResult that executed and failed/blocked.
@@ -346,18 +417,16 @@ def _explain_live_query(package) -> dict:
             "answer_type": AnswerType.LIVE_QUERY, "confidence": 20,
             "limitations": [data.get("error")] if data.get("error") else [],
         }
-    row_count = data.get("row_count", 0)
-    duration = data.get("duration_ms", 0)
-    answer = (
-        f"The live query returned {row_count} row(s) across {len(data.get('columns', []))} column(s) "
-        f"in {duration}ms."
-    )
-    if data.get("truncated"):
-        answer += " Results were truncated by the configured row limit."
+
+    # Milestone M-25 — Enterprise Answer Value Rendering. Deterministic,
+    # template-based business language built entirely from evidence already
+    # present on `data` (business_plan + rows) — never invents a fact.
+    from core.answering.result_formatter import build_business_answer
+    business_answer = build_business_answer(data)
     return {
-        "answer": answer, "summary": f"{row_count} rows returned.",
-        "answer_type": AnswerType.LIVE_QUERY, "confidence": 95,
-        "limitations": ["Results were truncated."] if data.get("truncated") else [],
+        **business_answer,
+        "answer_type": AnswerType.LIVE_QUERY,
+        "confidence": 95,
     }
 
 

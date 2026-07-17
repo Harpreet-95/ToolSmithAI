@@ -36,6 +36,8 @@ class ComposerRequest(BaseModel):
     dataset_id: Optional[int] = None
     conversation_context: Optional[List[Dict[str, Any]]] = None
     request_options: Optional[Dict[str, Any]] = None
+    clarification_selection: Optional[List[Dict[str, Any]]] = None
+    cancel_clarification: bool = False
 
     @field_validator("message")
     @classmethod
@@ -954,6 +956,8 @@ def composer_ask(
                 "session_id": body.session_id,
                 "selected_dataset": body.selected_dataset,
                 "selected_table": body.selected_table,
+                "clarification_selection": body.clarification_selection,
+                "cancel_clarification": body.cancel_clarification,
             },
             request_id=request_id,
         )

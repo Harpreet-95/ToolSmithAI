@@ -21,6 +21,7 @@ _FOLLOW_UPS: dict[AnswerType, list[str]] = {
     AnswerType.SEARCH: ["What relationships exist?", "Show profiling results."],
     AnswerType.CROSS_SOURCE_SUMMARY: ["Generate governance report.", "What relationships exist?"],
     AnswerType.RESTRICTED: ["Contact your data steward for access."],
+    AnswerType.CLARIFICATION_NEEDED: [],
     AnswerType.UNKNOWN: ["Try asking about dictionary, profiling, or governance."],
 }
 
@@ -40,6 +41,7 @@ _NEXT_ACTIONS: dict[AnswerType, str] = {
     AnswerType.SEARCH: "Refine your search terms for more precise results.",
     AnswerType.CROSS_SOURCE_SUMMARY: "Drill into an individual service for full detail.",
     AnswerType.RESTRICTED: "Contact your data steward or review the Governance Command Center.",
+    AnswerType.CLARIFICATION_NEEDED: "Select one of the listed options and ask again to get an answer.",
     AnswerType.UNKNOWN: "Rephrase your question with a specific catalog term.",
 }
 
@@ -101,4 +103,16 @@ def build_response(strategy, package, explanation: dict, citations, recommendati
         next_actions=_build_next_actions(answer_type),
         related_objects=_build_related_objects(package),
         execution_summary=_build_execution_summary(strategy),
+        clarification=explanation.get("clarification"),
+        actual_value=explanation.get("actual_value"),
+        result_preview=explanation.get("result_preview") or [],
+        business_entity=explanation.get("business_entity"),
+        measure=explanation.get("measure"),
+        aggregation=explanation.get("aggregation"),
+        applied_filters=explanation.get("applied_filters") or [],
+        date_context=explanation.get("date_context"),
+        source_tables=explanation.get("source_tables") or [],
+        source_columns=explanation.get("source_columns") or [],
+        assumptions=explanation.get("assumptions") or [],
+        truncation_notice=explanation.get("truncation_notice"),
     )
