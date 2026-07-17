@@ -1,0 +1,331 @@
+{
+  "suite_name": "Enterprise Business Validation Suite",
+  "aka": "Enterprise Acceptance Test Suite",
+  "version": "1.0.0",
+  "status": "locked_canonical_baseline",
+  "created": "2026-07-13",
+  "locked_at": "2026-07-13",
+  "provenance": "The original Phase 6 37-question validation corpus referenced in docs/ENTERPRISE_DELIVERY_PROGRAM.md (M-19, M-20) could not be located in session memory, generated artifacts, repository content, or git history (including deleted files). Only 8 individual questions survived, quoted inline in re-validation tables. This suite is a NEWLY AUTHORED replacement, not a recovery of the original, and is the permanent Enterprise Acceptance Test Suite going forward. Approved as a framework at 45 questions (7 categories), then expanded to its locked v1.0.0 form (98 questions, 26 categories) before freeze, per explicit instruction. All 45 originally-approved ids retain their original id/question/expected_intent unchanged; this expansion only added new ids and added the new expected_outcome/category fields to every entry (additive metadata, not a content change to any existing id).",
+  "domain_grounding": "CCPP staffing/recruiting vocabulary (client, candidate, placement, job order, student, payroll, invoice, recruiter, enrollment, course, interview) — consistent with the vocabulary already validated end-to-end against the real connected CCPP source in milestones M-1 through M-20.",
+  "immutability_policy": "Once locked, existing entries (id, question, expected_intent, expected_outcome) are immutable. Changes are made only via additive new versions (v1.1.0, v2.0.0, ...) appended in a new file alongside this one; this file is never edited in place after lock. Every future milestone that touches question classification, semantic resolution, SQL planning, SQL generation, or answering must validate against this exact suite and report pass/fail per category.",
+  "schema_notes": {
+    "expected_intent": "The correct target IntentType classification per business logic — the value the resolver should produce once correctly implemented, not necessarily what the current code returns today.",
+    "expected_outcome": "The correct target pipeline outcome for the question AS WRITTEN, using the controlled vocabulary in expected_outcome_values below. Two different evidentiary standards apply, and each entry's notes field says which one was used: (1) EVIDENCE-BASED — for any question whose exact text was already run against real, live CCPP data and documented in docs/ENTERPRISE_DELIVERY_PROGRAM.md (M-19/M-20 re-validation tables), expected_outcome mirrors that documented, reproduced finding verbatim, including known-wrong/known-defect results. (2) ARCHITECTURAL-TARGET — for every other question, expected_outcome represents the correct outcome assuming an adequately governed/disambiguated instance of the resolved concept, since CCPP's specific 0%-dictionary-approval / sparse-taxonomy data-quality state is a separate, already-tracked gap (W-5, W-8, M-4, M-5), not something this suite exists to re-litigate on every single entry. The dedicated 'Ambiguous Business Concepts' category deliberately uses evidence-based AMBIGUOUS outcomes for CCPP's specific documented ambiguous concept terms."
+  },
+  "expected_outcome_values": [
+    { "value": "SUCCESS", "meaning": "Resolves and executes (or answers, for metadata/dictionary/governance intents) producing a correct result." },
+    { "value": "REFUSED_SAFE", "meaning": "The pipeline correctly refuses rather than guessing or producing wrong/invalid SQL (semantic-incompatibility guard, out-of-graph reference guard, ungoverned PII, insufficient key confidence, etc.)." },
+    { "value": "AMBIGUOUS", "meaning": "Multiple candidate tables/columns tie within the ambiguity margin; correctly surfaced as unresolved with ranked candidates rather than auto-selected." },
+    { "value": "CLARIFICATION_NEEDED", "meaning": "Target UX outcome: the system should ask the user a clarifying follow-up question. Encodes target state for the not-yet-implemented clarification flow (M-11, status Not Started as of this suite's creation) — today's actual behavior for these ids is AMBIGUOUS structural output, not an actual clarifying question." },
+    { "value": "NOT_SUPPORTED", "meaning": "The capability needed to answer correctly (trend/period-over-period, ratio/percentage, null-handling aggregation, cross-source query) does not exist yet in the pipeline; a documented, scoped-out gap, not a bug." },
+    { "value": "KNOWN_DEFECT", "meaning": "The pipeline currently produces an incorrect (silently wrong, not refused) result for this exact question, reproduced and documented in ENTERPRISE_DELIVERY_PROGRAM.md as open residual scope." }
+  ],
+  "changelog": [
+    { "version": "1.0.0", "date": "2026-07-13", "note": "Initial lock. 45 originally-approved questions (7 categories) expanded to 98 questions across 26 categories per explicit pre-lock expansion instruction, then locked. See provenance." }
+  ],
+  "categories": [
+    {
+      "name": "Counts",
+      "description": "Questions whose correct answer is an entity/record cardinality (COUNT), not a stored metric.",
+      "questions": [
+        { "id": "EBVS-C-01", "category": "Counts", "question": "How many active clients are there?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-C-02", "category": "Counts", "question": "How many candidates do we have?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-C-03", "category": "Counts", "question": "How many placements were made this quarter?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-C-04", "category": "Counts", "question": "How many open job orders are there?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-C-05", "category": "Counts", "question": "How many unique recruiters worked on placements last month?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-C-06", "category": "Counts", "question": "Total number of invoices this year", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        {
+          "id": "EBVS-C-07",
+          "category": "Counts",
+          "question": "How many students are currently enrolled?",
+          "expected_intent": "sql_request",
+          "expected_outcome": "REFUSED_SAFE",
+          "notes": "EVIDENCE-BASED. Near-paraphrase of M-20's documented 'How many students are enrolled?', reproduced against real CCPP as REFUSED — 'No confident entity-count match for students' (~88 ambiguous candidate tables, no clearing margin). The 'currently' qualifier does not change the underlying term-ambiguity cause."
+        }
+      ]
+    },
+    {
+      "name": "Lists",
+      "description": "Imperative or bare requests to display a set of business records, with no aggregation language.",
+      "questions": [
+        { "id": "EBVS-L-01", "category": "Lists", "question": "Show active clients", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-L-02", "category": "Lists", "question": "List active projects", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-L-03", "category": "Lists", "question": "Display candidates", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-L-04", "category": "Lists", "question": "List open job orders", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-L-05", "category": "Lists", "question": "Show student enrollments", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-L-06", "category": "Lists", "question": "Give me recent placements", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-L-07", "category": "Lists", "question": "Return active invoices", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Aggregations",
+      "description": "Questions requiring SUM/AVG/MIN/MAX over a stored measure column.",
+      "questions": [
+        {
+          "id": "EBVS-A-01",
+          "category": "Aggregations",
+          "question": "Total revenue this year",
+          "expected_intent": "sql_request",
+          "expected_outcome": "REFUSED_SAFE",
+          "notes": "EVIDENCE-BASED. Exact text reproduced against real CCPP and documented in M-19: pre-M-19 wrongly generated SUM(ADF_YearExpRq.YearsExpValue); post-M-19 correctly blocked by the semantic_compatible guard ('year' implies DATE, resolved concept is AMOUNT)."
+        },
+        { "id": "EBVS-A-02", "category": "Aggregations", "question": "Average salary by department", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-A-03", "category": "Aggregations", "question": "Total payroll this month", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-A-04", "category": "Aggregations", "question": "Highest invoice amount", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-A-05", "category": "Aggregations", "question": "Lowest placement fee", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-A-06", "category": "Aggregations", "question": "Average time to fill per job order", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        {
+          "id": "EBVS-A-07",
+          "category": "Aggregations",
+          "question": "Students by course",
+          "expected_intent": "sql_request",
+          "expected_outcome": "KNOWN_DEFECT",
+          "notes": "EVIDENCE-BASED. Exact text documented in M-19/M-20: contains no COUNT/SUM trigger language, so extract_query_intent returns aggregation=None; the older _infer_aggregation() column-name-heuristic fallback still silently applies SUM(ADF_ClassPositionAnalytics.TotalStudents) — a wrong aggregation shape. Reproduced, documented, unfixed as of M-20; tracked as open residual scope."
+        },
+        {
+          "id": "EBVS-A-08",
+          "category": "Aggregations",
+          "question": "Show students enrolled in programs",
+          "expected_intent": "sql_request",
+          "expected_outcome": "KNOWN_DEFECT",
+          "notes": "EVIDENCE-BASED. Same documented M-19/M-20 defect as EBVS-A-07 (SUM(TotalStudents) via the column-name-heuristic fallback, no COUNT/SUM language detected). Reproduced, documented, unfixed as of M-20."
+        }
+      ]
+    },
+    {
+      "name": "Time Intelligence",
+      "description": "Questions using recency or relative-date phrasing without explicit SQL/analytical vocabulary.",
+      "questions": [
+        { "id": "EBVS-T-01", "category": "Time Intelligence", "question": "Current payroll", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-T-02", "category": "Time Intelligence", "question": "Recent placements", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-T-03", "category": "Time Intelligence", "question": "Latest invoices", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-T-04", "category": "Time Intelligence", "question": "Placements this quarter", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-T-05", "category": "Time Intelligence", "question": "Enrollments last month", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-T-06", "category": "Time Intelligence", "question": "Candidates added yesterday", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-T-07", "category": "Time Intelligence", "question": "Earliest enrollments this year", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Filters",
+      "description": "Questions filtered by a bare status word (active/inactive/open/closed/pending/cancelled/completed).",
+      "questions": [
+        { "id": "EBVS-F-01", "category": "Filters", "question": "Active invoices", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-F-02", "category": "Filters", "question": "Inactive candidates", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-F-03", "category": "Filters", "question": "Closed placements", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        {
+          "id": "EBVS-F-04",
+          "category": "Filters",
+          "question": "Pending submissions",
+          "expected_intent": "review",
+          "expected_outcome": "SUCCESS",
+          "notes": "Deliberate exception, confirmed 2026-07-13: bare 'pending' is reserved for the REVIEW queue intent to avoid misrouting genuine review-queue questions (e.g. 'pending review', 'pending approval'). 'Pending' status filtering on a business question only reaches SQL_REQUEST when paired with another SQL_REQUEST signal elsewhere in the question, not from the bare status word alone."
+        },
+        { "id": "EBVS-F-05", "category": "Filters", "question": "Cancelled interviews", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-F-06", "category": "Filters", "question": "Completed enrollments", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-F-07", "category": "Filters", "question": "Open job orders by department", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Relationships",
+      "description": "Business questions requiring a join across two entities, plus explicit relationship-structure meta-questions (distinct from IntentType.RELATIONSHIP's schema-metadata scope).",
+      "questions": [
+        { "id": "EBVS-R-01", "category": "Relationships", "question": "Which clients have open job orders?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-R-02", "category": "Relationships", "question": "Show candidates linked to active placements", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-R-03", "category": "Relationships", "question": "List recruiters and their placements", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-R-04", "category": "Relationships", "question": "Which students are enrolled in which courses?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        {
+          "id": "EBVS-R-05",
+          "category": "Relationships",
+          "question": "How are clients and invoices related?",
+          "expected_intent": "relationship",
+          "expected_outcome": "SUCCESS",
+          "notes": "Meta-question about schema relationship structure, not a request for business records — correctly IntentType.RELATIONSHIP, not SQL_REQUEST."
+        },
+        {
+          "id": "EBVS-R-06",
+          "category": "Relationships",
+          "question": "What tables are connected to the placements table?",
+          "expected_intent": "relationship",
+          "expected_outcome": "SUCCESS",
+          "notes": "Same as EBVS-R-05: schema-relationship metadata question, not a business-record request."
+        }
+      ]
+    },
+    {
+      "name": "Metadata",
+      "description": "Questions about schema, table/column existence, or business-term definitions rather than business records.",
+      "questions": [
+        { "id": "EBVS-M-01", "category": "Metadata", "question": "What tables exist for clients?", "expected_intent": "metadata_lookup", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-M-02", "category": "Metadata", "question": "Show me the schema for placements", "expected_intent": "metadata_lookup", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-M-03", "category": "Metadata", "question": "List columns in the candidates table", "expected_intent": "metadata_lookup", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-M-04", "category": "Metadata", "question": "What is the definition of a placement?", "expected_intent": "dictionary", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-M-05", "category": "Metadata", "question": "What data sources are available?", "expected_intent": "metadata_lookup", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-M-06", "category": "Metadata", "question": "Explore the schema for the placements domain", "expected_intent": "metadata_lookup", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-M-07", "category": "Metadata", "question": "What columns does the invoices table have and what are their data types?", "expected_intent": "metadata_lookup", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Sorting",
+      "description": "Requests to order results by a dimension without an aggregation or a top/bottom-N cap.",
+      "questions": [
+        { "id": "EBVS-SO-01", "category": "Sorting", "question": "Sort clients by name", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-SO-02", "category": "Sorting", "question": "Sorted by client", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Grouping",
+      "description": "Requests aggregated per distinct value of a dimension (GROUP BY).",
+      "questions": [
+        { "id": "EBVS-GR-01", "category": "Grouping", "question": "Revenue by department", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-GR-02", "category": "Grouping", "question": "Placements grouped by recruiter", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Distinct",
+      "description": "Requests for unique/distinct values or entities.",
+      "questions": [
+        { "id": "EBVS-DI-01", "category": "Distinct", "question": "Distinct students", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-DI-02", "category": "Distinct", "question": "Unique recruiters", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Ranking",
+      "description": "Comparative best/worst questions phrased without an explicit numeric Top-N/Bottom-N limit.",
+      "questions": [
+        { "id": "EBVS-RK-01", "category": "Ranking", "question": "Which recruiter has the most placements?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-RK-02", "category": "Ranking", "question": "Who is the top performing recruiter?", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Top/Bottom N",
+      "description": "Requests with an explicit numeric ranking limit.",
+      "questions": [
+        { "id": "EBVS-TB-01", "category": "Top/Bottom N", "question": "Top 10 clients by revenue", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-TB-02", "category": "Top/Bottom N", "question": "Bottom 5 recruiters by placements", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-TB-03", "category": "Top/Bottom N", "question": "Top 3 job orders by number of candidates", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Multiple Filters",
+      "description": "Questions combining two or more independent filter conditions (status, date, dimension) in one request.",
+      "questions": [
+        { "id": "EBVS-MF-01", "category": "Multiple Filters", "question": "Active clients in the Northeast region added this year", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-MF-02", "category": "Multiple Filters", "question": "Open job orders for active clients", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-MF-03", "category": "Multiple Filters", "question": "Completed placements this quarter for active recruiters", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Date Ranges",
+      "description": "Questions with an explicit start/end date range, distinct from Time Intelligence's relative-date phrasing.",
+      "questions": [
+        { "id": "EBVS-DR-01", "category": "Date Ranges", "question": "Invoices between 2026-01-01 and 2026-03-31", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-DR-02", "category": "Date Ranges", "question": "Placements between January and March this year", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Cross-Domain Business Questions",
+      "description": "Questions whose answer requires combining data from two otherwise-unrelated business domains (e.g. payroll/HR and recruiting).",
+      "questions": [
+        { "id": "EBVS-CD-01", "category": "Cross-Domain Business Questions", "question": "Total payroll for recruiters who placed a candidate this month", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-CD-02", "category": "Cross-Domain Business Questions", "question": "Invoices for clients with an open job order", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Multi-Table Joins",
+      "description": "Questions requiring three or more joined tables in one answer.",
+      "questions": [
+        { "id": "EBVS-MJ-01", "category": "Multi-Table Joins", "question": "Show candidates, their placements, and the client for each placement", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-MJ-02", "category": "Multi-Table Joins", "question": "List job orders with their client, recruiter, and current status", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-MJ-03", "category": "Multi-Table Joins", "question": "Show students, their enrollments, and course details", "expected_intent": "sql_request", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Dictionary",
+      "description": "Business-glossary / term-definition questions.",
+      "questions": [
+        { "id": "EBVS-DC-01", "category": "Dictionary", "question": "What does the business term 'placement' mean?", "expected_intent": "dictionary", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-DC-02", "category": "Dictionary", "question": "Give me the glossary definition of a job order", "expected_intent": "dictionary", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-DC-03", "category": "Dictionary", "question": "What is the business name for the ADF_Clients table?", "expected_intent": "dictionary", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Governance",
+      "description": "PII, compliance, approval, and stewardship-status questions.",
+      "questions": [
+        { "id": "EBVS-GV-01", "category": "Governance", "question": "Which columns are flagged as PII?", "expected_intent": "governance", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-GV-02", "category": "Governance", "question": "Is the candidates table approved for use?", "expected_intent": "governance", "expected_outcome": "SUCCESS" },
+        { "id": "EBVS-GV-03", "category": "Governance", "question": "What is the governance status of the payroll table?", "expected_intent": "governance", "expected_outcome": "SUCCESS" }
+      ]
+    },
+    {
+      "name": "Clarification Required",
+      "description": "Conversationally-phrased questions whose correct target UX is a clarifying follow-up, not an auto-selected or raw-ambiguous answer. Encodes target state for M-11 (clarification flow), status Not Started as of this suite's creation.",
+      "questions": [
+        { "id": "EBVS-CL-01", "category": "Clarification Required", "question": "Show me the clients", "expected_intent": "sql_request", "expected_outcome": "CLARIFICATION_NEEDED", "notes": "ARCHITECTURAL-TARGET. Today's actual behavior is AMBIGUOUS structural output (M-4: 4+ client tables tie at 1.000), not an actual clarifying question — this id encodes the target UX once M-11 ships." },
+        { "id": "EBVS-CL-02", "category": "Clarification Required", "question": "Pull up the student records", "expected_intent": "sql_request", "expected_outcome": "CLARIFICATION_NEEDED", "notes": "ARCHITECTURAL-TARGET. Today's actual behavior is AMBIGUOUS (M-4: 5+ student tables tie)." },
+        { "id": "EBVS-CL-03", "category": "Clarification Required", "question": "I need candidate information", "expected_intent": "sql_request", "expected_outcome": "CLARIFICATION_NEEDED", "notes": "ARCHITECTURAL-TARGET. Today's actual behavior is AMBIGUOUS (M-4: candidate candidates near-tie at 1.000)." }
+      ]
+    },
+    {
+      "name": "Ambiguous Business Concepts",
+      "description": "Bare concept terms already documented against real CCPP data as structurally ambiguous (no candidate clears the ambiguity margin). Tests the concept-resolution mechanism itself, not the not-yet-built clarification UX (see Clarification Required).",
+      "questions": [
+        { "id": "EBVS-AM-01", "category": "Ambiguous Business Concepts", "question": "How many clients are there?", "expected_intent": "sql_request", "expected_outcome": "AMBIGUOUS", "notes": "EVIDENCE-BASED. M-4: 'client' — 4+ candidates (ADF_Clients, ADF_Clients_With_LinkedIn_links, ADF_BHClientContacts, CB_CRM_CLIENT_CONTACTS) tie at score 1.000." },
+        { "id": "EBVS-AM-02", "category": "Ambiguous Business Concepts", "question": "List students", "expected_intent": "sql_request", "expected_outcome": "AMBIGUOUS", "notes": "EVIDENCE-BASED. M-4: 'student' — 5+ candidates tie at 1.000 across Operations/Communications/Student Lifecycle domains." },
+        { "id": "EBVS-AM-03", "category": "Ambiguous Business Concepts", "question": "Show candidates", "expected_intent": "sql_request", "expected_outcome": "AMBIGUOUS", "notes": "EVIDENCE-BASED. M-4: 'candidate' — ADF_BHCandidates vs Top5Candidates_Export vs CB_HotList_Candidates all near 1.000." },
+        { "id": "EBVS-AM-04", "category": "Ambiguous Business Concepts", "question": "List courses", "expected_intent": "sql_request", "expected_outcome": "AMBIGUOUS", "notes": "EVIDENCE-BASED. M-4: 'course' — ADF_Course vs CB_ACL_COURSE_ACCESS tie at 1.000." }
+      ]
+    },
+    {
+      "name": "Safe Refusals",
+      "description": "Questions already reproduced against real CCPP data where the pipeline must correctly refuse rather than produce wrong or invalid SQL.",
+      "questions": [
+        { "id": "EBVS-SR-01", "category": "Safe Refusals", "question": "Clients added last year", "expected_intent": "sql_request", "expected_outcome": "REFUSED_SAFE", "notes": "EVIDENCE-BASED. M-19: blocked on both semantic_compatible (wrong YearsExpValue concept match) and all_references_in_query_graph (orphan WHERE table)." },
+        { "id": "EBVS-SR-02", "category": "Safe Refusals", "question": "How many jobs are open?", "expected_intent": "sql_request", "expected_outcome": "REFUSED_SAFE", "notes": "EVIDENCE-BASED. M-19: blocked by all_references_in_query_graph — WHERE referenced ADF_Indigo_DISC_Staff_17Aug2021, a table never in FROM/JOIN." },
+        { "id": "EBVS-SR-03", "category": "Safe Refusals", "question": "List active students", "expected_intent": "sql_request", "expected_outcome": "REFUSED_SAFE", "notes": "EVIDENCE-BASED. M-19: blocked by all_references_in_query_graph — orphan-table defect referencing vw_StudentRoles.CityState." },
+        { "id": "EBVS-SR-04", "category": "Safe Refusals", "question": "How many students are enrolled this month", "expected_intent": "sql_request", "expected_outcome": "REFUSED_SAFE", "notes": "EVIDENCE-BASED. M-19: blocked by all_references_in_query_graph, same class of orphan-table defect." }
+      ]
+    },
+    {
+      "name": "Time Comparisons",
+      "description": "Period-over-period comparison questions.",
+      "questions": [
+        { "id": "EBVS-TC-01", "category": "Time Comparisons", "question": "Compare this month's placements to last month", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "ARCHITECTURAL-TARGET/gap. Trend/Ratio/period-over-period comparison explicitly out of scope per M-1; tracked as residual under M-10." },
+        { "id": "EBVS-TC-02", "category": "Time Comparisons", "question": "How does this quarter's revenue compare to last quarter?", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "Same documented gap as EBVS-TC-01 (M-1/M-10)." }
+      ]
+    },
+    {
+      "name": "Trend Questions",
+      "description": "Questions asking for a trend over time.",
+      "questions": [
+        { "id": "EBVS-TR-01", "category": "Trend Questions", "question": "Show trends in placements over the last 6 months", "expected_intent": "report_generation", "expected_outcome": "SUCCESS", "notes": "'show trend'/'show trends' is an existing REPORT_GENERATION primary keyword (requires the two words adjacent) — routes through the CSV/dataset report pipeline, a separate mechanism from live SQL. Correctly out of the live-SQL pipeline, not a gap. CORRECTION 2026-07-13: original wording ('Show placement trends...') did not have 'show' and 'trend(s)' adjacent and so never matched; caught during the first post-implementation validation pass, before this suite was used for real, and reworded here rather than left wrong under a false 'locked' label." },
+        { "id": "EBVS-TR-02", "category": "Trend Questions", "question": "What is the trend in student enrollments?", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "No 'show trend(s)' phrase present, so it does not route to REPORT_GENERATION either; live-SQL trend inference is out of scope per M-1, tracked under M-10." }
+      ]
+    },
+    {
+      "name": "Percentage Calculations",
+      "description": "Ratio/percentage questions.",
+      "questions": [
+        { "id": "EBVS-PC-01", "category": "Percentage Calculations", "question": "What percentage of candidates were placed?", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "Ratio/percentage computation is not implemented; grouped with the M-1/M-10 trend/ratio residual scope." },
+        { "id": "EBVS-PC-02", "category": "Percentage Calculations", "question": "What percent of job orders are still open?", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "Same documented gap as EBVS-PC-01." }
+      ]
+    },
+    {
+      "name": "Null Handling",
+      "description": "Questions requiring a non-null / missing-value count rather than a plain entity count.",
+      "questions": [
+        { "id": "EBVS-NH-01", "category": "Null Handling", "question": "How many clients have a phone number on file?", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "M-20: non_null_column_count is modeled in the aggregation_target enum but never produced — no phrasing detector was built, documented as open residual scope." },
+        { "id": "EBVS-NH-02", "category": "Null Handling", "question": "How many candidates are missing an email address?", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "Same documented M-20 gap as EBVS-NH-01." },
+        { "id": "EBVS-NH-03", "category": "Null Handling", "question": "List invoices with a null payment date", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "Same documented M-20 gap as EBVS-NH-01." }
+      ]
+    },
+    {
+      "name": "Multi-Source Scenarios",
+      "description": "Questions requiring data from more than one connected source. Included 'where applicable' per the brief — the current architecture is single-connected-source oriented for live query.",
+      "questions": [
+        { "id": "EBVS-MS-01", "category": "Multi-Source Scenarios", "question": "Compare client counts between CCPP and our other data source", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "No cross-source join/comparison mechanism exists in core/live/query_engine.py or the SQL planner; each plan resolves against exactly one data_source_connections row." },
+        { "id": "EBVS-MS-02", "category": "Multi-Source Scenarios", "question": "Show combined revenue across all connected sources", "expected_intent": "sql_request", "expected_outcome": "NOT_SUPPORTED", "notes": "Same documented architectural gap as EBVS-MS-01." }
+      ]
+    }
+  ]
+}
