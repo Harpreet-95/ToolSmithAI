@@ -16,6 +16,13 @@ SUPPORTED_ENTITIES: tuple[str, ...] = (
     "Vendor",
     "Campaign",
     "Event",
+    # Milestone M-5, Part 5 (2026-07-13): staffing/recruiting business
+    # vocabulary, additive to the fixed taxonomy above (none of the
+    # existing 11 values were changed or removed).
+    "Client",
+    "Candidate",
+    "Placement",
+    "Job",
     ENTITY_UNKNOWN,
 )
 

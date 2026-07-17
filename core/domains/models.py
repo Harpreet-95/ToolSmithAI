@@ -15,6 +15,10 @@ SUPPORTED_DOMAINS: tuple[str, ...] = (
     "Reference Data",
     "Reporting & Analytics",
     "System / Platform",
+    # Milestone M-5, Part 5 (2026-07-13): staffing/recruiting business
+    # vocabulary, additive to the fixed taxonomy above (none of the
+    # existing 10 values were changed or removed).
+    "Staffing & Recruiting",
     DOMAIN_UNKNOWN,
 )
 

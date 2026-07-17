@@ -60,6 +60,26 @@ _ENTITY_KEYWORDS: dict[str, list[str]] = {
         "event", "appointment", "schedule", "calendar",
         "meeting", "booking",
     ],
+    # Milestone M-5, Part 5 (2026-07-13): staffing/recruiting business
+    # vocabulary, additive. "candidate" is intentionally shared with
+    # "Applicant" (already a keyword there) — both entities score evidence
+    # for a candidate-named table; the existing max-score +
+    # _UNKNOWN_THRESHOLD mechanism resolves it using whatever other
+    # evidence differs, the same way every other keyword overlap in this
+    # table is already resolved. "hire"/"placement" overlap similarly with
+    # "Employee".
+    "Client": [
+        "client", "customer",
+    ],
+    "Candidate": [
+        "candidate", "consultant", "resume", "cv",
+    ],
+    "Placement": [
+        "placement", "hire", "hiring",
+    ],
+    "Job": [
+        "job", "opening", "position", "requisition", "vacancy",
+    ],
 }
 
 # table_class → (entity to boost, boost amount).

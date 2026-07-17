@@ -467,3 +467,35 @@ class TestIDLikeColumnBoost:
         # id_like_cols = 0 → no boost → Identity & Access = 0.5 → Unknown
         result = detect_table_domain(p, column_profiles=cols)
         assert result.domain == DOMAIN_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-5, Part 5 — "Staffing & Recruiting" domain (additive)
+# ---------------------------------------------------------------------------
+
+class TestStaffingRecruitingDomain:
+
+    def test_staffing_named_table_classifies_as_staffing_recruiting(self):
+        from core.domains.models import SUPPORTED_DOMAINS
+        assert "Staffing & Recruiting" in SUPPORTED_DOMAINS
+        p = _profile("recruiter_placements", "dbo")
+        result = detect_table_domain(p)
+        assert result.domain == "Staffing & Recruiting"
+
+    def test_existing_admissions_classification_unaffected_by_new_domain(self):
+        """'candidate' must still classify as Admissions — the new Staffing
+        domain deliberately does not claim that keyword, so this existing
+        classification is unchanged."""
+        p = _profile("candidate_applications", "dbo")
+        result = detect_table_domain(p)
+        assert result.domain == "Admissions"
+
+    def test_existing_operations_job_classification_still_reachable(self):
+        """'job' is intentionally shared between Operations (pre-existing)
+        and the new Staffing & Recruiting domain; a bare 'job'-named table
+        with no other staffing signal still resolves via whichever domain's
+        other evidence wins — Operations remains reachable, not silently
+        replaced."""
+        p = _profile("job_queue_log", "dbo")  # "job" + "queue" + "log" all Operations tokens
+        result = detect_table_domain(p)
+        assert result.domain == "Operations"

@@ -505,3 +505,35 @@ class TestApprovalBehaviorUnchanged:
         result = detect_table_entity(p, column_profiles=cols)
         assert not hasattr(result, "approval_status")
         assert not hasattr(result, "approved_by")
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-5, Part 5 — Client/Candidate/Placement/Job entities (additive)
+# ---------------------------------------------------------------------------
+
+class TestStaffingRecruitingEntities:
+
+    def test_new_entities_registered(self):
+        from core.entities.models import SUPPORTED_ENTITIES
+        for e in ("Client", "Candidate", "Placement", "Job"):
+            assert e in SUPPORTED_ENTITIES
+
+    def test_client_named_table_classifies_as_client(self):
+        result = detect_table_entity(_profile("clients", "dbo"))
+        assert result.entity == "Client"
+
+    def test_placement_named_table_classifies_as_placement(self):
+        result = detect_table_entity(_profile("placements", "dbo"))
+        assert result.entity == "Placement"
+
+    def test_job_named_table_classifies_as_job(self):
+        result = detect_table_entity(_profile("job_openings", "dbo"))
+        assert result.entity == "Job"
+
+    def test_existing_applicant_classification_unaffected_by_new_candidate_entity(self):
+        """'application'/'applicant' tokens still classify as Applicant even
+        though 'candidate' is now also a Candidate-entity keyword — the
+        overlap on 'candidate' alone doesn't change a table whose stronger
+        signal is 'application'."""
+        result = detect_table_entity(_profile("applications", "dbo"))
+        assert result.entity == "Applicant"

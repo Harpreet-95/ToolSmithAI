@@ -70,6 +70,18 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
         "aspnet", "dnn", "django", "sys", "system", "module",
         "platform", "framework", "migration", "parameter", "metadata",
     ],
+    # Milestone M-5, Part 5 (2026-07-13): staffing/recruiting business
+    # vocabulary, additive — deliberately does NOT reuse "candidate"/
+    # "recruit" (already Admissions' signal above) so existing Admissions
+    # classification for CCPP's education-shaped tables doesn't shift.
+    # "job" is intentionally shared with Operations (already a keyword
+    # there) — other signals (e.g. domain/entity assignment already
+    # present, relationship coverage) differentiate the two when a table
+    # name alone is ambiguous between them.
+    "Staffing & Recruiting": [
+        "staffing", "recruiter", "recruiting", "placement", "submission",
+        "timesheet", "hire", "hiring", "job",
+    ],
 }
 
 # table_class value → (domain to boost, boost amount)
