@@ -33,6 +33,7 @@ from data.governance_service import (
     GovernedObjectType,
     GovernanceState,
     bulk_approve,
+    bulk_reject,
     get_governance_profile,
 )
 from data.lineage_service import get_upstream_lineage
@@ -363,6 +364,27 @@ def test_discover_is_idempotent(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 7b. discover_relationship_candidates records an audit event on every call
+# ---------------------------------------------------------------------------
+
+def test_discover_writes_audit_event(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _basic_name_match_pair(db)
+
+    discover_relationship_candidates(1, "u1")
+
+    conn = _conn(db)
+    rows = conn.execute(
+        "SELECT task_type, status, user_id FROM audit_logs "
+        "WHERE task_type = 'relationship_candidate_discovery'"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "success"
+    assert rows[0]["user_id"] == "u1"
+
+
+# ---------------------------------------------------------------------------
 # 8 & 9. explain_relationship — declared FK and inferred
 # ---------------------------------------------------------------------------
 
@@ -496,6 +518,32 @@ def test_bulk_approve_relationship_suggestion(tmp_path, monkeypatch):
     fk_row = _row(db, 50)
     assert fk_row["relationship_status"] == "AUTO"
     assert fk_row["approved_by"] is None
+
+
+def test_bulk_reject_relationship_suggestion_still_allowed(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _basic_name_match_pair(db)
+    discover_relationship_candidates(1, "u1")
+    rel_id = _pending_id(db)
+
+    f = BulkFilter(object_type="relationship.suggestion", source_id=1)
+    result = bulk_reject(f, actor_id="u1")
+
+    assert result.affected_count == 1
+    assert _row(db, rel_id)["relationship_status"] == "REJECTED"
+
+
+def test_individual_approve_relationship_still_works_after_bulk_block(tmp_path, monkeypatch):
+    """The hard bulk-approve block must not affect the real, per-item governed
+    approval path — that remains the intended way to trust a candidate."""
+    db = env(tmp_path, monkeypatch)
+    _basic_name_match_pair(db)
+    discover_relationship_candidates(1, "u1")
+    rel_id = _pending_id(db)
+
+    approve_relationship(rel_id, "u1")
+
+    assert _row(db, rel_id)["relationship_status"] == "APPROVED"
 
 
 # ---------------------------------------------------------------------------

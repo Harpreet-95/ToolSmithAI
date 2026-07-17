@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from data.db import get_connection
 from data.profiling_service import get_key_candidate_columns
+from core.connectors.schema import normalize_data_type
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,24 @@ _MAX_CANDIDATE_PAIRS = 5000
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _audit_discovery(source_id: int, user_id: str, result: dict) -> None:
+    try:
+        from data.audit import log_audit_event
+        log_audit_event(
+            {
+                "task_type": "relationship_candidate_discovery",
+                "original_input": json.dumps({"source_id": source_id, **result}),
+                "status": "success",
+            },
+            user_id=user_id,
+        )
+    except Exception:
+        logger.warning(
+            "discover_relationship_candidates: audit logging failed for source_id=%s", source_id,
+            exc_info=True,
+        )
 
 
 def _latest_profiling_snap_id(conn, source_id: int) -> int | None:
@@ -698,10 +717,12 @@ def discover_relationship_candidates(
             "candidates_skipped_existing":          0,
         }
         if snap_id is None or prof_snap_id is None:
+            _audit_discovery(source_id, user_id, result)
             return result
 
         columns = get_key_candidate_columns(conn, source_id, prof_snap_id)
         if len(columns) < 2:
+            _audit_discovery(source_id, user_id, result)
             return result
 
         existing_pairs = {
@@ -868,6 +889,288 @@ def discover_relationship_candidates(
                 result["candidates_skipped_existing"] += 1
 
         conn.commit()
+        _audit_discovery(source_id, user_id, result)
+        return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Structural PK-name-match relationship discovery
+# (Enterprise Implementation — Structural Relationship Inference)
+#
+# discover_relationship_candidates() above depends on profiling statistics:
+# get_key_candidate_columns() only reads profiling_column_profiles rows at
+# ONE exact profiling_snapshot_id (the latest). A table profiled in an
+# earlier snapshot version but never re-profiled in the latest one (e.g.
+# ADF_Enrollment_Tracking in real CCPP — profiled through snapshot 9016, but
+# the latest profiling snapshot is 9017, which has zero rows for it) is
+# silently invisible to that function regardless of how strong its column
+# names are.
+#
+# This function proposes candidates directly from schema_snapshots —
+# column names, normalized data types, and declared primary keys the schema
+# connector already discovered (core.connectors.schema.TableInfo/ColumnInfo/
+# PrimaryKeyInfo) — with zero dependency on profiling_column_profiles.
+# Deliberately narrower than discover_relationship_candidates(): only an
+# EXACT column-name match against a declared target primary key, never the
+# normalized-stem/domain/entity/value-overlap signals that function uses.
+# Always persisted PENDING, never AUTO/APPROVED, and MIN_SUGGEST_CONFIDENCE
+# is never consulted or lowered — this is a separate, additive candidate
+# source, not a relaxation of the existing one. analyze_join_quality/
+# recommend_best_join_path/sql_planning_service/query_planning_service/
+# semantic_retrieval_service already only ever traverse AUTO/APPROVED edges
+# and are untouched by this function — a PENDING row it creates has no
+# effect on any of them until a human reviewer approves it.
+# ---------------------------------------------------------------------------
+
+def _is_bare_generic_pk_name(column_name: str) -> bool:
+    """
+    True when column_name, lowercased, IS EXACTLY one of the generic
+    id-stem stopwords (id/key/code/guid/uuid/fk/no/num/number/ref/
+    reference) with no qualifying prefix — e.g. "ID", "Id", "Key". A
+    prefixed name like "PathID"/"ClassID"/"UserID" keeps a real (if
+    sometimes still fairly generic, e.g. "UserID") word in front of the
+    stem and is NOT bare, so it stays eligible. Reuses _ID_STEM_STOPWORDS
+    (the same vocabulary _normalize_column_name already strips as suffix
+    noise) rather than inventing a new list.
+
+    Minimum-specificity gate added after the first real-CCPP run of
+    discover_structural_pk_candidates() showed 89% of all persisted
+    candidates (30,574 of 34,426) were bare "ID"/"Id"/"id" collisions
+    across CCPP's ~800 tables — technically satisfying every one of the
+    four creation criteria, but carrying essentially no semantic signal.
+    """
+    return (column_name or "").strip().lower() in _ID_STEM_STOPWORDS
+
+
+STRUCTURAL_INFERENCE_METHOD = "STRUCTURAL_PK_NAME_MATCH"
+_STRUCTURAL_RELATIONSHIP_TYPE = "INFERRED_STRUCTURAL_PK_MATCH"
+# Reuses the existing name_match + datatype + target_primary_key point
+# weights from _score_candidate's own scale (25 + 10 + 20 = 55) instead of
+# inventing a new number — this candidate satisfies exactly those three
+# signals, deterministically, every time (no partial credit, and no
+# value-overlap/dictionary/domain/entity signals available to add or
+# subtract without profiling data).
+_STRUCTURAL_MATCH_CONFIDENCE = _NAME_MATCH_POINTS + _DATATYPE_POINTS + _TARGET_KEY_POINTS
+
+
+def _parse_tables_from_snapshot_json(snapshot_json: str, snapshot_id: int) -> list[dict]:
+    """
+    Extract a flat list of {table_fqn, columns, primary_key_names} straight
+    from the raw schema_snapshot JSON — the same structural metadata the
+    connector already discovered, no profiling read at all. Returns [] on
+    parse failure — never raises.
+    """
+    try:
+        data = json.loads(snapshot_json)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(
+            "discover_structural_pk_candidates: failed to parse snapshot_json for snapshot_id=%s",
+            snapshot_id,
+        )
+        return []
+
+    tables: list[dict] = []
+    for schema in data.get("schemas") or []:
+        for table in schema.get("tables") or []:
+            table_fqn = table.get("table_fqn") or ""
+            if not table_fqn:
+                continue
+            pk_names = {
+                pk.get("column_name") for pk in (table.get("primary_keys") or [])
+                if pk.get("column_name")
+            }
+            tables.append({
+                "table_fqn": table_fqn,
+                "columns": table.get("columns") or [],
+                "primary_key_names": pk_names,
+            })
+    return tables
+
+
+def discover_structural_pk_candidates(
+    source_id: int, user_id: str, schema_snap_id: int | None = None,
+) -> dict | None:
+    """
+    Propose relationship candidates directly from schema discovery metadata
+    (schema_snapshots — column names, normalized data types, declared
+    primary keys), with NO dependency on profiling statistics. Complements
+    (does not replace) discover_relationship_candidates().
+
+    A candidate is created only when ALL of:
+      - source column name EXACTLY matches a target table's declared PK
+        column name (no stemming/normalization — deliberately stricter than
+        discover_relationship_candidates()'s bucket matching);
+      - normalized data types are compatible (core.connectors.schema.
+        normalize_data_type on each column's raw_type);
+      - source and target tables are different;
+      - the target column is a confirmed primary key (present in that
+        table's own schema-declared primary_keys list);
+      - the target PK column name is not a BARE generic id-stem word with
+        no qualifying prefix (see _is_bare_generic_pk_name) — e.g. "ID"/
+        "Id"/"Key" alone are excluded, but "PathID"/"ClassID"/"UserID" keep
+        a real prefix and remain eligible. Added after a real-CCPP run
+        showed bare "ID" collisions alone accounted for 89% of all
+        candidates, with essentially no semantic signal.
+
+    Always persisted with relationship_status='PENDING' — never AUTO or
+    APPROVED. A pair already covered by ANY existing row (declared FK, a
+    prior inferred candidate, or a prior structural candidate — checked both
+    directions, and within this same run) is skipped; INSERT OR IGNORE
+    against the existing unique index is the final backstop.
+
+    Does not read or write profiling_column_profiles, and does not change
+    sql_planning_service.py, query_planning_service.py,
+    semantic_layer_service.py, or semantic_retrieval_service.py.
+
+    Returns None when the source does not exist or is not owned by user_id.
+    """
+    conn = get_connection()
+    try:
+        if not _verify_source_ownership(conn, source_id, user_id):
+            return None
+
+        snap_id = _resolve_snapshot_id(conn, source_id, schema_snap_id)
+        result = {
+            "schema_snapshot_id":              snap_id,
+            "candidates_evaluated":            0,
+            "candidates_persisted":            0,
+            "candidates_rejected_type":        0,
+            "candidates_rejected_generic_name": 0,
+            "candidates_skipped_existing":     0,
+        }
+        if snap_id is None:
+            _audit_discovery(source_id, user_id, result)
+            return result
+
+        snap_row = conn.execute(
+            "SELECT snapshot_json FROM schema_snapshots WHERE id = ? AND source_id = ?",
+            (snap_id, source_id),
+        ).fetchone()
+        if snap_row is None:
+            _audit_discovery(source_id, user_id, result)
+            return result
+
+        tables = _parse_tables_from_snapshot_json(snap_row["snapshot_json"], snap_id)
+        if len(tables) < 2:
+            _audit_discovery(source_id, user_id, result)
+            return result
+
+        # target_index: column_name -> [(table_fqn, column dict), ...] for
+        # every table's OWN declared primary key column only — this is the
+        # "confirmed target primary key" gate, satisfied by construction
+        # (a column only ever lands here because it's in that table's own
+        # primary_key_names), not re-checked redundantly below.
+        target_index: dict[str, list[tuple[str, dict]]] = {}
+        for t in tables:
+            for col in t["columns"]:
+                col_name = col.get("column_name")
+                if col_name not in t["primary_key_names"]:
+                    continue
+                if _is_bare_generic_pk_name(col_name):
+                    result["candidates_rejected_generic_name"] += 1
+                    continue
+                target_index.setdefault(col_name, []).append((t["table_fqn"], col))
+
+        existing_pairs = {
+            (r["from_table_fqn"], r["from_column"], r["to_table_fqn"], r["to_column"])
+            for r in conn.execute(
+                "SELECT from_table_fqn, from_column, to_table_fqn, to_column "
+                "FROM table_relationships WHERE source_id = ? AND snapshot_id = ?",
+                (source_id, snap_id),
+            ).fetchall()
+        }
+
+        now = _now()
+        seen_this_run: set[tuple] = set()
+        for t in tables:
+            for col in t["columns"]:
+                col_name = col.get("column_name")
+                if not col_name or col_name not in target_index:
+                    continue
+                for target_table_fqn, target_col in target_index[col_name]:
+                    if target_table_fqn == t["table_fqn"]:
+                        continue  # source and target tables must differ
+
+                    result["candidates_evaluated"] += 1
+
+                    from_type = normalize_data_type(col.get("raw_type") or col.get("data_type") or "")
+                    to_type = normalize_data_type(target_col.get("raw_type") or target_col.get("data_type") or "")
+                    if from_type != to_type:
+                        result["candidates_rejected_type"] += 1
+                        continue
+
+                    pair_key = (t["table_fqn"], col_name, target_table_fqn, col_name)
+                    reverse_key = (target_table_fqn, col_name, t["table_fqn"], col_name)
+                    if (
+                        pair_key in existing_pairs or pair_key in seen_this_run
+                        or reverse_key in existing_pairs or reverse_key in seen_this_run
+                    ):
+                        result["candidates_skipped_existing"] += 1
+                        continue
+                    seen_this_run.add(pair_key)
+
+                    from_schema, from_table = _split_fqn(t["table_fqn"])
+                    to_schema, to_table = _split_fqn(target_table_fqn)
+                    # Cardinality: the target side is a confirmed PK (the
+                    # "one" side). The source side is only known to be a PK
+                    # too — and therefore also "one" — when it is its own
+                    # table's declared primary key; there is no profiling
+                    # uniqueness data available to say more than that.
+                    cardinality = "ONE_TO_ONE" if col_name in t["primary_key_names"] else "MANY_TO_ONE"
+                    evidence_json = json.dumps({
+                        "inference_method": STRUCTURAL_INFERENCE_METHOD,
+                        "evidence": [
+                            {
+                                "signal": "exact_name_match",
+                                "detail": f"Column name '{col_name}' exactly matches target primary key column name.",
+                            },
+                            {
+                                "signal": "datatype_compatible",
+                                "detail": (
+                                    f"'{col.get('raw_type') or col.get('data_type')}' normalizes to the same "
+                                    f"type ('{from_type}') as target "
+                                    f"'{target_col.get('raw_type') or target_col.get('data_type')}'."
+                                ),
+                            },
+                            {
+                                "signal": "target_primary_key",
+                                "detail": (
+                                    f"Target column '{target_table_fqn}.{col_name}' is a confirmed "
+                                    "(schema-declared) primary key."
+                                ),
+                            },
+                        ],
+                        "weaknesses": [],
+                    })
+
+                    before = conn.total_changes
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO table_relationships
+                            (source_id, snapshot_id, from_schema, from_table, from_table_fqn, from_column,
+                             to_schema, to_table, to_table_fqn, to_column,
+                             relationship_name, relationship_type, confidence, evidence_json, created_at,
+                             relationship_confidence, inference_method, relationship_status, cardinality)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            source_id, snap_id,
+                            from_schema, from_table, t["table_fqn"], col_name,
+                            to_schema, to_table, target_table_fqn, col_name,
+                            f"structural_{STRUCTURAL_INFERENCE_METHOD.lower()}", _STRUCTURAL_RELATIONSHIP_TYPE,
+                            round(_STRUCTURAL_MATCH_CONFIDENCE / 100.0, 3), evidence_json, now,
+                            _STRUCTURAL_MATCH_CONFIDENCE, STRUCTURAL_INFERENCE_METHOD, "PENDING", cardinality,
+                        ),
+                    )
+                    if conn.total_changes > before:
+                        result["candidates_persisted"] += 1
+                    else:
+                        result["candidates_skipped_existing"] += 1
+
+        conn.commit()
+        _audit_discovery(source_id, user_id, result)
         return result
     finally:
         conn.close()

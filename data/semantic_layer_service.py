@@ -918,6 +918,7 @@ def _summarize_path(raw_path: dict, edge_analyses: list[dict]) -> dict:
     n = len(edge_analyses)
     avg_quality = round(sum(e["join_quality"] for e in edge_analyses) / n, 1) if n else 100.0
     avg_conf    = round(sum(e["relationship_confidence"] for e in edge_analyses) / n, 1) if n else 100.0
+    min_conf    = min((e["relationship_confidence"] for e in edge_analyses), default=100)
     worst_risk  = (
         max(edge_analyses, key=lambda e: _PATH_RISK_RANK.get(e["fanout_risk"], 0))["fanout_risk"]
         if edge_analyses else "LOW"
@@ -930,6 +931,7 @@ def _summarize_path(raw_path: dict, edge_analyses: list[dict]) -> dict:
         "edges": edge_analyses,
         "avg_join_quality":            avg_quality,
         "avg_relationship_confidence": avg_conf,
+        "min_relationship_confidence": min_conf,
         "worst_fanout_risk":           worst_risk,
         "cardinality_score":           card_score,
     }
@@ -946,14 +948,19 @@ def _why_best_path(best: dict, alternatives: list[dict]) -> str:
 
     next_best = alternatives[0]
     reasons: list[str] = []
+    if best["hops"] < next_best["hops"]:
+        reasons.append(f"{next_best['hops'] - best['hops']} hop(s) shorter")
+    if _PATH_RISK_RANK.get(best["worst_fanout_risk"], 0) < _PATH_RISK_RANK.get(next_best["worst_fanout_risk"], 0):
+        reasons.append(f"avoids a {next_best['worst_fanout_risk']} fan-out hop the next-best path has")
+    if best["min_relationship_confidence"] > next_best["min_relationship_confidence"]:
+        reasons.append(
+            f"higher minimum edge confidence ({best['min_relationship_confidence']} "
+            f"vs {next_best['min_relationship_confidence']})"
+        )
     if best["avg_join_quality"] > next_best["avg_join_quality"]:
         reasons.append(
             f"higher average join quality ({best['avg_join_quality']} vs {next_best['avg_join_quality']})"
         )
-    if _PATH_RISK_RANK.get(best["worst_fanout_risk"], 0) < _PATH_RISK_RANK.get(next_best["worst_fanout_risk"], 0):
-        reasons.append(f"avoids a {next_best['worst_fanout_risk']} fan-out hop the next-best path has")
-    if best["hops"] < next_best["hops"]:
-        reasons.append(f"{next_best['hops'] - best['hops']} hop(s) shorter")
     if not reasons:
         reasons.append("ranked first on tie-break criteria")
     return base + " Chosen over the next-best alternative because it has " + "; ".join(reasons) + "."
@@ -1040,12 +1047,25 @@ def recommend_best_join_path(
     finally:
         conn.close()
 
+    # Trusted-edges-only is already guaranteed upstream: _load_edges (called
+    # above) only ever loads relationship_status IN ('AUTO', 'APPROVED'), so
+    # every raw_paths candidate here is built exclusively from trusted edges
+    # before ranking ever runs.
+    #
+    # Ranking priority (Enterprise Implementation — Join Path Priority Fix):
+    # among trusted paths, prefer fewer hops first, then lower fanout risk,
+    # then higher minimum edge confidence, then higher average join
+    # quality/confidence. Previously avg_join_quality was ranked first and
+    # hops last, which let a long chain of high-confidence edges outrank a
+    # short path containing one legitimately-trusted lower-confidence edge
+    # (e.g. an approved STRUCTURAL_PK_NAME_MATCH edge at confidence 55).
     analyzed_paths.sort(key=lambda ap: (
-        -ap["avg_join_quality"],
-        _PATH_RISK_RANK.get(ap["worst_fanout_risk"], 1),
-        -ap["cardinality_score"],
-        -ap["avg_relationship_confidence"],
         ap["hops"],
+        _PATH_RISK_RANK.get(ap["worst_fanout_risk"], 1),
+        -ap["min_relationship_confidence"],
+        -ap["avg_join_quality"],
+        -ap["avg_relationship_confidence"],
+        -ap["cardinality_score"],
     ))
 
     best = analyzed_paths[0]

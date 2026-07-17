@@ -432,3 +432,160 @@ def test_existing_semantic_functions_unaffected(tmp_path, monkeypatch):
 
     ambiguity = detect_join_ambiguity(1, "u1", "dbo.orders", "dbo.customers")
     assert ambiguity["is_clean"] is True
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Implementation — Join Path Priority Fix
+#
+# recommend_best_join_path must prefer the shortest trusted path over a
+# longer one, using confidence only as a tie-breaker among paths of equal
+# hop count — not the other way around. Real-CCPP regression: a 2-hop route
+# with one legitimately-approved 55-confidence STRUCTURAL_PK_NAME_MATCH edge
+# was previously outranked by an irrelevant 6-hop route built entirely from
+# 100-confidence edges, because avg_join_quality/avg_relationship_confidence
+# were ranked ahead of hop count.
+# ---------------------------------------------------------------------------
+
+def _column_exists(db, table_fqn, column_name):
+    conn = _db_conn(db)
+    row = conn.execute(
+        "SELECT 1 FROM profiling_column_profiles "
+        "WHERE profiling_snapshot_id = 1 AND table_fqn = ? AND column_name = ?",
+        (table_fqn, column_name),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def _mk_fk_pair(db, from_fqn, from_col, to_fqn, to_col, **rel_kwargs):
+    """FK column (low uniqueness) on from_fqn -> PK column (unique) on to_fqn.
+
+    Tolerates the PK-side (table_fqn, column) already existing — several
+    edges in these fixtures fan in to the same shared key column.
+    """
+    if not _column_exists(db, from_fqn, from_col):
+        _insert_column(db, from_fqn, from_col, uniqueness_score=0.05)
+    if not _column_exists(db, to_fqn, to_col):
+        _insert_column(db, to_fqn, to_col, is_primary_key=1, is_identity=1, uniqueness_score=1.0)
+    _insert_relationship(db, from_fqn, from_col, to_fqn, to_col, **rel_kwargs)
+
+
+def test_short_trusted_path_beats_long_high_confidence_path(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    for fqn in (
+        "dbo.ADF_Enrollment_Tracking", "dbo.ADF_Path", "dbo.ADF_Course",
+        "dbo.ADF_Hop1", "dbo.ADF_Hop2", "dbo.ADF_Hop3", "dbo.ADF_Hop4", "dbo.ADF_Hop5",
+    ):
+        _insert_table(db, fqn)
+
+    # Trusted 2-hop path: one edge is an approved STRUCTURAL_PK_NAME_MATCH at
+    # confidence 55 — must NOT be rejected (requirement: do not reject
+    # STRUCTURAL_PK_NAME_MATCH edges merely for confidence 55).
+    _mk_fk_pair(
+        db, "dbo.ADF_Enrollment_Tracking", "PathID", "dbo.ADF_Path", "PathID",
+        relationship_type="INFERRED_STRUCTURAL_PK_MATCH", relationship_status="APPROVED",
+        confidence=0.55, relationship_confidence=55, inference_method="STRUCTURAL_PK_NAME_MATCH",
+    )
+    _mk_fk_pair(db, "dbo.ADF_Course", "PathID", "dbo.ADF_Path", "PathID")
+
+    # Irrelevant 6-hop path, every edge trusted AUTO at full confidence.
+    _mk_fk_pair(db, "dbo.ADF_Enrollment_Tracking", "ChainID", "dbo.ADF_Hop1", "ChainID")
+    _mk_fk_pair(db, "dbo.ADF_Hop1", "Link2", "dbo.ADF_Hop2", "Link2")
+    _mk_fk_pair(db, "dbo.ADF_Hop2", "Link3", "dbo.ADF_Hop3", "Link3")
+    _mk_fk_pair(db, "dbo.ADF_Hop3", "Link4", "dbo.ADF_Hop4", "Link4")
+    _mk_fk_pair(db, "dbo.ADF_Hop4", "Link5", "dbo.ADF_Hop5", "Link5")
+    _mk_fk_pair(db, "dbo.ADF_Hop5", "CourseLink", "dbo.ADF_Course", "CourseLink")
+
+    result = recommend_best_join_path(
+        1, "u1", "dbo.ADF_Enrollment_Tracking", "dbo.ADF_Course", max_depth=6,
+    )
+    assert result["total_paths_found"] == 2
+
+    best = result["best_join_path"]
+    alt = result["alternative_paths"][0]
+
+    # Precondition: this reproduces the historical bug — the 6-hop path
+    # really does score higher on quality/confidence than the 2-hop path,
+    # so a quality-first ranking would (wrongly) have picked it.
+    assert alt["hops"] == 6
+    assert alt["avg_relationship_confidence"] > best["avg_relationship_confidence"]
+    assert alt["avg_join_quality"] > best["avg_join_quality"]
+
+    # The fix: shortest trusted path wins regardless.
+    assert best["hops"] == 2
+    assert best["path"] == ["dbo.ADF_Enrollment_Tracking", "dbo.ADF_Path", "dbo.ADF_Course"]
+    assert best["min_relationship_confidence"] == 55
+
+
+def test_untrusted_pending_path_never_selected(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _insert_table(db, "dbo.src")
+    _insert_table(db, "dbo.mid")
+    _insert_table(db, "dbo.tgt")
+
+    # Would be the shortest (1-hop) path if it counted — it must not, since
+    # it was never approved.
+    _mk_fk_pair(
+        db, "dbo.src", "tgt_id", "dbo.tgt", "id",
+        relationship_status="PENDING", confidence=0.90, relationship_confidence=90,
+        inference_method="name_match", relationship_type="INFERRED_NAME_MATCH",
+    )
+    # Only trusted route: 2 hops via dbo.mid.
+    _mk_fk_pair(db, "dbo.src", "mid_id", "dbo.mid", "id")
+    _mk_fk_pair(db, "dbo.mid", "tgt_id", "dbo.tgt", "id")
+
+    result = recommend_best_join_path(1, "u1", "dbo.src", "dbo.tgt")
+    assert result["total_paths_found"] == 1
+    assert result["best_join_path"]["hops"] == 2
+    assert result["best_join_path"]["path"] == ["dbo.src", "dbo.mid", "dbo.tgt"]
+
+    # A source/target pair connected only by a PENDING edge has no usable path at all.
+    _insert_table(db, "dbo.only_pending_a")
+    _insert_table(db, "dbo.only_pending_b")
+    _mk_fk_pair(
+        db, "dbo.only_pending_a", "b_id", "dbo.only_pending_b", "id",
+        relationship_status="PENDING", confidence=0.95, relationship_confidence=95,
+        inference_method="name_match", relationship_type="INFERRED_NAME_MATCH",
+    )
+    none_found = recommend_best_join_path(1, "u1", "dbo.only_pending_a", "dbo.only_pending_b")
+    assert none_found["total_paths_found"] == 0
+    assert none_found["best_join_path"] is None
+
+
+def test_equal_hop_paths_prefer_lower_fanout_then_higher_confidence(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    for fqn in ("dbo.src", "dbo.mid_a", "dbo.mid_c", "dbo.tgt"):
+        _insert_table(db, fqn, row_count=100)
+    _insert_table(db, "dbo.mid_b", row_count=10)
+
+    # via mid_a: both edges LOW fanout (MANY_TO_ONE), full confidence — best overall.
+    _mk_fk_pair(db, "dbo.src", "a_id", "dbo.mid_a", "id")
+    _mk_fk_pair(db, "dbo.tgt", "a_id", "dbo.mid_a", "id")
+
+    # via mid_c: both edges LOW fanout, but the second edge is a weaker
+    # (still trusted) 60-confidence edge — same fanout tier as mid_a, so
+    # confidence must break the tie.
+    _mk_fk_pair(db, "dbo.src", "c_id", "dbo.mid_c", "id")
+    _mk_fk_pair(
+        db, "dbo.tgt", "c_id", "dbo.mid_c", "id",
+        relationship_status="APPROVED", confidence=0.60, relationship_confidence=60,
+        inference_method="name_match", relationship_type="INFERRED_NAME_MATCH",
+    )
+
+    # via mid_b: first edge LOW fanout (src -> mid_b, MANY_TO_ONE). Second
+    # edge mid_b -> tgt is declared the other way round (mid_b's unique side
+    # references a non-unique tgt column) giving ONE_TO_MANY, and tgt has a
+    # >=10x row count vs mid_b, so it's assessed HIGH fanout risk despite
+    # full confidence.
+    _mk_fk_pair(db, "dbo.src", "b_id", "dbo.mid_b", "id")
+    _insert_table(db, "dbo.tgt", row_count=2000)
+    _insert_column(db, "dbo.tgt", "mid_b_fanout_col", uniqueness_score=0.05)
+    _insert_relationship(db, "dbo.mid_b", "id", "dbo.tgt", "mid_b_fanout_col")
+
+    result = recommend_best_join_path(1, "u1", "dbo.src", "dbo.tgt", max_depth=3)
+    assert result["total_paths_found"] == 3
+
+    ranked_mids = [p["path"][1] for p in [result["best_join_path"], *result["alternative_paths"]]]
+    assert ranked_mids == ["dbo.mid_a", "dbo.mid_c", "dbo.mid_b"]
+    assert result["best_join_path"]["worst_fanout_risk"] == "LOW"
+    assert result["alternative_paths"][-1]["worst_fanout_risk"] == "HIGH"
