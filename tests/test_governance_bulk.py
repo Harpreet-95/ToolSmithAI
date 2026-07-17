@@ -618,7 +618,7 @@ class TestBulkDryRun:
         _add_domain_rule(db, pval="fact_",   confidence=0.99, domain="Sales")
         _add_domain_rule(db, pval="dim_",    confidence=0.99, domain="Sales")
         _add_domain_rule(db, pval="staging_", confidence=0.99, domain="Finance")  # blocked
-        f = BulkFilter(object_type="domain.rule", confidence_min=0.90)
+        f = BulkFilter(object_type="domain.rule", source_id=1, confidence_min=0.90)
         with _patch_all(db):
             result = bulk_dry_run(f, actor_id="alice")
         assert result.dry_run is True
@@ -629,7 +629,7 @@ class TestBulkDryRun:
     def test_dry_run_does_not_modify_db(self):
         db = _make_db()
         _add_domain_rule(db, pval="fact_", confidence=0.99, domain="Sales")
-        f = BulkFilter(object_type="domain.rule", confidence_min=0.90)
+        f = BulkFilter(object_type="domain.rule", source_id=1, confidence_min=0.90)
         with _patch_all(db):
             bulk_dry_run(f, actor_id="alice")
         # Rule must still be PENDING
@@ -639,7 +639,7 @@ class TestBulkDryRun:
     def test_dry_run_bulk_op_id_is_none(self):
         db = _make_db()
         _add_domain_rule(db, pval="fact_", confidence=0.99, domain="Sales")
-        f = BulkFilter(object_type="domain.rule")
+        f = BulkFilter(object_type="domain.rule", source_id=1)
         with _patch_all(db):
             result = bulk_dry_run(f, actor_id="alice")
         assert result.bulk_op_id is None
@@ -648,7 +648,7 @@ class TestBulkDryRun:
         db = _make_db()
         _add_dict_column(db, col="email", label="Email", pii_risk=1)
         _add_dict_column(db, col="amount", label="Amount", pii_risk=0)
-        f = BulkFilter(object_type="dict.column", exclude_pii=False)
+        f = BulkFilter(object_type="dict.column", source_id=1, exclude_pii=False)
         with _patch_all(db):
             result = bulk_dry_run(f, actor_id="alice")
         # PII column blocked, non-PII also blocked by POLICY_REQUIRE_HUMAN_DICT_ENTRIES
@@ -661,12 +661,34 @@ class TestBulkDryRun:
 
     def test_dry_run_empty_candidates_returns_zero(self):
         db = _make_db()
-        f = BulkFilter(object_type="domain.rule")
+        f = BulkFilter(object_type="domain.rule", source_id=1)
         with _patch_all(db):
             result = bulk_dry_run(f, actor_id="alice")
         assert result.total_candidates == 0
         assert result.affected_count == 0
         assert result.blocked_count == 0
+
+    def test_dry_run_reject_action_previews_without_writing(self):
+        db = _make_db()
+        _add_domain_rule(db, pval="fact_", confidence=0.99, domain="Sales")
+        f = BulkFilter(object_type="domain.rule", source_id=1)
+        with _patch_all(db):
+            result = bulk_dry_run(f, actor_id="alice", action="reject")
+        assert result.dry_run is True
+        assert result.action == "reject"
+        assert result.affected_count == 1
+        row = db.execute("SELECT approval_status FROM domain_learning_rules").fetchone()
+        assert row["approval_status"] == "PENDING"  # untouched — still a dry run
+
+    def test_dry_run_requires_source_id(self):
+        f = BulkFilter(object_type="domain.rule")
+        with pytest.raises(ValueError):
+            bulk_dry_run(f, actor_id="alice")
+
+    def test_dry_run_rejects_invalid_action(self):
+        f = BulkFilter(object_type="domain.rule", source_id=1)
+        with pytest.raises(ValueError):
+            bulk_dry_run(f, actor_id="alice", action="delete")
 
 
 # ---------------------------------------------------------------------------

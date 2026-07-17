@@ -39,6 +39,7 @@ from data.governance_service import (
     _compute_ai_trust,
     _rule_status_to_state,
     get_governance_profile,
+    is_hard_safety_policy,
     list_governance_events,
     list_governed_object_types,
     log_governance_event,
@@ -247,6 +248,34 @@ _SCHEMA = """
         profiling_status      TEXT NOT NULL DEFAULT 'COMPLETE',
         created_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE domain_assignments (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id              INTEGER NOT NULL,
+        profiling_snapshot_id  INTEGER NOT NULL DEFAULT 1,
+        table_fqn              TEXT    NOT NULL,
+        domain                 TEXT    NOT NULL,
+        confidence             REAL    NOT NULL DEFAULT 0.0,
+        evidence_json          TEXT    NOT NULL DEFAULT '[]',
+        competing_domains_json TEXT    NOT NULL DEFAULT '[]',
+        assignment_source      TEXT    NOT NULL DEFAULT 'rule',
+        created_at             TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at             TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE entity_assignments (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id                INTEGER NOT NULL,
+        profiling_snapshot_id    INTEGER NOT NULL DEFAULT 1,
+        table_fqn                TEXT    NOT NULL,
+        entity                   TEXT    NOT NULL,
+        confidence               REAL    NOT NULL DEFAULT 0.0,
+        evidence_json            TEXT    NOT NULL DEFAULT '[]',
+        competing_entities_json  TEXT    NOT NULL DEFAULT '[]',
+        assignment_source        TEXT    NOT NULL DEFAULT 'rule',
+        created_at               TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at               TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE governance_approval_events (
@@ -534,6 +563,159 @@ class TestDictTableProfile:
                 object_type="dict.table", source_id=7, table_fqn="sales.fact_revenue"
             )
         assert profile.object_id == "7:sales.fact_revenue"
+
+
+class TestAssignmentProfile:
+    """
+    Milestone M-23 — domain.assignment / entity.assignment profile dispatch.
+
+    Before this milestone, GovernedObjectType.DOMAIN_ASSIGNMENT/ENTITY_ASSIGNMENT
+    were registered (enum + _TYPE_META) and already written to by
+    lock_domain_assignment()/lock_entity_assignment(), but get_governance_profile()
+    had no dispatch case for either — these tests prove the new dispatch works and
+    that confidence/domain_context/policy enrichment all flow through correctly.
+    """
+
+    def test_rule_assigned_domain_is_suggested(self):
+        db = _make_db()
+        db.execute(
+            "INSERT INTO domain_assignments "
+            "(source_id, table_fqn, domain, confidence, assignment_source, "
+            "created_at, updated_at) "
+            "VALUES (1, 'dbo.fact_orders', 'Sales', 0.85, 'rule', "
+            "'2025-01-01', '2025-01-01')"
+        )
+        db.commit()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="domain.assignment", source_id=1, table_fqn="dbo.fact_orders"
+            )
+        assert profile is not None
+        assert profile.approval_state == GovernanceState.SUGGESTED
+        assert profile.review_required is True
+        assert profile.confidence_score == 0.85
+        assert profile.confidence_tier == "HIGH"
+        assert profile.domain_context == "Sales"
+
+    def test_human_locked_domain_is_human_approved(self):
+        db = _make_db()
+        db.execute(
+            "INSERT INTO domain_assignments "
+            "(source_id, table_fqn, domain, confidence, assignment_source, "
+            "created_at, updated_at) "
+            "VALUES (1, 'dbo.fact_orders', 'Sales', 0.85, 'human', "
+            "'2025-01-01', '2025-01-01')"
+        )
+        db.commit()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="domain.assignment", source_id=1, table_fqn="dbo.fact_orders"
+            )
+        assert profile.approval_state == GovernanceState.HUMAN_APPROVED
+        assert profile.review_required is False
+        assert profile.can_ai_use is True
+
+    def test_auto_governance_domain_is_auto_approved(self):
+        db = _make_db()
+        db.execute(
+            "INSERT INTO domain_assignments "
+            "(source_id, table_fqn, domain, confidence, assignment_source, "
+            "created_at, updated_at) "
+            "VALUES (1, 'dbo.fact_orders', 'Sales', 0.95, 'auto_governance', "
+            "'2025-01-01', '2025-01-01')"
+        )
+        db.commit()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="domain.assignment", source_id=1, table_fqn="dbo.fact_orders"
+            )
+        assert profile.approval_state == GovernanceState.AUTO_APPROVED
+        assert profile.review_required is False
+        assert profile.can_ai_use is True
+
+    def test_unknown_domain_is_generated(self):
+        db = _make_db()
+        db.execute(
+            "INSERT INTO domain_assignments "
+            "(source_id, table_fqn, domain, confidence, assignment_source, "
+            "created_at, updated_at) "
+            "VALUES (1, 'dbo.orphan', 'Unknown', 0.30, 'rule', "
+            "'2025-01-01', '2025-01-01')"
+        )
+        db.commit()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="domain.assignment", source_id=1, table_fqn="dbo.orphan"
+            )
+        assert profile.approval_state == GovernanceState.GENERATED
+        assert profile.can_ai_use is False
+
+    def test_high_risk_domain_is_hard_blocked_even_at_high_confidence(self):
+        """A Finance-domain assignment is hard-blocked from auto-approval by the
+        existing, unmodified _check_hard_safety_policies high-risk-domain check —
+        zero new policy code, just the new dispatch feeding domain_context in."""
+        db = _make_db()
+        db.execute(
+            "INSERT INTO domain_assignments "
+            "(source_id, table_fqn, domain, confidence, assignment_source, "
+            "created_at, updated_at) "
+            "VALUES (1, 'dbo.gl_transactions', 'Finance', 0.99, 'rule', "
+            "'2025-01-01', '2025-01-01')"
+        )
+        db.commit()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="domain.assignment", source_id=1, table_fqn="dbo.gl_transactions"
+            )
+        assert profile.auto_approval_eligible is False
+        assert profile.blocking_policy == "HARD_HIGH_RISK_DOMAIN_REQUIRES_HUMAN"
+        assert is_hard_safety_policy(profile.blocking_policy) is True
+
+    def test_entity_assignment_dispatch_mirrors_domain(self):
+        db = _make_db()
+        db.execute(
+            "INSERT INTO entity_assignments "
+            "(source_id, table_fqn, entity, confidence, assignment_source, "
+            "created_at, updated_at) "
+            "VALUES (1, 'dbo.dim_client', 'Client', 0.92, 'auto_governance', "
+            "'2025-01-01', '2025-01-01')"
+        )
+        db.commit()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="entity.assignment", source_id=1, table_fqn="dbo.dim_client"
+            )
+        assert profile.approval_state == GovernanceState.AUTO_APPROVED
+        assert profile.confidence_score == 0.92
+        # Entity values are not domain names — must never feed the high-risk
+        # domain hard-policy check.
+        assert profile.domain_context is None
+
+    def test_nonexistent_assignment_returns_none(self):
+        db = _make_db()
+        with _patch(db):
+            profile = get_governance_profile(
+                object_type="domain.assignment", source_id=1, table_fqn="dbo.does_not_exist"
+            )
+        assert profile is None
+
+    def test_missing_table_fqn_returns_none(self):
+        db = _make_db()
+        with _patch(db):
+            profile = get_governance_profile(object_type="entity.assignment", source_id=1)
+        assert profile is None
+
+
+class TestIsHardSafetyPolicy:
+    def test_hard_policies_are_true(self):
+        assert is_hard_safety_policy("HARD_PII_REQUIRES_HUMAN") is True
+        assert is_hard_safety_policy("HARD_HIGH_RISK_DOMAIN_REQUIRES_HUMAN") is True
+        assert is_hard_safety_policy("HARD_IRREVERSIBLE_STATE") is True
+        assert is_hard_safety_policy("HARD_RELATIONSHIP_SUGGESTION_NO_BULK_APPROVE") is True
+
+    def test_soft_or_missing_policy_is_false(self):
+        assert is_hard_safety_policy("POLICY_REQUIRE_HUMAN_DICT_ENTRIES") is False
+        assert is_hard_safety_policy(None) is False
 
 
 class TestDictColumnProfile:

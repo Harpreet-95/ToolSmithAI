@@ -1204,12 +1204,65 @@ def init_db() -> None:
             '{"confidence_min": 0.95}',
             "AUTO_APPROVE",
         ),
+        # Milestone M-5, Part 4: dictionary entries with very strong,
+        # already-computed evidence (domain + entity assignment confidence,
+        # profiling classification confidence — see
+        # governance_service._compute_dict_table_evidence_confidence /
+        # _compute_dict_column_evidence_confidence) are auto-approve
+        # eligible. Priority 30 — evaluated before the priority-50 catch-all
+        # below, so only high-confidence dict.table/dict.column objects ever
+        # reach AUTO_APPROVE; everything else still falls through to
+        # REQUIRE_HUMAN unchanged. This policy alone is not sufficient for
+        # auto-approval — data/dictionary_curation_service.py additionally
+        # requires review-group "A" classification and no ambiguity with a
+        # sibling candidate before ever acting on it.
+        (
+            "POLICY_AUTO_APPROVE_HIGH_CONFIDENCE_DICTIONARY",
+            1, 30,
+            '["dict.table","dict.column"]',
+            '{"confidence_min": 0.90}',
+            "AUTO_APPROVE",
+        ),
+        # Milestone M-23 (Phase 6.5): domain/entity assignments with very
+        # strong, already-computed rule-engine confidence (the assignment's
+        # own `confidence` column — see governance_service._build_assignment_profile)
+        # are auto-approve eligible. Priority 35 — evaluated after the dict
+        # policy (30, a different object_type, no collision) and before the
+        # priority-55 catch-all below. Live CCPP data clears this bar for only
+        # a small minority of rows (~63/1401 domain, ~69/1401 entity), so this
+        # is deliberately conservative, matching the dict policy's own shape.
+        # Not sufficient alone — data/semantic_governance_rollout_service.py
+        # additionally requires no ambiguous same-entity sibling and a
+        # non-high-risk domain (the existing hard policy, unchanged) before
+        # ever acting on it.
+        (
+            "POLICY_AUTO_APPROVE_HIGH_CONFIDENCE_ASSIGNMENTS",
+            1, 35,
+            '["domain.assignment","entity.assignment"]',
+            '{"confidence_min": 0.90}',
+            "AUTO_APPROVE",
+        ),
         # Dictionary entries (business names, labels) always require a human
         # since they carry direct business meaning that needs domain expert sign-off.
         (
             "POLICY_REQUIRE_HUMAN_DICT_ENTRIES",
             1, 50,
             '["dict.table","dict.column"]',
+            '{}',
+            "REQUIRE_HUMAN",
+        ),
+        # Milestone M-23: explainability catch-all for domain/entity
+        # assignments that don't clear the 0.90 confidence bar above — these
+        # are already review_required=True by the policy engine's default
+        # branch with or without this row, but this gives `matched_policy` a
+        # real name instead of None, which the maturity classifier
+        # (data/semantic_governance_rollout_service.py) surfaces as the
+        # asset's "exact reason." Priority 55 — deliberately after the
+        # existing priority-50 catch-alls so it never intercepts them.
+        (
+            "POLICY_REQUIRE_HUMAN_ASSIGNMENTS",
+            1, 55,
+            '["domain.assignment","entity.assignment"]',
             '{}',
             "REQUIRE_HUMAN",
         ),

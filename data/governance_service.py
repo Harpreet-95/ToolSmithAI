@@ -307,6 +307,70 @@ _ENGINE_TOOL_STATUS_MAP: dict[str, GovernanceState] = {
 # Per-type profile builders (internal)
 # ---------------------------------------------------------------------------
 
+def _fetch_domain_entity_confidence(conn, source_id: int, table_fqn: str) -> list[float]:
+    """
+    Milestone M-5, Part 4. Shared helper: the domain/entity assignment
+    confidence scores for one table, reused by both the table-level and
+    column-level evidence-confidence computation below. No new signal —
+    reads the same `domain_assignments`/`entity_assignments` rows
+    `business_knowledge_service.get_table_business_context` already reads.
+    Tolerant of a minimal test schema that hasn't created these tables
+    (matches the existing tolerant-query pattern in `_check_db_policies`).
+    """
+    scores: list[float] = []
+    try:
+        domain_row = conn.execute(
+            "SELECT confidence FROM domain_assignments WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+        if domain_row and domain_row["confidence"] is not None:
+            scores.append(float(domain_row["confidence"]))
+    except Exception:
+        pass
+    try:
+        entity_row = conn.execute(
+            "SELECT confidence FROM entity_assignments WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+        if entity_row and entity_row["confidence"] is not None:
+            scores.append(float(entity_row["confidence"]))
+    except Exception:
+        pass
+    return scores
+
+
+def _compute_dict_table_evidence_confidence(conn, source_id: int, table_fqn: str) -> float | None:
+    scores = _fetch_domain_entity_confidence(conn, source_id, table_fqn)
+    try:
+        profile_row = conn.execute(
+            "SELECT classification_confidence FROM profiling_table_profiles "
+            "WHERE source_id = ? AND table_fqn = ? ORDER BY id DESC LIMIT 1",
+            (source_id, table_fqn),
+        ).fetchone()
+        if profile_row and profile_row["classification_confidence"] is not None:
+            scores.append(float(profile_row["classification_confidence"]))
+    except Exception:
+        pass
+    return round(sum(scores) / len(scores), 4) if scores else None
+
+
+def _compute_dict_column_evidence_confidence(
+    conn, source_id: int, table_fqn: str, column_name: str,
+) -> float | None:
+    scores = _fetch_domain_entity_confidence(conn, source_id, table_fqn)
+    try:
+        col_row = conn.execute(
+            "SELECT semantic_confidence FROM profiling_column_profiles "
+            "WHERE source_id = ? AND table_fqn = ? AND column_name = ? ORDER BY id DESC LIMIT 1",
+            (source_id, table_fqn, column_name),
+        ).fetchone()
+        if col_row and col_row["semantic_confidence"] is not None:
+            scores.append(float(col_row["semantic_confidence"]))
+    except Exception:
+        pass
+    return round(sum(scores) / len(scores), 4) if scores else None
+
+
 def _build_dict_table_profile(row: dict) -> GovernanceProfile:
     obj_id = f"{row['source_id']}:{row['table_fqn']}"
 
@@ -327,13 +391,22 @@ def _build_dict_table_profile(row: dict) -> GovernanceProfile:
         review_reason = "No dictionary entry has been generated for this table yet."
 
     can_ai, warn = _compute_ai_trust(state)
+    # Milestone M-5, Part 4: populate confidence_score from evidence already
+    # computed elsewhere (domain/entity assignment confidence, profiling
+    # classification confidence — the same signals
+    # business_knowledge_service._compute_table_confidence already
+    # averages), instead of the prior hardcoded None. Only present when
+    # get_governance_profile()'s single-object lookup supplied it; the
+    # bulk-candidate cached path leaves this key absent and degrades to the
+    # unchanged None behavior.
+    confidence = row.get("_evidence_confidence")
     return GovernanceProfile(
         object_type_id    = GovernedObjectType.DICT_TABLE,
         object_id         = obj_id,
         approval_state    = state,
-        confidence_score  = None,
-        confidence_tier   = None,
-        confidence_source = None,
+        confidence_score  = confidence,
+        confidence_tier   = _confidence_tier(confidence),
+        confidence_source = "domain_entity_profiling_evidence" if confidence is not None else None,
         review_required   = review_required,
         review_reason     = review_reason,
         reviewed_by       = row.get("approved_by"),
@@ -369,13 +442,15 @@ def _build_dict_column_profile(row: dict) -> GovernanceProfile:
         review_reason = "No business label has been generated for this column yet."
 
     can_ai, warn = _compute_ai_trust(state, pii_risk=pii_risk)
+    # Milestone M-5, Part 4: see _build_dict_table_profile's equivalent note.
+    confidence = row.get("_evidence_confidence")
     return GovernanceProfile(
         object_type_id    = GovernedObjectType.DICT_COLUMN,
         object_id         = obj_id,
         approval_state    = state,
-        confidence_score  = None,
-        confidence_tier   = None,
-        confidence_source = None,
+        confidence_score  = confidence,
+        confidence_tier   = _confidence_tier(confidence),
+        confidence_source = "domain_entity_profiling_evidence" if confidence is not None else None,
         review_required   = review_required,
         review_reason     = review_reason,
         reviewed_by       = row.get("approved_by"),
@@ -387,6 +462,70 @@ def _build_dict_column_profile(row: dict) -> GovernanceProfile:
         can_ai_use        = can_ai,
         ai_warning        = warn,
         pii_risk          = pii_risk,
+    )
+
+
+def _build_assignment_profile(row: dict, object_type: str) -> GovernanceProfile:
+    """
+    Profile builder for domain.assignment / entity.assignment rows.
+
+    Milestone M-23: these two GovernedObjectType values were already
+    registered (enum + _TYPE_META below) and already written to by
+    domain_service.lock_domain_assignment()/entity_service.lock_entity_assignment(),
+    but get_governance_profile() had no dispatch case for either — no policy
+    could ever evaluate a domain/entity assignment. This builder closes that
+    gap using only the already-persisted domain_assignments/entity_assignments
+    columns; no new signal is computed.
+    """
+    obj_id = f"{row['source_id']}:{row['table_fqn']}"
+    value_field = "domain" if object_type == GovernedObjectType.DOMAIN_ASSIGNMENT else "entity"
+    value = row.get(value_field)
+    source = row.get("assignment_source")
+    confidence = row.get("confidence")
+    confidence = float(confidence) if confidence is not None else None
+
+    if source == "human":
+        state = GovernanceState.HUMAN_APPROVED
+        review_required = False
+        review_reason = None
+    elif source == "auto_governance":
+        state = GovernanceState.AUTO_APPROVED
+        review_required = False
+        review_reason = None
+    elif value not in (None, "Unknown"):
+        state = GovernanceState.SUGGESTED
+        review_required = True
+        review_reason = (
+            f"{value_field.capitalize()} '{value}' assigned by rule engine at "
+            f"{(confidence or 0.0):.0%} confidence; awaiting approval."
+        )
+    else:
+        state = GovernanceState.GENERATED
+        review_required = True
+        review_reason = f"No {value_field} classification exists for this table yet."
+
+    can_ai, warn = _compute_ai_trust(state)
+    return GovernanceProfile(
+        object_type_id    = object_type,
+        object_id         = obj_id,
+        approval_state    = state,
+        confidence_score  = confidence,
+        confidence_tier   = _confidence_tier(confidence),
+        confidence_source = f"{value_field}_rule_engine" if confidence is not None else None,
+        review_required   = review_required,
+        review_reason     = review_reason,
+        reviewed_by       = None,
+        reviewed_at       = None,
+        created_by        = None,
+        created_at        = row.get("created_at"),
+        updated_at        = row.get("updated_at"),
+        evidence          = [],
+        can_ai_use        = can_ai,
+        ai_warning        = warn,
+        # Only the domain value feeds the high-risk-domain hard policy check
+        # (_check_hard_safety_policies) — entity values (Client/Candidate/...)
+        # are not domain names and must never be matched against it.
+        domain_context    = value if object_type == GovernedObjectType.DOMAIN_ASSIGNMENT else None,
     )
 
 
@@ -730,6 +869,21 @@ def upsert_governance_state(
 _HARD_POLICY_PII            = "HARD_PII_REQUIRES_HUMAN"
 _HARD_POLICY_HIGH_RISK      = "HARD_HIGH_RISK_DOMAIN_REQUIRES_HUMAN"
 _HARD_POLICY_IRREVERSIBLE   = "HARD_IRREVERSIBLE_STATE"
+_HARD_POLICY_RELATIONSHIP_NO_BULK_APPROVE = "HARD_RELATIONSHIP_SUGGESTION_NO_BULK_APPROVE"
+
+_HARD_SAFETY_POLICIES: frozenset[str] = frozenset({
+    _HARD_POLICY_PII, _HARD_POLICY_HIGH_RISK, _HARD_POLICY_IRREVERSIBLE,
+    _HARD_POLICY_RELATIONSHIP_NO_BULK_APPROVE,
+})
+
+
+def is_hard_safety_policy(policy_name: str | None) -> bool:
+    """True when policy_name is one of the hard-coded safety policies that can
+    never be disabled or overridden by a DB-stored policy (see
+    _check_hard_safety_policies below). Lets a caller tell a hard block
+    (sensitive/irreversible — must always stay manual) apart from a soft,
+    DB-policy block (Milestone M-23's semantic maturity classifier)."""
+    return policy_name in _HARD_SAFETY_POLICIES
 
 # Domains that always require human review.  These lists are intentionally
 # conservative; enterprise admins can add DB-stored policies for additional
@@ -1028,7 +1182,12 @@ def get_governance_profile(
                 "WHERE source_id = ? AND table_fqn = ?",
                 (source_id, table_fqn),
             ).fetchone()
-            profile = _build_dict_table_profile(dict(row)) if row else None
+            if row:
+                row = dict(row)
+                row["_evidence_confidence"] = _compute_dict_table_evidence_confidence(
+                    conn, source_id, table_fqn,
+                )
+            profile = _build_dict_table_profile(row) if row else None
 
         elif obj_type == GovernedObjectType.DICT_COLUMN:
             if source_id is None or not table_fqn or not column_name:
@@ -1038,7 +1197,12 @@ def get_governance_profile(
                 "WHERE source_id = ? AND table_fqn = ? AND column_name = ?",
                 (source_id, table_fqn, column_name),
             ).fetchone()
-            profile = _build_dict_column_profile(dict(row)) if row else None
+            if row:
+                row = dict(row)
+                row["_evidence_confidence"] = _compute_dict_column_evidence_confidence(
+                    conn, source_id, table_fqn, column_name,
+                )
+            profile = _build_dict_column_profile(row) if row else None
 
         elif obj_type == GovernedObjectType.DOMAIN_RULE:
             if rule_id is None:
@@ -1102,6 +1266,30 @@ def get_governance_profile(
                 (relationship_id,),
             ).fetchone()
             profile = _build_relationship_profile(dict(row)) if row else None
+
+        elif obj_type == GovernedObjectType.DOMAIN_ASSIGNMENT:
+            if source_id is None or not table_fqn:
+                return None
+            row = conn.execute(
+                "SELECT * FROM domain_assignments WHERE source_id = ? AND table_fqn = ?",
+                (source_id, table_fqn),
+            ).fetchone()
+            profile = (
+                _build_assignment_profile(dict(row), GovernedObjectType.DOMAIN_ASSIGNMENT)
+                if row else None
+            )
+
+        elif obj_type == GovernedObjectType.ENTITY_ASSIGNMENT:
+            if source_id is None or not table_fqn:
+                return None
+            row = conn.execute(
+                "SELECT * FROM entity_assignments WHERE source_id = ? AND table_fqn = ?",
+                (source_id, table_fqn),
+            ).fetchone()
+            profile = (
+                _build_assignment_profile(dict(row), GovernedObjectType.ENTITY_ASSIGNMENT)
+                if row else None
+            )
 
         if profile is None:
             return None
@@ -1396,7 +1584,7 @@ class BulkFilter:
     unless explicitly overridden by a PII Officer (Phase 4).
     """
     object_type:    str               # Required — GovernedObjectType value
-    source_id:      int | None = None
+    source_id:      int | None = None  # Required at execution time — see _run_bulk_operation
     confidence_min: float | None = None
     confidence_max: float | None = None
     approval_state: str | None = None  # None = all reviewable states
@@ -1404,6 +1592,8 @@ class BulkFilter:
     entity:         str | None = None  # entity filter (entity.rule only)
     schema_name:    str | None = None  # table schema prefix filter
     exclude_pii:    bool = True        # Safety default: True
+    review_group:   str | None = None  # M-3 Part 4 — A-G review_segmentation_service group code
+                                        # (dict.table / dict.column / relationship.suggestion only)
 
     def to_dict(self) -> dict:
         return {
@@ -1416,6 +1606,7 @@ class BulkFilter:
             "entity":         self.entity,
             "schema_name":    self.schema_name,
             "exclude_pii":    self.exclude_pii,
+            "review_group":   self.review_group,
         }
 
     @classmethod
@@ -1430,6 +1621,7 @@ class BulkFilter:
             entity         = d.get("entity"),
             schema_name    = d.get("schema_name"),
             exclude_pii    = bool(d.get("exclude_pii", True)),
+            review_group   = d.get("review_group"),
         )
 
 
@@ -1880,6 +2072,13 @@ def _record_bulk_op(
         return None
 
 
+_REVIEW_GROUP_TABLE_TYPES = frozenset({
+    GovernedObjectType.DICT_TABLE,
+    GovernedObjectType.DICT_COLUMN,
+    GovernedObjectType.RELATIONSHIP_SUGGESTION,
+})
+
+
 def _run_bulk_operation(
     f: BulkFilter,
     action: str,
@@ -1889,20 +2088,48 @@ def _run_bulk_operation(
     """
     Core bulk operation engine.
 
-    1. Query candidate objects using the filter.
-    2. Load DB policies once for the entire batch.
-    3. For each candidate, evaluate policies (hard safety + cached DB policies).
-    4. If not dry_run and not blocked: call the existing per-type approval/rejection
+    1. Require source_id — every bulk action must be scoped to one data
+       source; a filter with no source_id would otherwise span every user's
+       sources (M-3 Part 4 safety fix).
+    2. Query candidate objects using the filter.
+    3. If review_group is set, narrow candidates to that A-G segmentation
+       group (table-fqn membership check — dict.table/dict.column/
+       relationship.suggestion only; see review_segmentation_service).
+    4. Load DB policies once for the entire batch.
+    5. For each candidate, evaluate policies (hard safety + cached DB policies).
+    6. If not dry_run and not blocked: call the existing per-type approval/rejection
        function (preserving all their side-effects).
-    5. Write a governance_bulk_ops record (unless dry_run).
-    6. Return BulkOpResult with full breakdown.
+    7. Write a governance_bulk_ops record (unless dry_run).
+    8. Return BulkOpResult with full breakdown.
     """
+    if f.source_id is None:
+        raise ValueError("BulkFilter.source_id is required for all bulk operations.")
+
     conn = get_connection()
     try:
         candidates = _query_bulk_candidates(f, conn)
         cached_policies = _load_enabled_db_policies(conn)
     finally:
         conn.close()
+
+    if f.review_group:
+        try:
+            ot = GovernedObjectType(f.object_type)
+        except ValueError:
+            ot = None
+        if ot in _REVIEW_GROUP_TABLE_TYPES:
+            from data.review_segmentation_service import segment_source_assets
+            segmentation = segment_source_assets(f.source_id, actor_id, tables_per_group_limit=10_000)
+            allowed_tables = set(
+                (segmentation or {}).get("groups", {}).get(f.review_group, {}).get("example_tables", [])
+            )
+
+            def _in_group(row: dict) -> bool:
+                if ot == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+                    return row.get("from_table_fqn") in allowed_tables or row.get("to_table_fqn") in allowed_tables
+                return row.get("table_fqn") in allowed_tables
+
+            candidates = [row for row in candidates if _in_group(row)]
 
     affected: list[dict] = []
     blocked:  list[dict] = []
@@ -1916,6 +2143,23 @@ def _run_bulk_operation(
 
         # ── Safety evaluation ──────────────────────────────────────────────
         if action == "approve":
+            # Hard block: inferred relationship candidates are never bulk-
+            # approved — only the single-item approve_relationship() endpoint
+            # (real per-item human judgment) may move PENDING -> APPROVED.
+            # This is a non-negotiable rule, not a toggleable DB policy.
+            if profile.object_type_id == GovernedObjectType.RELATIONSHIP_SUGGESTION:
+                blocked.append({
+                    "object_id":       obj_id,
+                    "object_type_id":  profile.object_type_id,
+                    "blocking_policy": _HARD_POLICY_RELATIONSHIP_NO_BULK_APPROVE,
+                    "reason": (
+                        "Inferred relationship candidates cannot be bulk-approved. "
+                        "Review and approve each one individually via "
+                        "POST /sources/{source_id}/relationships/{relationship_id}/approve."
+                    ),
+                })
+                continue
+
             # Block if object is already approved / in irreversible state
             if profile.approval_state in _BULK_APPROVE_BLOCKED_STATES:
                 blocked.append({
@@ -2005,14 +2249,18 @@ def _run_bulk_operation(
 # Public — Bulk Operations
 # ---------------------------------------------------------------------------
 
-def bulk_dry_run(f: BulkFilter, actor_id: str) -> BulkOpResult:
+def bulk_dry_run(f: BulkFilter, actor_id: str, action: str = "approve") -> BulkOpResult:
     """
-    Simulate a bulk approval and return the count of items that would be
-    approved vs blocked — without writing any changes.
+    Simulate a bulk approval OR rejection/suppression and return the count of
+    items that would be affected vs blocked — without writing any changes.
 
-    Use this before bulk_approve() to preview impact.
+    action must be "approve" or "reject". Use this before bulk_approve()/
+    bulk_reject() to preview impact (M-3 Part 4: dry-run now covers both
+    actions, not approval only).
     """
-    return _run_bulk_operation(f, action="approve", actor_id=actor_id, dry_run=True)
+    if action not in ("approve", "reject"):
+        raise ValueError("action must be 'approve' or 'reject'")
+    return _run_bulk_operation(f, action=action, actor_id=actor_id, dry_run=True)
 
 
 def bulk_approve(f: BulkFilter, actor_id: str) -> BulkOpResult:

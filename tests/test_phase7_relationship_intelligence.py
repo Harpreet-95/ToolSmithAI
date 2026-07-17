@@ -499,10 +499,13 @@ def test_reject_relationship_pending_to_rejected(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 13. Bulk approve works for relationship.suggestion (no second workflow)
+# 13. Bulk approve is hard-blocked for relationship.suggestion — inferred
+#     relationships may only be approved one at a time via approve_relationship()
+#     (M-3 non-negotiable rule: "do not auto-approve inferred relationships").
+#     Bulk reject/suppression of junk candidates remains allowed.
 # ---------------------------------------------------------------------------
 
-def test_bulk_approve_relationship_suggestion(tmp_path, monkeypatch):
+def test_bulk_approve_relationship_suggestion_is_hard_blocked(tmp_path, monkeypatch):
     db = env(tmp_path, monkeypatch)
     _basic_name_match_pair(db)
     _insert_declared_fk(db, 50, "dbo.orders", "product_id", "dbo.products", "id")
@@ -512,8 +515,12 @@ def test_bulk_approve_relationship_suggestion(tmp_path, monkeypatch):
     f = BulkFilter(object_type="relationship.suggestion", source_id=1)
     result = bulk_approve(f, actor_id="u1")
 
-    assert result.affected_count == 1
-    assert _row(db, rel_id)["relationship_status"] == "APPROVED"
+    assert result.affected_count == 0
+    assert result.blocked_count == 1
+    assert result.blocked_items[0]["blocking_policy"] == \
+        "HARD_RELATIONSHIP_SUGGESTION_NO_BULK_APPROVE"
+    # Candidate stays PENDING — never auto-trusted via a bulk path.
+    assert _row(db, rel_id)["relationship_status"] == "PENDING"
     # Declared FK row must be completely untouched by the bulk op
     fk_row = _row(db, 50)
     assert fk_row["relationship_status"] == "AUTO"

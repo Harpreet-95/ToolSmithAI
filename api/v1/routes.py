@@ -4941,6 +4941,47 @@ _NL_STOP = frozenset({
     "is", "are", "from", "in", "on", "at", "with", "and", "or", "give",
     "get", "list", "display", "find", "tell", "which", "per", "each", "all",
     "their", "its", "using", "across", "among", "between",
+    # Phase 6.4 (Enterprise Semantic Accuracy) additions. Root cause (traced
+    # against real CCPP metadata via query_planning_service.plan_business_query):
+    # _collect_candidate_tables() unions find_business_assets() results across
+    # EVERY term in `concepts`/`measures`/`dimensions`, and that unioned table
+    # pool is what every measure/dimension term is subsequently scored
+    # against — so a single grammatical or modifier word that isn't a real
+    # business concept pulls in unrelated tables that then dilute and
+    # outscore the genuine term's own correct candidates (reproduced: "Highest
+    # invoice amount" ranked dbo.ADF_Marketing_PreUserActivity_Group above the
+    # real Invoices table, purely because "highest"/"amount" pulled in
+    # unrelated high-authority tables). Every word below is independently,
+    # already handled elsewhere in the pipeline (core/semantic/concept_resolver.
+    # py's extract_query_intent(), called on the raw question string, not on
+    # this term list) or has zero resolvable business meaning, so excluding it
+    # from candidate-table search loses no signal:
+    #   - grammatical filler (this/there/who/have/etc.): never carries meaning
+    #   - status words (active/open/closed/...): _STATUS_RE already derives
+    #     status_value from the raw question and applies it as a WHERE filter
+    #   - recency/ranking words (latest/recent/top/distinct/...): _LATEST_RE/
+    #     _EARLIEST_RE/_TOP_N_RE/_BOTTOM_N_RE/_DISTINCT_RE already derive `order`
+    #     from the raw question ("recent"/"current" newly wired to _LATEST_RE
+    #     in this same milestone, see concept_resolver.py)
+    #   - aggregation-operator words (total/average/highest/lowest/...):
+    #     _COUNT_RE/_SUM_RE/_AVG_RE/_MIN_RE/_MAX_RE already derive `aggregation`
+    #     from the raw question
+    #   - bare calendar words (year/month/quarter/...): date_range detection
+    #     matches 2-word phrases ("this year", "last month") on the raw
+    #     question text; a bare "year" alone was never itself a signal, only
+    #     ever a source of false column-name collisions (the M-19-documented
+    #     "year" -> ADF_YearExpRq.YearsExpValue false match)
+    "this", "that", "these", "those", "there", "who", "whose",
+    "have", "has", "having", "were", "was", "do", "does", "did",
+    "made", "make", "worked", "linked", "added", "most", "performing",
+    "to", "s", "still", "so", "number", "we", "i", "you", "they", "it",
+    "active", "inactive", "open", "closed", "cancelled", "canceled", "completed", "pending",
+    "latest", "newest", "earliest", "oldest", "current", "recent", "top", "bottom",
+    "distinct", "unique",
+    "total", "average", "highest", "lowest", "sum", "percent", "percentage", "compare",
+    # NOTE: bare calendar words were tried and reverted here too, to stay in
+    # sync with core/semantic/concept_resolver.py::_STOPWORDS — see that
+    # set's own comment for the concrete regression this caused.
 })
 
 
@@ -5230,7 +5271,7 @@ _VALID_GOVERNED_TYPES = {
     "dict.table", "dict.column",
     "domain.rule", "domain.refinement",
     "entity.rule", "tool.engine",
-    "pii.confirmation",
+    "pii.confirmation", "relationship.suggestion",
 }
 
 
@@ -5243,26 +5284,28 @@ def governance_list_types(user: AuthenticatedUser = Depends(require_jwt)) -> dic
 
 @router.get("/governance/profile")
 def governance_get_profile(
-    object_type:   str       = Query(..., description="Governed object type id"),
-    source_id:     int | None = Query(None),
-    table_fqn:     str | None = Query(None),
-    column_name:   str | None = Query(None),
-    rule_id:       int | None = Query(None),
-    suggestion_id: int | None = Query(None),
-    tool_id:       str | None = Query(None),
+    object_type:      str        = Query(..., description="Governed object type id"),
+    source_id:        int | None = Query(None),
+    table_fqn:        str | None = Query(None),
+    column_name:      str | None = Query(None),
+    rule_id:          int | None = Query(None),
+    suggestion_id:    int | None = Query(None),
+    tool_id:          str | None = Query(None),
+    relationship_id:  int | None = Query(None),
     user: AuthenticatedUser = Depends(require_jwt),
 ) -> dict:
     """
     Return the unified governance profile for one governed object.
 
     Required query parameters vary by object_type:
-      dict.table        — source_id, table_fqn
-      dict.column       — source_id, table_fqn, column_name
-      domain.rule       — rule_id
-      entity.rule       — rule_id
-      domain.refinement — suggestion_id
-      tool.engine       — tool_id
-      pii.confirmation  — source_id, table_fqn, column_name
+      dict.table: source_id, table_fqn
+      dict.column: source_id, table_fqn, column_name
+      domain.rule: rule_id
+      entity.rule: rule_id
+      domain.refinement: suggestion_id
+      tool.engine: tool_id
+      pii.confirmation: source_id, table_fqn, column_name
+      relationship.suggestion: relationship_id
     """
     if object_type not in _VALID_GOVERNED_TYPES:
         return JSONResponse(
@@ -5274,13 +5317,14 @@ def governance_get_profile(
         )
     from data.governance_service import get_governance_profile
     profile = get_governance_profile(
-        object_type   = object_type,
-        source_id     = source_id,
-        table_fqn     = table_fqn,
-        column_name   = column_name,
-        rule_id       = rule_id,
-        suggestion_id = suggestion_id,
-        tool_id       = tool_id,
+        object_type     = object_type,
+        source_id       = source_id,
+        table_fqn       = table_fqn,
+        column_name     = column_name,
+        rule_id         = rule_id,
+        suggestion_id   = suggestion_id,
+        tool_id         = tool_id,
+        relationship_id = relationship_id,
     )
     if profile is None:
         return JSONResponse(
@@ -5307,10 +5351,33 @@ def governance_list_events(
     }
 
 
+@router.get("/governance/review-segmentation")
+def governance_review_segmentation(
+    source_id: int = Query(..., description="Data source to segment"),
+    user: AuthenticatedUser = Depends(require_role("admin")),
+) -> dict:
+    """
+    Bucket every dictionary table for a source into review groups A-G
+    (candidate authoritative / derived-reporting / historical-archive /
+    temporary-staging / framework-system / sensitive-restricted /
+    unknown-manual-review). Read-only — computes live from existing
+    dictionary/profiling/domain/entity/relationship/PII metadata, no new
+    schema (M-3 Part 3).
+    """
+    from data.review_segmentation_service import segment_source_assets
+    result = segment_source_assets(source_id, user.user_id)
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content=build_error_response("Source not found or not owned by this user."),
+        )
+    return {"status": "success", "data": result}
+
+
 @router.get("/governance/policies")
 def governance_list_policies(
     enabled_only: bool = Query(False, description="Return only enabled policies"),
-    user: AuthenticatedUser = Depends(require_jwt),
+    user: AuthenticatedUser = Depends(require_role("admin")),
 ) -> dict:
     """Return all governance policies ordered by priority."""
     from data.governance_service import get_governance_policies
@@ -5329,7 +5396,7 @@ class _CreatePolicyRequest(BaseModel):
 @router.post("/governance/policies")
 def governance_create_policy(
     body: _CreatePolicyRequest,
-    user: AuthenticatedUser = Depends(require_jwt),
+    user: AuthenticatedUser = Depends(require_role("admin")),
 ) -> dict:
     """
     Create a user-configurable governance policy.
@@ -5365,7 +5432,7 @@ class _TogglePolicyRequest(BaseModel):
 def governance_toggle_policy(
     policy_id: int,
     body: _TogglePolicyRequest,
-    user: AuthenticatedUser = Depends(require_jwt),
+    user: AuthenticatedUser = Depends(require_role("admin")),
 ) -> dict:
     """Enable or disable a DB-stored governance policy."""
     from data.governance_service import toggle_governance_policy
@@ -5425,12 +5492,16 @@ class _BulkFilterRequest(BaseModel):
     """
     Filter for bulk governance operations.
 
-    object_type is required.  All other fields are optional and additive (AND).
+    object_type and source_id are required — every bulk action must be
+    scoped to one data source (M-3 Part 4: an omitted source_id used to let
+    a bulk op span every user's sources, which is a real cross-tenant gap).
+    All other fields are optional and additive (AND).
     exclude_pii defaults to True — PII columns are never bulk-approved
     without an explicit override (future PII Officer role in Phase 4).
+    confirmed must be true to commit an approve/reject — run dry-run first.
     """
     object_type:    str
-    source_id:      int | None   = None
+    source_id:      int
     confidence_min: float | None = None
     confidence_max: float | None = None
     approval_state: str | None   = None
@@ -5438,12 +5509,14 @@ class _BulkFilterRequest(BaseModel):
     entity:         str | None   = None
     schema_name:    str | None   = None
     exclude_pii:    bool         = True
+    review_group:   str | None   = None  # A-G review_segmentation_service group code
+    confirmed:      bool         = False  # required True to commit approve/reject
 
 
 _BULK_SUPPORTED_TYPES = {
     "dict.table", "dict.column",
     "domain.rule", "entity.rule",
-    "domain.refinement",
+    "domain.refinement", "relationship.suggestion",
 }
 
 
@@ -5462,20 +5535,24 @@ def _build_bulk_filter(body: _BulkFilterRequest):
         entity         = body.entity,
         schema_name    = body.schema_name,
         exclude_pii    = body.exclude_pii,
+        review_group   = body.review_group,
     )
 
 
 @router.post("/governance/bulk/dry-run")
 def governance_bulk_dry_run(
     body: _BulkFilterRequest,
-    user: AuthenticatedUser = Depends(require_jwt),
+    action: str = Query("approve", description="'approve' or 'reject' — which action to preview"),
+    user: AuthenticatedUser = Depends(require_role("admin")),
 ) -> dict:
     """
-    Simulate a bulk approval and return affected/blocked counts without
-    writing any changes.  Use before bulk/approve to preview impact.
+    Simulate a bulk approval OR rejection and return affected/blocked counts
+    without writing any changes. Use before bulk/approve or bulk/reject to
+    preview impact.
 
     Supported object_type values:
-        dict.table, dict.column, domain.rule, entity.rule, domain.refinement
+        dict.table, dict.column, domain.rule, entity.rule, domain.refinement,
+        relationship.suggestion
     """
     f = _build_bulk_filter(body)
     if f is None:
@@ -5487,14 +5564,17 @@ def governance_bulk_dry_run(
             ),
         )
     from data.governance_service import bulk_dry_run
-    result = bulk_dry_run(f, actor_id=user.user_id)
+    try:
+        result = bulk_dry_run(f, actor_id=user.user_id, action=action)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
     return {"status": "success", "data": result.to_dict()}
 
 
 @router.post("/governance/bulk/approve")
 def governance_bulk_approve(
     body: _BulkFilterRequest,
-    user: AuthenticatedUser = Depends(require_jwt),
+    user: AuthenticatedUser = Depends(require_role("admin")),
 ) -> dict:
     """
     Bulk-approve all matching governed objects that pass policy evaluation.
@@ -5503,6 +5583,7 @@ def governance_bulk_approve(
     DB policies with action=REQUIRE_HUMAN automatically block individual items
     — they appear in blocked_items in the response.
 
+    Requires confirmed=true (run /governance/bulk/dry-run first to preview).
     A governance_bulk_ops audit record is written for every execution.
     """
     f = _build_bulk_filter(body)
@@ -5513,21 +5594,35 @@ def governance_bulk_approve(
                 f"Unsupported object_type '{body.object_type}'."
             ),
         )
+    if not body.confirmed:
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response(
+                "confirmed=true is required to commit a bulk approval. "
+                "Run /governance/bulk/dry-run first to preview impact."
+            ),
+        )
     from data.governance_service import bulk_approve
-    result = bulk_approve(f, actor_id=user.user_id)
+    try:
+        result = bulk_approve(f, actor_id=user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
     return {"status": "success", "data": result.to_dict()}
 
 
 @router.post("/governance/bulk/reject")
 def governance_bulk_reject(
     body: _BulkFilterRequest,
-    user: AuthenticatedUser = Depends(require_jwt),
+    user: AuthenticatedUser = Depends(require_role("admin")),
 ) -> dict:
     """
     Bulk-reject all matching governed objects in reviewable states.
 
     Objects in HUMAN_APPROVED, AUTO_APPROVED, REJECTED, DEPRECATED, or
     ARCHIVED states are automatically skipped (appear in blocked_items).
+
+    Requires confirmed=true (run /governance/bulk/dry-run?action=reject first
+    to preview impact).
     """
     f = _build_bulk_filter(body)
     if f is None:
@@ -5537,8 +5632,19 @@ def governance_bulk_reject(
                 f"Unsupported object_type '{body.object_type}'."
             ),
         )
+    if not body.confirmed:
+        return JSONResponse(
+            status_code=400,
+            content=build_error_response(
+                "confirmed=true is required to commit a bulk rejection. "
+                "Run /governance/bulk/dry-run?action=reject first to preview impact."
+            ),
+        )
     from data.governance_service import bulk_reject
-    result = bulk_reject(f, actor_id=user.user_id)
+    try:
+        result = bulk_reject(f, actor_id=user.user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=422, content=build_error_response(str(exc)))
     return {"status": "success", "data": result.to_dict()}
 
 

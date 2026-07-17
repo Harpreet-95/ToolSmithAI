@@ -734,7 +734,21 @@ def reject_ai_suggestion(
     return {"rejected": True, "suggestion_id": suggestion_id}
 
 
-def approve_table_dictionary(source_id: int, user_id: str, table_fqn: str) -> dict | None:
+def approve_table_dictionary(
+    source_id: int, user_id: str, table_fqn: str,
+    *, governance_state: str = "HUMAN_APPROVED", actor_id: str | None = None,
+) -> dict | None:
+    """
+    user_id remains the source-ownership identity (unchanged — every
+    existing caller's behavior is identical). governance_state defaults to
+    "HUMAN_APPROVED"; Milestone M-5's autonomous curation service passes
+    "AUTO_APPROVED" instead (GovernanceState.AUTO_APPROVED already exists in
+    the enum — no new state, no new write path). actor_id, when given,
+    attributes the audit event (log_governance_event/upsert_governance_state)
+    to a distinct actor (e.g. "system:m5-autonomous-curation") separately
+    from the owning user_id; defaults to user_id, preserving the exact
+    existing audit behavior for every human-approval caller.
+    """
     conn = get_connection()
     try:
         owns = conn.execute(
@@ -763,21 +777,23 @@ def approve_table_dictionary(source_id: int, user_id: str, table_fqn: str) -> di
             GovernanceState, GovernedObjectType,
             log_governance_event, upsert_governance_state,
         )
+        state = GovernanceState(governance_state)
+        attributed_actor = actor_id or user_id
         _obj_id = f"{source_id}:{table_fqn}"
         log_governance_event(
             object_type_id = GovernedObjectType.DICT_TABLE,
             object_id      = _obj_id,
             event_type     = "APPROVED",
             from_state     = GovernanceState.SUGGESTED,
-            to_state       = GovernanceState.HUMAN_APPROVED,
-            actor_id       = user_id,
+            to_state       = state,
+            actor_id       = attributed_actor,
             source_service = "dictionary_service",
         )
         upsert_governance_state(
             object_type_id = GovernedObjectType.DICT_TABLE,
             object_id      = _obj_id,
-            approval_state = GovernanceState.HUMAN_APPROVED,
-            reviewer_id    = user_id,
+            approval_state = state,
+            reviewer_id    = attributed_actor,
             reviewed_at    = now,
         )
     except Exception:
@@ -789,8 +805,10 @@ def approve_table_dictionary(source_id: int, user_id: str, table_fqn: str) -> di
 
 
 def approve_column_dictionary(
-    source_id: int, user_id: str, table_fqn: str, column_name: str
+    source_id: int, user_id: str, table_fqn: str, column_name: str,
+    *, governance_state: str = "HUMAN_APPROVED", actor_id: str | None = None,
 ) -> dict | None:
+    """See approve_table_dictionary's governance_state/actor_id note."""
     conn = get_connection()
     try:
         owns = conn.execute(
@@ -819,21 +837,23 @@ def approve_column_dictionary(
             GovernanceState, GovernedObjectType,
             log_governance_event, upsert_governance_state,
         )
+        state = GovernanceState(governance_state)
+        attributed_actor = actor_id or user_id
         _obj_id = f"{source_id}:{table_fqn}:{column_name}"
         log_governance_event(
             object_type_id = GovernedObjectType.DICT_COLUMN,
             object_id      = _obj_id,
             event_type     = "APPROVED",
             from_state     = GovernanceState.SUGGESTED,
-            to_state       = GovernanceState.HUMAN_APPROVED,
-            actor_id       = user_id,
+            to_state       = state,
+            actor_id       = attributed_actor,
             source_service = "dictionary_service",
         )
         upsert_governance_state(
             object_type_id = GovernedObjectType.DICT_COLUMN,
             object_id      = _obj_id,
-            approval_state = GovernanceState.HUMAN_APPROVED,
-            reviewer_id    = user_id,
+            approval_state = state,
+            reviewer_id    = attributed_actor,
             reviewed_at    = now,
         )
     except Exception:

@@ -8,7 +8,7 @@ _EXACT_TOKENS: frozenset[str] = frozenset({
     'ssn', 'sin', 'nino', 'passport', 'ein', 'tin',
     # Authentication
     'password', 'passwd', 'pwd', 'passphrase', 'secret',
-    'credential', 'credentials', 'pin', 'otp',
+    'credential', 'credentials', 'pin', 'otp', 'token',
     # Payment
     'cvv', 'cvc', 'iban', 'pan',
     # Demographics

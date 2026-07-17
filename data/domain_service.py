@@ -30,8 +30,13 @@ _UPSERT = """
         evidence_json          = excluded.evidence_json,
         competing_domains_json = excluded.competing_domains_json,
         updated_at             = excluded.updated_at
-    WHERE domain_assignments.assignment_source != 'human'
+    WHERE domain_assignments.assignment_source NOT IN ('human', 'auto_governance')
 """
+# Milestone M-23: 'auto_governance' (policy-matured, see auto_mature_domain_assignment
+# below) is protected from silent overwrite by the next rule re-run exactly like
+# 'human' already is — without this, a matured row's governance record would
+# claim AUTO_APPROVED while the underlying domain/confidence silently drifted
+# out from under it on the next generate_domain_assignments() call.
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +300,76 @@ def lock_domain_assignment(
             to_state       = GovernanceState.HUMAN_APPROVED,
             actor_id       = user_id,
             source_service = "domain_service",
+        )
+    except Exception:
+        logger.warning("governance logging failed for domain.assignment %s:%s", source_id, table_fqn)
+
+    d = dict(row)
+    d["evidence"]          = json.loads(d.pop("evidence_json", "[]") or "[]")
+    d["competing_domains"] = json.loads(d.pop("competing_domains_json", "[]") or "[]")
+    return d
+
+
+def auto_mature_domain_assignment(
+    source_id: int, table_fqn: str, *, actor_id: str,
+) -> dict | None:
+    """
+    Mark a domain assignment as policy-matured (Milestone M-23 — Enterprise
+    Semantic Governance Rollout).
+
+    A separate function from lock_domain_assignment() on purpose: that
+    function's contract (event_type='HUMAN_LOCK', to_state=HUMAN_APPROVED) is
+    specifically "a person made this decision." This function is for the
+    governed-automation path only — callers (data/semantic_governance_rollout_service.py)
+    are responsible for having already verified policy eligibility, review-group,
+    and ambiguity-margin conditions before calling this.
+
+    Never overwrites a human lock (guarded in the UPDATE's WHERE clause, not
+    just by caller discipline). Returns the updated row, or None if no
+    assignment row exists yet for table_fqn or it is already human-locked.
+    """
+    now = _now()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE domain_assignments "
+            "SET assignment_source = 'auto_governance', updated_at = ? "
+            "WHERE source_id = ? AND table_fqn = ? AND assignment_source != 'human'",
+            (now, source_id, table_fqn),
+        )
+        conn.commit()
+
+        if cursor.rowcount == 0:
+            return None
+
+        row = conn.execute(
+            "SELECT * FROM domain_assignments WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType, log_governance_event, upsert_governance_state,
+        )
+        object_id = f"{source_id}:{table_fqn}"
+        log_governance_event(
+            object_type_id = GovernedObjectType.DOMAIN_ASSIGNMENT,
+            object_id      = object_id,
+            event_type     = "AUTO_GOVERNANCE_APPROVED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.AUTO_APPROVED,
+            actor_id       = actor_id,
+            source_service = "domain_service",
+        )
+        upsert_governance_state(
+            object_type_id   = GovernedObjectType.DOMAIN_ASSIGNMENT,
+            object_id        = object_id,
+            approval_state   = GovernanceState.AUTO_APPROVED.value,
+            confidence_score = row["confidence"] if row else None,
+            reviewer_id      = actor_id,
+            reviewed_at      = now,
         )
     except Exception:
         logger.warning("governance logging failed for domain.assignment %s:%s", source_id, table_fqn)

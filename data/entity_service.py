@@ -30,8 +30,11 @@ _UPSERT = """
         evidence_json           = excluded.evidence_json,
         competing_entities_json = excluded.competing_entities_json,
         updated_at              = excluded.updated_at
-    WHERE entity_assignments.assignment_source != 'human'
+    WHERE entity_assignments.assignment_source NOT IN ('human', 'auto_governance')
 """
+# Milestone M-23: see domain_service.py's identical _UPSERT comment —
+# 'auto_governance' rows are protected from silent overwrite the same way
+# 'human' rows already are.
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +300,66 @@ def lock_entity_assignment(
             to_state       = GovernanceState.HUMAN_APPROVED,
             actor_id       = user_id,
             source_service = "entity_service",
+        )
+    except Exception:
+        logger.warning("governance logging failed for entity.assignment %s:%s", source_id, table_fqn)
+
+    d = dict(row)
+    d["evidence"]           = json.loads(d.pop("evidence_json", "[]") or "[]")
+    d["competing_entities"] = json.loads(d.pop("competing_entities_json", "[]") or "[]")
+    return d
+
+
+def auto_mature_entity_assignment(
+    source_id: int, table_fqn: str, *, actor_id: str,
+) -> dict | None:
+    """
+    Mark an entity assignment as policy-matured (Milestone M-23 — Enterprise
+    Semantic Governance Rollout). See domain_service.auto_mature_domain_assignment's
+    docstring — identical contract, entity-assignment side.
+    """
+    now = _now()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE entity_assignments "
+            "SET assignment_source = 'auto_governance', updated_at = ? "
+            "WHERE source_id = ? AND table_fqn = ? AND assignment_source != 'human'",
+            (now, source_id, table_fqn),
+        )
+        conn.commit()
+
+        if cursor.rowcount == 0:
+            return None
+
+        row = conn.execute(
+            "SELECT * FROM entity_assignments WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    try:
+        from data.governance_service import (
+            GovernanceState, GovernedObjectType, log_governance_event, upsert_governance_state,
+        )
+        object_id = f"{source_id}:{table_fqn}"
+        log_governance_event(
+            object_type_id = GovernedObjectType.ENTITY_ASSIGNMENT,
+            object_id      = object_id,
+            event_type     = "AUTO_GOVERNANCE_APPROVED",
+            from_state     = GovernanceState.SUGGESTED,
+            to_state       = GovernanceState.AUTO_APPROVED,
+            actor_id       = actor_id,
+            source_service = "entity_service",
+        )
+        upsert_governance_state(
+            object_type_id   = GovernedObjectType.ENTITY_ASSIGNMENT,
+            object_id        = object_id,
+            approval_state   = GovernanceState.AUTO_APPROVED.value,
+            confidence_score = row["confidence"] if row else None,
+            reviewer_id      = actor_id,
+            reviewed_at      = now,
         )
     except Exception:
         logger.warning("governance logging failed for entity.assignment %s:%s", source_id, table_fqn)

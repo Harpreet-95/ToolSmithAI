@@ -62,6 +62,17 @@ def test_pii_password_and_api_key():
     assert detect_pii('user_password_hash', 'TEXT') is True
     assert detect_pii('api_key', 'TEXT') is True
 
+def test_pii_secrets_and_tokens():
+    assert detect_pii('secret', 'TEXT') is True
+    assert detect_pii('access_token', 'TEXT') is True
+    assert detect_pii('session_token', 'TEXT') is True
+    assert detect_pii('reset_token', 'TEXT') is True
+    assert detect_pii('token', 'TEXT') is True
+
+def test_pii_bank_account_and_routing_number():
+    assert detect_pii('bank_account_number', 'TEXT') is True
+    assert detect_pii('routing_number', 'TEXT') is True
+
 def test_pii_ssn():
     assert detect_pii('ssn', 'TEXT') is True
     assert detect_pii('social_security_number', 'TEXT') is True

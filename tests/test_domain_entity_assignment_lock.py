@@ -20,8 +20,12 @@ os.environ.setdefault("JWT_SECRET", "test-jwt-secret-assignment-lock-long-enough
 os.environ.setdefault("USER_ID_SALT", "test-salt-assignment-lock-value")
 
 import data.models as models
-from data.domain_service import generate_domain_assignments, lock_domain_assignment
-from data.entity_service import generate_entity_assignments, lock_entity_assignment
+from data.domain_service import (
+    generate_domain_assignments, lock_domain_assignment, auto_mature_domain_assignment,
+)
+from data.entity_service import (
+    generate_entity_assignments, lock_entity_assignment, auto_mature_entity_assignment,
+)
 
 _NOW = "2026-01-01T00:00:00+00:00"
 
@@ -192,3 +196,113 @@ class TestEntityAssignmentLock:
         events = _governance_events(db, "entity.assignment")
         assert len(events) == 1
         assert events[0]["event_type"] == "HUMAN_LOCK"
+
+
+# ---------------------------------------------------------------------------
+# Milestone M-23 — auto-maturation write path (governed automation, not human)
+# ---------------------------------------------------------------------------
+
+def _state_map_row(db_path, object_type_id, object_id):
+    conn = _db_conn(db_path)
+    row = conn.execute(
+        "SELECT * FROM governance_state_map WHERE object_type_id = ? AND object_id = ?",
+        (object_type_id, object_id),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+class TestAutoMatureDomainAssignment:
+    def test_matures_row_and_writes_audit_trail(self, tmp_path, monkeypatch):
+        db = env(tmp_path, monkeypatch)
+        generate_domain_assignments(1, "u1")
+        result = auto_mature_domain_assignment(1, "dbo.customers", actor_id="system:test-rollout")
+        assert result["assignment_source"] == "auto_governance"
+
+        row = _domain_row(db)
+        assert row["assignment_source"] == "auto_governance"
+
+        events = _governance_events(db, "domain.assignment")
+        assert len(events) == 1
+        assert events[0]["event_type"] == "AUTO_GOVERNANCE_APPROVED"
+        assert events[0]["to_state"] == "AUTO_APPROVED"
+        assert events[0]["actor_id"] == "system:test-rollout"
+
+        state = _state_map_row(db, "domain.assignment", "1:dbo.customers")
+        assert state is not None
+        assert state["approval_state"] == "AUTO_APPROVED"
+
+    def test_never_overwrites_human_lock(self, tmp_path, monkeypatch):
+        # Rollback safety: a human decision always wins over a later
+        # governed-automation attempt on the same row.
+        db = env(tmp_path, monkeypatch)
+        generate_domain_assignments(1, "u1")
+        lock_domain_assignment(1, "u1", "dbo.customers", domain="Custom Domain")
+        result = auto_mature_domain_assignment(1, "dbo.customers", actor_id="system:test-rollout")
+        assert result is None
+
+        row = _domain_row(db)
+        assert row["assignment_source"] == "human"
+        assert row["domain"] == "Custom Domain"
+
+    def test_matured_row_survives_subsequent_regeneration(self, tmp_path, monkeypatch):
+        # Rollback safety: the widened UPSERT WHERE clause must protect an
+        # auto_governance row from the next scheduled rule re-run exactly
+        # like it already protects a human-locked row.
+        db = env(tmp_path, monkeypatch)
+        generate_domain_assignments(1, "u1")
+        before = _domain_row(db)
+        auto_mature_domain_assignment(1, "dbo.customers", actor_id="system:test-rollout")
+        generate_domain_assignments(1, "u1")  # re-run — must not overwrite
+        after = _domain_row(db)
+        assert after["domain"] == before["domain"]
+        assert after["assignment_source"] == "auto_governance"
+
+    def test_nonexistent_assignment_returns_none(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        assert auto_mature_domain_assignment(1, "dbo.nonexistent", actor_id="system:test") is None
+
+
+class TestAutoMatureEntityAssignment:
+    def test_matures_row_and_writes_audit_trail(self, tmp_path, monkeypatch):
+        db = env(tmp_path, monkeypatch)
+        generate_entity_assignments(1, "u1")
+        result = auto_mature_entity_assignment(1, "dbo.customers", actor_id="system:test-rollout")
+        assert result["assignment_source"] == "auto_governance"
+
+        row = _entity_row(db)
+        assert row["assignment_source"] == "auto_governance"
+
+        events = _governance_events(db, "entity.assignment")
+        assert len(events) == 1
+        assert events[0]["event_type"] == "AUTO_GOVERNANCE_APPROVED"
+        assert events[0]["to_state"] == "AUTO_APPROVED"
+
+        state = _state_map_row(db, "entity.assignment", "1:dbo.customers")
+        assert state is not None
+        assert state["approval_state"] == "AUTO_APPROVED"
+
+    def test_never_overwrites_human_lock(self, tmp_path, monkeypatch):
+        db = env(tmp_path, monkeypatch)
+        generate_entity_assignments(1, "u1")
+        lock_entity_assignment(1, "u1", "dbo.customers", entity="Custom Entity")
+        result = auto_mature_entity_assignment(1, "dbo.customers", actor_id="system:test-rollout")
+        assert result is None
+
+        row = _entity_row(db)
+        assert row["assignment_source"] == "human"
+        assert row["entity"] == "Custom Entity"
+
+    def test_matured_row_survives_subsequent_regeneration(self, tmp_path, monkeypatch):
+        db = env(tmp_path, monkeypatch)
+        generate_entity_assignments(1, "u1")
+        before = _entity_row(db)
+        auto_mature_entity_assignment(1, "dbo.customers", actor_id="system:test-rollout")
+        generate_entity_assignments(1, "u1")  # re-run — must not overwrite
+        after = _entity_row(db)
+        assert after["entity"] == before["entity"]
+        assert after["assignment_source"] == "auto_governance"
+
+    def test_nonexistent_assignment_returns_none(self, tmp_path, monkeypatch):
+        env(tmp_path, monkeypatch)
+        assert auto_mature_entity_assignment(1, "dbo.nonexistent", actor_id="system:test") is None
