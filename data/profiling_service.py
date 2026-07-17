@@ -370,11 +370,25 @@ def get_latest_profile(source_id: int, user_id: str) -> dict | None:
             "ORDER BY schema_name, table_name",
             (snap["id"],),
         ).fetchall()
+
+        # profiling_snapshots.tables_profiled is a hand-incremented counter that
+        # can drift above the true distinct-table count if a batch window is ever
+        # processed more than once (see continue_batch_profiling). The row set in
+        # profiling_table_profiles is protected by a UNIQUE(profiling_snapshot_id,
+        # table_fqn) index, so COUNT(DISTINCT table_fqn) is the authoritative value.
+        distinct_profiled = conn.execute(
+            "SELECT COUNT(DISTINCT table_fqn) FROM profiling_table_profiles "
+            "WHERE profiling_snapshot_id = ?",
+            (snap["id"],),
+        ).fetchone()[0]
     finally:
         conn.close()
 
+    summary = _to_public_profile_summary(snap)
+    summary["tables_profiled"] = distinct_profiled
+
     return {
-        "snapshot": _to_public_profile_summary(snap),
+        "snapshot": summary,
         "tables":   [dict(r) for r in tables],
     }
 
