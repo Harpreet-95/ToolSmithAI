@@ -167,12 +167,18 @@ def _score_table_authority(table_fqn: str, ctx: dict) -> dict:
     if profiling and profiling.get("table_class") in ("Master", "Reference"):
         reasons.append(f"{profiling['table_class']} table")
 
+    # Sprint 2, Signal #1 — Confidence-Aware Semantic Scoring: scale each
+    # bonus by the assignment's own confidence (0-1, already computed by
+    # domain_service/entity_service) instead of granting the full bonus for
+    # any non-"Unknown" assignment regardless of how confident it is. Ceiling
+    # is unchanged (0.05 / 0.07 at confidence 1.0), so the overall bonus
+    # range and every other additive signal below are unaffected.
     if governance.get("domain_assigned"):
-        bonus += 0.05
-        reasons.append(f"Domain = {domain_row['domain']}")
+        bonus += 0.05 * (domain_row["confidence"] or 0.0)
+        reasons.append(f"Domain = {domain_row['domain']} (confidence {domain_row['confidence']:.0%})")
     if governance.get("entity_assigned"):
-        bonus += 0.07
-        reasons.append(f"Entity = {entity_row['entity']}")
+        bonus += 0.07 * (entity_row["confidence"] or 0.0)
+        reasons.append(f"Entity = {entity_row['entity']} (confidence {entity_row['confidence']:.0%})")
 
     rel_count = len(relationships.get("outbound") or []) + len(relationships.get("inbound") or [])
     if rel_count:

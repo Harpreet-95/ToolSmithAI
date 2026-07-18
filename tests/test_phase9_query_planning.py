@@ -26,7 +26,7 @@ os.environ.setdefault("JWT_SECRET", "test-phase9-query-planning-secret-long-enou
 os.environ.setdefault("USER_ID_SALT", "test-phase9-salt-long-enough-value-1234567890")
 
 import data.models as models
-from data.query_planning_service import plan_business_query
+from data.query_planning_service import plan_business_query, _score_table_authority
 
 _NOW = "2026-06-30T00:00:00+00:00"
 
@@ -1084,3 +1084,153 @@ def test_ambiguity_and_ranking_safeguards_unchanged_by_synonym_wiring(tmp_path, 
     concept = result["concepts"][0]
     assert concept["resolved"] is False
     assert concept["ambiguity_reason"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2, Signal #1 — Confidence-Aware Semantic Scoring
+#
+# _score_table_authority's domain/entity bonuses (+0.05 / +0.07) are today
+# flat: they fire identically whether domain_confidence/entity_confidence is
+# 0.99 or 0.01, because governance["domain_assigned"]/["entity_assigned"]
+# collapse the underlying confidence float to a bool. These tests pin down
+# the confidence-weighted replacement BEFORE it exists (A/B/C are written
+# against the current flat-bonus code and are expected to fail red until the
+# scaling lands; D-F exercise the same behavior through the full
+# plan_business_query path). No other canonicality signal is touched.
+# ---------------------------------------------------------------------------
+
+def _authority_ctx(*, domain_confidence=None, entity_confidence=None,
+                    domain_assigned=True, entity_assigned=True):
+    """
+    Minimal, hand-built get_table_business_context()-shaped ctx isolating the
+    domain/entity confidence signal: profiling/dictionary/relationships are
+    all empty so importance/row-count/relationship bonuses are fixed at
+    their no-evidence baseline (0.1 importance -> +0.03) for every case,
+    and only the domain/entity terms vary between calls.
+    """
+    return {
+        "dictionary": None,
+        "domain": {"domain": "Test", "confidence": domain_confidence} if domain_assigned else None,
+        "entity": {"entity": "Test", "confidence": entity_confidence} if entity_assigned else None,
+        "profiling": None,
+        "relationships": {},
+        "governance": {
+            "domain_assigned": domain_assigned,
+            "entity_assigned": entity_assigned,
+            "dictionary_approved": False,
+        },
+        "table": {"table_type": "TABLE"},
+    }
+
+
+def test_authority_higher_confidence_yields_higher_bonus():
+    # A. Higher confidence must produce a higher authority score than lower
+    # confidence, all else equal.
+    high = _score_table_authority("dbo.widgets", _authority_ctx(domain_confidence=0.95, entity_confidence=0.95))
+    low = _score_table_authority("dbo.widgets", _authority_ctx(domain_confidence=0.2, entity_confidence=0.2))
+    assert high["bonus"] > low["bonus"]
+
+
+def test_authority_zero_confidence_not_same_as_high_confidence():
+    # B. A confidence of 0 must not receive the same authority bonus as a
+    # confidence of 0.95 — and must be indistinguishable from no assignment
+    # at all (not merely "less than" high confidence by accident of rounding).
+    zero = _score_table_authority("dbo.widgets", _authority_ctx(domain_confidence=0.0, entity_confidence=0.0))
+    high = _score_table_authority("dbo.widgets", _authority_ctx(domain_confidence=0.95, entity_confidence=0.95))
+    unassigned = _score_table_authority(
+        "dbo.widgets", _authority_ctx(domain_assigned=False, entity_assigned=False)
+    )
+    assert zero["bonus"] < high["bonus"]
+    assert zero["bonus"] == unassigned["bonus"]
+
+
+def test_authority_non_confidence_signals_unchanged():
+    # C. With no domain/entity assignment at all, the bonus must equal
+    # exactly the pre-existing no-evidence baseline (importance-only: 0.1 *
+    # 0.30) — proving the confidence change touches only the domain/entity
+    # terms and leaves every other additive signal untouched.
+    result = _score_table_authority(
+        "dbo.widgets", _authority_ctx(domain_assigned=False, entity_assigned=False)
+    )
+    assert result["bonus"] == round(0.1 * 0.30, 4)
+
+
+def test_authority_naming_penalty_additive_with_confidence():
+    # C (continued). The naming penalty (a non-confidence signal) must
+    # combine with the confidence-scaled domain/entity bonus by simple
+    # addition, exactly as it does with the flat bonus today.
+    result = _score_table_authority(
+        "dbo.widgets_temp", _authority_ctx(domain_confidence=1.0, entity_confidence=1.0)
+    )
+    expected = round(max(-0.5, min(0.5, 0.1 * 0.30 + 0.05 * 1.0 + 0.07 * 1.0 - 0.12)), 4)
+    assert result["bonus"] == expected
+
+
+def test_domain_confidence_breaks_near_tie(tmp_path, monkeypatch):
+    # D. Two tables tied on every other signal (same row count, same
+    # approval, no relationships, same domain) but differing only in domain
+    # confidence must rank the higher-confidence table first. Under the old
+    # flat bonus this was an exact tie (both +0.05 regardless of confidence).
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.projects_alpha", row_count=1000, approved=True)
+    _add_column(db, "dbo.projects_alpha", "id", data_type="INTEGER", is_pk=1, uniqueness=1.0)
+    _add_domain(db, "dbo.projects_alpha", "Operations", confidence=0.95)
+
+    _add_table(db, "dbo.projects_beta", row_count=1000, approved=True)
+    _add_column(db, "dbo.projects_beta", "id", data_type="INTEGER", is_pk=1, uniqueness=1.0)
+    _add_domain(db, "dbo.projects_beta", "Operations", confidence=0.40)
+
+    result = _plan(db, question="projects", concepts=["projects"])
+    candidates = sorted(result["concepts"][0]["candidates"], key=lambda c: -c["score"])
+    assert candidates[0]["table_fqn"] == "dbo.projects_alpha"
+    assert candidates[0]["score"] > candidates[1]["score"]
+
+
+def test_clear_winner_survives_maximum_opposing_confidence(tmp_path, monkeypatch):
+    # E. A table with a genuinely decisive lead on non-canonicality evidence
+    # (approval, master class, huge row-count gap, relationship coverage —
+    # pre-confidence margin ~0.23, comfortably above the 0.15 ambiguity gate
+    # even after the maximum possible +0.12 domain+entity swing below) must
+    # still win outright against a "temp" variant given the maximum possible
+    # domain+entity confidence bonus (1.0/1.0) on that variant. Note this is
+    # a boundary, not a universal guarantee: a win whose original margin sits
+    # between 0.15 and 0.27 CAN be pushed from "resolved" to "ambiguous" by
+    # this signal at its ceiling — by design, since _AMBIGUITY_MARGIN is
+    # unchanged and still gates strictly on the same 0.15 bar (see the
+    # Sprint 2 report's regression-risk section).
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.adf_clients", table_class="Master", row_count=5_000_000, approved=True)
+    _add_column(db, "dbo.adf_clients", "id", data_type="INTEGER", is_pk=1, uniqueness=1.0)
+    _add_fk(db, "dbo.adf_clients", "id", "dbo.contacts_ref", "ref_id")
+
+    _add_table(db, "dbo.adf_clients_temp", table_class="Transactional", row_count=10, approved=False)
+    _add_column(db, "dbo.adf_clients_temp", "id", data_type="INTEGER", is_pk=1, uniqueness=1.0)
+    _add_domain(db, "dbo.adf_clients_temp", "Operations", confidence=1.0)
+    _add_entity(db, "dbo.adf_clients_temp", "Client", confidence=1.0)
+
+    result = _plan(db, question="How many clients?",
+                   concepts=["clients"], measures=["clients"], dimensions=[])
+    measure = result["measures"][0]
+    assert measure["selected"] is not None
+    assert measure["selected"]["table_fqn"] == "dbo.adf_clients"
+
+
+def test_ambiguous_tied_confidence_still_refuses_auto_select(tmp_path, monkeypatch):
+    # F. Two genuinely comparable tables with identical domain confidence
+    # (not merely both unassigned) must still refuse to auto-select — the
+    # confidence signal must not manufacture false differentiation between
+    # candidates that are truly tied.
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.adf_clients", row_count=1000, approved=True)
+    _add_column(db, "dbo.adf_clients", "id", data_type="INTEGER", is_pk=1, uniqueness=1.0)
+    _add_domain(db, "dbo.adf_clients", "Operations", confidence=0.8)
+
+    _add_table(db, "dbo.adf_bhclients", row_count=1000, approved=True)
+    _add_column(db, "dbo.adf_bhclients", "id", data_type="INTEGER", is_pk=1, uniqueness=1.0)
+    _add_domain(db, "dbo.adf_bhclients", "Operations", confidence=0.8)
+
+    result = _plan(db, question="How many clients?",
+                   concepts=["clients"], measures=["clients"], dimensions=[])
+    measure = result["measures"][0]
+    assert measure["selected"] is None
+    assert any("ambiguous" in w["type"] or "missing" in w["type"] for w in result["warnings"])
