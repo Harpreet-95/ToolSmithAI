@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
@@ -38,6 +39,12 @@ class ComposerRequest(BaseModel):
     request_options: Optional[Dict[str, Any]] = None
     clarification_selection: Optional[List[Dict[str, Any]]] = None
     cancel_clarification: bool = False
+    # Milestone M-31 — round-tripped core.orchestrator.agent.ConversationContext
+    # .to_dict(), returned as this same field's name on the previous agent
+    # response's "conversation_state" key. Deliberately a new field, not a
+    # reinterpretation of conversation_context above (that field's existing
+    # List[Dict] shape/contract is untouched for back-compat).
+    conversation_state: Optional[Dict[str, Any]] = None
 
     @field_validator("message")
     @classmethod
@@ -919,6 +926,63 @@ def _generate_answer(package) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Milestone M-31 — Conversation Context
+# ---------------------------------------------------------------------------
+
+def _build_conversation_context(body: "ComposerRequest", user_id: str):
+    """
+    Resolves the core.orchestrator.agent.ConversationContext to pass into
+    answer_business_question() for this request, or None when there is
+    nothing to carry — a plain fresh question with no clarification resume/
+    cancel and no round-tripped prior turn.
+
+    This is the one place a round-tripped conversation_state's own
+    conversation_id is checked against an independent reference (this
+    request's own session_id) — a mismatch discards the prior turn (prior=
+    None) rather than reusing it, since there is no server-side conversation
+    registry to check it against otherwise. source_id/user_id are re-checked
+    here AND independently inside core.orchestrator.agent.
+    _resolve_conversation_context (defense in depth, and the only isolation
+    guarantee available to any OTHER caller of answer_business_question).
+
+    clarification_selection/cancel_clarification always come from THIS
+    request's own top-level fields, never from the round-tripped prior
+    turn — a resume/cancel is a one-turn instruction, not carried state.
+    """
+    from core.orchestrator.agent import ConversationContext
+
+    if not (body.conversation_state or body.clarification_selection or body.cancel_clarification):
+        return None
+
+    prior = ConversationContext.from_dict(body.conversation_state) if body.conversation_state else None
+    if prior is not None and (
+        prior.conversation_id != body.session_id
+        or prior.source_id != body.selected_data_source
+        or prior.user_id != user_id
+    ):
+        prior = None  # cross-conversation/source/user — never reused
+
+    return ConversationContext(
+        conversation_id=body.session_id,
+        source_id=body.selected_data_source,
+        user_id=user_id,
+        turn_number=(prior.turn_number + 1) if prior else 1,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        previous_question=prior.previous_question if prior else None,
+        previous_effective_question=prior.previous_effective_question if prior else None,
+        previous_query_plan=prior.previous_query_plan if prior else None,
+        previous_business_plan=prior.previous_business_plan if prior else None,
+        selected_tables=prior.selected_tables if prior else (),
+        metric=prior.metric if prior else None,
+        dimensions=prior.dimensions if prior else (),
+        filters=prior.filters if prior else (),
+        time_range=prior.time_range if prior else None,
+        clarification_selection=tuple(body.clarification_selection) if body.clarification_selection else None,
+        cancel_clarification=bool(body.cancel_clarification),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
@@ -945,6 +1009,91 @@ def composer_ask(
         body.session_id,
         str(user.user_id),
     )
+
+    # ── Milestone M-30/M-31 — Production Route Integration ─────────────────
+    # A business-data question — fresh, a clarification resume/cancel, or a
+    # recognized bounded follow-up (M-31) — is routed through the one shared
+    # agent entry point (core.orchestrator.agent.answer_business_question)
+    # instead of the orchestrator's legacy live_query adapter — using the
+    # SAME IntentResolver this endpoint already relies on (via
+    # EnterpriseOrchestrator.process()) to decide whether the agent applies,
+    # so metadata/dictionary/domain/profiling/governance/relationship/
+    # knowledge_graph/review/report_generation/workflow/search questions are
+    # completely unaffected and keep going through
+    # EnterpriseOrchestrator.process() below, unchanged.
+    #
+    # A recognized follow-up (e.g. "What about last quarter?") often carries
+    # no SQL_REQUEST signal of its own on the bare phrase — is_recognized_
+    # follow_up covers that case independently of _resolved_intent_for_
+    # routing, only when a round-tripped conversation_state is present.
+    #
+    # One case deliberately stays on the legacy path rather than the agent:
+    # the CCPP "classes/courses ... enrollment" question pattern
+    # (core.orchestrator.context_builder._class_enrollment_ranking_entity) —
+    # this hardcoded, source-verified business-model override lives inside
+    # _live_query, not the agent (out of scope for M-28/M-29) — matching
+    # questions keep going through the legacy path, where the override still
+    # applies unchanged; _is_verified_ccpp_source's own fail-closed check
+    # still falls through to the generic pipeline for every other source
+    # exactly as it does today.
+    try:
+        from core.orchestrator.context_builder import _class_enrollment_ranking_entity
+        from core.orchestrator.intent_resolver import IntentResolver
+
+        _resolved_intent_for_routing = IntentResolver().resolve(body.message)
+    except Exception:  # noqa: BLE001
+        logger.warning("composer.ask: intent pre-resolution for agent routing failed request_id=%s", request_id)
+        _resolved_intent_for_routing = None
+
+    is_recognized_follow_up = False
+    if body.conversation_state and not body.clarification_selection and not body.cancel_clarification:
+        from core.orchestrator.agent import _classify_follow_up
+
+        is_recognized_follow_up = _classify_follow_up(body.message) is not None
+
+    if (
+        _resolved_intent_for_routing is not None
+        and body.selected_data_source is not None
+        and _class_enrollment_ranking_entity(body.message) is None
+        and (
+            _resolved_intent_for_routing.intent_type == IntentType.SQL_REQUEST
+            or bool(body.clarification_selection)
+            or body.cancel_clarification
+            or is_recognized_follow_up
+        )
+    ):
+        try:
+            from api.v1.agent_response_adapters import build_composer_agent_response, build_conversation_state
+            from core.orchestrator.agent import answer_business_question
+
+            conversation_context = _build_conversation_context(body, str(user.user_id))
+            state = answer_business_question(
+                body.selected_data_source, str(user.user_id), body.message,
+                conversation_context=conversation_context,
+            )
+            execution_time = round(time.perf_counter() - t0, 4)
+            this_turn_number = conversation_context.turn_number if conversation_context else 1
+            conversation_state = build_conversation_state(
+                state, conversation_id=body.session_id, source_id=body.selected_data_source,
+                user_id=str(user.user_id), turn_number=this_turn_number,
+            )
+            response = build_composer_agent_response(
+                state=state, resolved_intent=_resolved_intent_for_routing,
+                session_id=body.session_id, request_id=request_id, execution_time=execution_time,
+                conversation_state=conversation_state,
+            )
+        except Exception:
+            logger.exception("composer.ask agent path failed request_id=%s", request_id)
+            return JSONResponse(
+                status_code=500,
+                content=build_error_response("Internal orchestration failure"),
+            )
+
+        logger.info(
+            "composer.ask complete via agent request_id=%s session_id=%s agent_status=%s duration=%.4fs",
+            request_id, body.session_id, response.get("agent_status"), execution_time,
+        )
+        return response
 
     try:
         orch_request = OrchestratorRequest(
