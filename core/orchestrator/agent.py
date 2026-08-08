@@ -988,6 +988,28 @@ def answer_business_question(
             f"shape={validation.result_shape} warnings={len(validation.warnings)}", duration_ms=dur,
         )
 
+        # --- Step: compute_period_comparison_insight (Day 4, Capability 2) --
+        # Bounded, best-effort: one supplementary governed query for a
+        # time-bound single-scalar aggregate only (data.insight_service
+        # itself checks eligibility). Any failure here is silently None —
+        # never surfaced as a warning/error and never affects the primary
+        # answer already validated above.
+        if validation.result_shape in ("scalar_count", "scalar_count_distinct", "scalar_sum", "scalar_avg"):
+            t0 = time.monotonic()
+            rows = data.get("rows") or []
+            current_value = next(iter(rows[0].values()), None) if rows else None
+            from data.insight_service import compute_period_comparison_insight
+
+            insight = compute_period_comparison_insight(
+                source_id, user_id, business_plan, sql_plan, current_value,
+            )
+            if insight is not None:
+                data["insight"] = insight
+                _step(
+                    "compute_period_comparison_insight", "ok", f"shape={validation.result_shape}",
+                    f"percent_change={insight['percent_change']}", duration_ms=(time.monotonic() - t0) * 1000,
+                )
+
         # --- Step: build_business_answer ------------------------------------
         t0 = time.monotonic()
         state.answer_evidence_data = data

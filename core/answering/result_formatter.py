@@ -160,6 +160,11 @@ def build_business_answer(data: dict) -> dict:
         "source_columns": source_columns,
         "truncation_notice": truncation_notice,
         "assumptions": [],
+        # Day 4, Capability 2 — Business Insights. Set only by
+        # core.orchestrator.agent for a time-bound single-scalar aggregate;
+        # None for every other shape/path, same as every other data.get()
+        # here that isn't always populated.
+        "insight": data.get("insight"),
     }
 
     if shape == "tabular_fallback":

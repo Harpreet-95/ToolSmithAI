@@ -85,6 +85,12 @@ class EnterpriseAnswer:
     source_columns: list = field(default_factory=list)
     assumptions: list = field(default_factory=list)
     truncation_notice: str | None = None
+    # Day 4, Capability 2 — Business Insights. Populated only for a
+    # time-bound single-scalar aggregate answer where a period-comparison
+    # was actually computed (data.insight_service); None for every other
+    # answer, same backward-compatible-default convention as the M-25
+    # fields above.
+    insight: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
