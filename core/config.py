@@ -153,6 +153,33 @@ AI_CONFIDENCE_THRESHOLD:         float = float(os.getenv("AI_CONFIDENCE_THRESHOL
 AI_SEMANTIC_TIMEOUT_SECONDS:     int   = int(os.getenv("AI_SEMANTIC_TIMEOUT_SECONDS", "15"))
 
 # ---------------------------------------------------------------------------
+# AI Question Interpreter (EDP Day 1 — Modern Semantic Understanding)
+# One structured AI pass over the raw question, run BEFORE deterministic
+# planning. Additive only: the entities/measures/dimensions it finds are
+# unioned onto core.semantic.concept_resolver.extract_terms()'s own
+# regex-based output, never replacing it — same fail-closed philosophy as
+# ENABLE_AI_SEMANTIC_INTELLIGENCE above. Any failure, timeout, or schema
+# violation falls back to the deterministic parse alone.
+# ---------------------------------------------------------------------------
+ENABLE_AI_QUESTION_INTERPRETER:          bool = os.getenv("ENABLE_AI_QUESTION_INTERPRETER", "false").lower() == "true"
+AI_QUESTION_INTERPRETER_TIMEOUT_SECONDS: int  = int(os.getenv("AI_QUESTION_INTERPRETER_TIMEOUT_SECONDS", "8"))
+
+# ---------------------------------------------------------------------------
+# AI Candidate Adjudication (Day 2C, Task 2 — data.semantic_contract_service)
+# One structured AI pass over a bounded set of already-gathered candidate-
+# table evidence, run ONLY as a fallback when deterministic semantic-
+# contract discovery finds no confident canonical table for a target
+# entity. Never queries the database itself, never generates SQL, never
+# selects an identifier outside the evidence it was given (enforced in
+# core.semantic.candidate_adjudicator). Any AI selection is still
+# deterministically re-validated (data.semantic_contract_service.
+# validate_candidate_contract) before it may become a persisted contract —
+# same fail-closed philosophy as every other optional AI layer above.
+# ---------------------------------------------------------------------------
+ENABLE_AI_CANDIDATE_ADJUDICATION:          bool = os.getenv("ENABLE_AI_CANDIDATE_ADJUDICATION", "false").lower() == "true"
+AI_CANDIDATE_ADJUDICATION_TIMEOUT_SECONDS: int  = int(os.getenv("AI_CANDIDATE_ADJUDICATION_TIMEOUT_SECONDS", "20"))
+
+# ---------------------------------------------------------------------------
 # Dynamic Tool Composer
 # ENABLE_DYNAMIC_TOOLS    — registry reads approved+enabled rows from DB
 # ENABLE_DYNAMIC_TOOL_EXECUTION — primitive executor routes dynamic tool steps
