@@ -55,10 +55,22 @@ def compute_period_comparison_insight(
     business_plan: dict,
     sql_plan: dict,
     current_value: Any,
+    *,
+    existing_connection: object = None,
+    connection_box: Optional[dict] = None,
 ) -> Optional[dict]:
     """Returns {type, label, current_value, previous_value, percent_change,
     direction} or None when ineligible or the comparison query itself
-    doesn't yield a usable value."""
+    doesn't yield a usable value.
+
+    existing_connection/connection_box (Day 4, Capability 6, Task 4) — when
+    the caller already has an open, authenticated live connection for the
+    primary query this same request, passing it here lets this supplementary
+    query reuse it instead of paying a second live_connection_open round
+    trip. Passed straight through to execute_governed_query(); every safety
+    check (governance recheck, rate limits) still runs fresh — only the
+    already-open network connection is reused. Omitting them (the default)
+    keeps prior behavior: this query opens and closes its own connection."""
     if business_plan.get("aggregation") not in ELIGIBLE_AGGREGATIONS:
         return None
     if business_plan.get("group_by"):
@@ -103,6 +115,7 @@ def compute_period_comparison_insight(
             source_id, user_id, generated["sql"], comparison_plan,
             params=generated["parameters"]["values"],
             execution_kind="insight_comparison",
+            existing_connection=existing_connection, connection_box=connection_box,
         )
     except Exception:  # noqa: BLE001 — a failed comparison query must never break the primary answer
         return None

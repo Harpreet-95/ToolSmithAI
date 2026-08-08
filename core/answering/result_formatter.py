@@ -442,6 +442,11 @@ def build_business_answer(data: dict) -> dict:
         if truncated else None
     )
 
+    from core.perf import stage_timer
+
+    with stage_timer.measure("chart_spec_generation"):
+        chart_spec = _build_chart_spec(shape, plan, rows)
+
     common = {
         "applied_filters": applied_filters,
         "date_context": date_context,
@@ -456,7 +461,7 @@ def build_business_answer(data: dict) -> dict:
         "insight": data.get("insight"),
         # Day 4, Capability 3 — Automatic Charts. None whenever the shape/
         # plan/rows don't cleanly support one — see _build_chart_spec.
-        "chart": _build_chart_spec(shape, plan, rows),
+        "chart": chart_spec,
     }
 
     if shape == "tabular_fallback":

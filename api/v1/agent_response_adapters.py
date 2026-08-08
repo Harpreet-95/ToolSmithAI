@@ -231,4 +231,7 @@ def build_composer_agent_response(
         "agent_status": state.status.value if state.status else None,
         "agent_trace": agent_trace_summary(state),
         "conversation_state": conversation_state,
+        # Day 4, Capability 6 — orchestration-layer stage timing breakdown
+        # (core.perf.stage_timer). Additive/observability only.
+        "perf_trace": state.perf_trace,
     }

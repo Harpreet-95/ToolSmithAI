@@ -53,6 +53,8 @@ class LiveQueryEngine:
         page: int = 1,
         page_size: Optional[int] = None,
         max_payload_bytes: Optional[int] = None,
+        existing_connection: Optional[object] = None,
+        connection_box: Optional[dict] = None,
     ) -> QueryResult:
         from data.query_execution_service import (
             DAILY_LIMIT,
@@ -101,9 +103,12 @@ class LiveQueryEngine:
             return dur
 
         # ── Resolve connection (ownership, active state, capability) ──────────
-        resolution = LiveConnectionResolver().resolve(
-            source_id, user_id, required_capability="sql_query"
-        )
+        from core.perf import stage_timer
+
+        with stage_timer.measure("live_connection_resolve"):
+            resolution = LiveConnectionResolver().resolve(
+                source_id, user_id, required_capability="sql_query"
+            )
         if resolution.status != ResolutionStatus.RESOLVED:
             dur = _log("blocked", error_code=resolution.status.value)
             return QueryResult(
@@ -114,28 +119,29 @@ class LiveQueryEngine:
         context = resolution.context
 
         # ── Rate limits (reused as-is) ─────────────────────────────────────────
-        if _check_user_rate_limit(user_id):
-            dur = _log("rate_limited", error_code="user_rate_limit")
-            return QueryResult(
-                execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
-                source_id=source_id, executed_at=started_at.isoformat(),
-                duration_ms=dur, error="Rate limit exceeded: too many executions in a short window.",
-            )
-        if _check_daily_limit(user_id) >= DAILY_LIMIT:
-            dur = _log("rate_limited", error_code="daily_limit")
-            return QueryResult(
-                execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
-                source_id=source_id, executed_at=started_at.isoformat(),
-                duration_ms=dur, error=f"Daily execution limit of {DAILY_LIMIT} reached.",
-            )
-        if _check_source_rate(source_id) >= SOURCE_RATE_PER_MINUTE:
-            dur = _log("rate_limited", error_code="source_rate_limit")
-            return QueryResult(
-                execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
-                source_id=source_id, executed_at=started_at.isoformat(),
-                duration_ms=dur,
-                error=f"Source rate limit exceeded: {SOURCE_RATE_PER_MINUTE} executions per minute.",
-            )
+        with stage_timer.measure("rate_limit_checks"):
+            if _check_user_rate_limit(user_id):
+                dur = _log("rate_limited", error_code="user_rate_limit")
+                return QueryResult(
+                    execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
+                    source_id=source_id, executed_at=started_at.isoformat(),
+                    duration_ms=dur, error="Rate limit exceeded: too many executions in a short window.",
+                )
+            if _check_daily_limit(user_id) >= DAILY_LIMIT:
+                dur = _log("rate_limited", error_code="daily_limit")
+                return QueryResult(
+                    execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
+                    source_id=source_id, executed_at=started_at.isoformat(),
+                    duration_ms=dur, error=f"Daily execution limit of {DAILY_LIMIT} reached.",
+                )
+            if _check_source_rate(source_id) >= SOURCE_RATE_PER_MINUTE:
+                dur = _log("rate_limited", error_code="source_rate_limit")
+                return QueryResult(
+                    execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
+                    source_id=source_id, executed_at=started_at.isoformat(),
+                    duration_ms=dur,
+                    error=f"Source rate limit exceeded: {SOURCE_RATE_PER_MINUTE} executions per minute.",
+                )
 
         # ── Validate SQL (read-only enforcement) ───────────────────────────────
         dialect = sql_dialects.source_type_to_dialect(context.source_type)
@@ -149,26 +155,42 @@ class LiveQueryEngine:
             )
 
         # ── Open connection ─────────────────────────────────────────────────────
-        try:
-            db_conn = context.connector_cls().open_connection(context.config)
-        except Exception:  # noqa: BLE001 — includes stub connectors' NotImplementedError
-            logger.warning(
-                "LiveQueryEngine: open_connection failed [source_id=%s]", source_id
-            )
-            dur = _log("failed", error_code="connection_failed")
-            return QueryResult(
-                execution_id=execution_id, status=QueryStatus.FAILED,
-                source_id=source_id, executed_at=started_at.isoformat(),
-                duration_ms=dur, error="Failed to open database connection.",
-            )
+        # Day 4, Capability 6 (Task 4) — existing_connection lets a caller that
+        # already opened+authenticated a live connection for an earlier
+        # governed query THIS SAME REQUEST (currently only data.insight_
+        # service's period-comparison follow-up) reuse it instead of paying a
+        # second live_connection_open round trip. Every safety check above
+        # this point (ownership/capability resolution, rate limits, SQL
+        # validation) still runs fresh on every call — only the already-
+        # authenticated network connection object is reused, nothing governed
+        # is skipped. Every existing caller that doesn't pass this parameter
+        # gets byte-identical behavior: open a fresh connection, same as
+        # before this parameter existed.
+        if existing_connection is not None:
+            db_conn = existing_connection
+        else:
+            try:
+                with stage_timer.measure("live_connection_open"):
+                    db_conn = context.connector_cls().open_connection(context.config)
+            except Exception:  # noqa: BLE001 — includes stub connectors' NotImplementedError
+                logger.warning(
+                    "LiveQueryEngine: open_connection failed [source_id=%s]", source_id
+                )
+                dur = _log("failed", error_code="connection_failed")
+                return QueryResult(
+                    execution_id=execution_id, status=QueryStatus.FAILED,
+                    source_id=source_id, executed_at=started_at.isoformat(),
+                    duration_ms=dur, error="Failed to open database connection.",
+                )
 
         with _RUNNING_LOCK:
             _RUNNING[execution_id] = db_conn
 
         try:
-            description, rows_raw, exec_error, timed_out = _execute_with_timeout(
-                db_conn, sql, params, limits.row_limit, limits.timeout_s
-            )
+            with stage_timer.measure("sql_server_execution"):
+                description, rows_raw, exec_error, timed_out = _execute_with_timeout(
+                    db_conn, sql, params, limits.row_limit, limits.timeout_s
+                )
 
             if timed_out:
                 dur = _log("timeout", error_code="timeout")
@@ -213,19 +235,29 @@ class LiveQueryEngine:
         finally:
             with _RUNNING_LOCK:
                 _RUNNING.pop(execution_id, None)
-            try:
-                db_conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+            if connection_box is not None:
+                # Caller (connection_box passed, non-None) takes ownership of
+                # closing db_conn — it may still be reused for one more
+                # governed query this same request. Storing it here even when
+                # db_conn came in via existing_connection is a harmless
+                # idempotent re-store of the same object, not a second open.
+                connection_box["conn"] = db_conn
+            else:
+                with stage_timer.measure("live_connection_close"):
+                    try:
+                        db_conn.close()
+                    except Exception:  # noqa: BLE001
+                        pass
 
-        dur = _log("success", row_count=len(rows), truncated=truncated)
+        with stage_timer.measure("post_execution_bookkeeping"):
+            dur = _log("success", row_count=len(rows), truncated=truncated)
 
-        warnings: list[str] = []
-        if payload_truncated:
-            warnings.append("Result payload exceeded the maximum size and was truncated.")
-        repeat_count = _check_repeated_query(user_id, sql_hash)
-        if repeat_count >= REPEATED_QUERY_THRESHOLD:
-            warnings.append(f"Repeated query detected: executed {repeat_count} time(s) recently.")
+            warnings: list[str] = []
+            if payload_truncated:
+                warnings.append("Result payload exceeded the maximum size and was truncated.")
+            repeat_count = _check_repeated_query(user_id, sql_hash)
+            if repeat_count >= REPEATED_QUERY_THRESHOLD:
+                warnings.append(f"Repeated query detected: executed {repeat_count} time(s) recently.")
 
         return QueryResult(
             execution_id=execution_id, status=QueryStatus.SUCCESS, source_id=source_id,

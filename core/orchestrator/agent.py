@@ -396,6 +396,11 @@ class AgentState:
     step_count: int = 0
     stop_reason: Optional[str] = None
     trace: list[TraceStep] = field(default_factory=list)
+    # Day 4, Capability 6 — orchestration-layer stage timing (core.perf.stage_timer),
+    # {"stages": [{"stage": str, "duration_ms": float}, ...], "slowest_stage": {...}}.
+    # None only for code paths that build AgentState without going through the
+    # answer_business_question() wrapper (e.g. direct unit-test construction).
+    perf_trace: Optional[dict] = None
 
 
 def _truncate(text: str) -> str:
@@ -482,6 +487,29 @@ def answer_business_question(
     conversation_context: Optional[ConversationContext] = None,
     execution_mode: Optional[str] = None,
 ) -> AgentState:
+    """Thin timing wrapper around _answer_business_question_impl (Day 4,
+    Capability 6, Task 1) — purely additive: opens one request-scoped
+    StageTimer, delegates to the unchanged implementation, attaches the
+    resulting stage breakdown to state.perf_trace. No behavior/logic change."""
+    from core.perf import stage_timer
+
+    with stage_timer.start() as timer:
+        state = _answer_business_question_impl(
+            source_id, user_id, question,
+            conversation_context=conversation_context, execution_mode=execution_mode,
+        )
+        state.perf_trace = timer.to_dict()
+        return state
+
+
+def _answer_business_question_impl(
+    source_id: int,
+    user_id: str,
+    question: str,
+    *,
+    conversation_context: Optional[ConversationContext] = None,
+    execution_mode: Optional[str] = None,
+) -> AgentState:
     """
     Shared production entry point for natural-language business questions.
     Bounded state-machine loop: at most MAX_TOTAL_STEPS trace steps total,
@@ -542,7 +570,10 @@ def answer_business_question(
         return state
 
     # --- Milestone M-31 — conversation context: cancel / follow-up --------
-    resolved_context = _resolve_conversation_context(conversation_context, source_id=source_id, user_id=user_id)
+    from core.perf import stage_timer
+
+    with stage_timer.measure("conversation_context_resolution"):
+        resolved_context = _resolve_conversation_context(conversation_context, source_id=source_id, user_id=user_id)
     state.conversation_context = resolved_context
 
     if resolved_context is not None and resolved_context.cancel_clarification:
@@ -616,6 +647,7 @@ def answer_business_question(
     state.detected_intent = resolved_intent
     intent_confidence = getattr(resolved_intent, "confidence", None)
     _confidence_summary = f"{intent_confidence:.2f}" if intent_confidence is not None else "n/a"
+    stage_timer.record("intent_resolution", (time.monotonic() - t0) * 1000)
     _step(
         "resolve_intent", "ok", f"question={question!r}",
         f"intent={resolved_intent.intent_type.value} confidence={_confidence_summary}",
@@ -702,6 +734,10 @@ def answer_business_question(
             source_id, user_id, question, filters=extra_filters, on_plan_resolved=_on_plan_resolved,
         )
         dur = (time.monotonic() - t0) * 1000
+        # Includes any nested "ai_question_interpretation" time (recorded
+        # separately, at its own call site in context_builder.py) — subtract
+        # that from this total to get pure deterministic-planning time.
+        stage_timer.record("planning_pipeline_total", dur)
 
         if (
             resolved_context is not None and resolved_context.clarification_selection
@@ -914,107 +950,137 @@ def answer_business_question(
         # --- Step: execute_sql (governed execution — blocked_cols enforced) --
         from data.query_execution_service import execute_governed_query
 
-        t0 = time.monotonic()
-        query_result, gov_warnings = execute_governed_query(
-            source_id, user_id, generated["sql"], sql_plan,
-            params=generated["parameters"]["values"],
-        )
-        dur = (time.monotonic() - t0) * 1000
-        state.warnings.extend(gov_warnings)
-        data = query_result.to_dict()
-        state.execution_result = data
-
-        if data["status"] == "blocked":
-            _step(
-                "execute_sql", "blocked", "governed execution (ownership/live_query_enabled/safety gate)",
-                f"status={data['status']}", reason_code="governance_or_policy_block", duration_ms=dur,
-            )
-            return _stop(
-                AgentStatus.GOVERNANCE_BLOCKED,
-                data.get("error") or "Execution was blocked by governance or live-query policy.",
-                data, code="governance_or_policy_block",
-            )
-
-        if data["status"] != "success":
-            _step(
-                "execute_sql", "failed", "governed execution",
-                f"status={data['status']}", reason_code=data["status"], duration_ms=dur,
-            )
-            return _stop(
-                AgentStatus.EXECUTION_FAILED,
-                data.get("error") or f"Execution did not succeed (status={data['status']}).",
-                data, code=data["status"],
-            )
-
-        data["generated_sql"] = generated["sql"]
-        data["sql_generation_explanation"] = generated.get("explanation") or []
-        data["business_plan"] = business_plan  # built earlier, before the investigation phase
-        _step(
-            "execute_sql", "ok", f"row_limit_applied={data.get('row_limit_applied')}",
-            f"row_count={data.get('row_count')} truncated={data.get('truncated')}", duration_ms=dur,
-        )
-
-        # --- Step: validate_execution_result (M-27) -------------------------
-        t0 = time.monotonic()
-        validation = validate_execution_result(data, sql_plan=sql_plan)
-        dur = (time.monotonic() - t0) * 1000
-        state.result_validation = validation
-        # Extend, never overwrite — the investigation phase above may have
-        # already appended warnings (e.g. investigated_value_not_found) that
-        # must survive to the final answer, not be silently discarded.
-        state.warnings.extend(validation.warnings)
-
-        if not validation.valid:
-            _step(
-                "validate_execution_result", "blocked", "structural result validation",
-                "; ".join(validation.blocking_reasons),
-                reason_code="result_validation_failed", duration_ms=dur,
-            )
-            if revisions_used < MAX_VALIDATION_REVISIONS and state.step_count < MAX_TOTAL_STEPS:
-                revisions_used += 1
-                continue  # bounded: at most one full replan+execute+validate revision
-            return _stop(
-                AgentStatus.VALIDATION_FAILED,
-                "; ".join(validation.blocking_reasons) or "The executed result failed structural validation.",
-                {
-                    "executed": False, "reason": "result_validation_failed",
-                    "explanation": validation.blocking_reasons, "warnings": validation.warnings,
-                },
-                code="result_validation_failed",
-            )
-
-        _step(
-            "validate_execution_result", "ok", "structural result validation",
-            f"shape={validation.result_shape} warnings={len(validation.warnings)}", duration_ms=dur,
-        )
-
-        # --- Step: compute_period_comparison_insight (Day 4, Capability 2) --
-        # Bounded, best-effort: one supplementary governed query for a
-        # time-bound single-scalar aggregate only (data.insight_service
-        # itself checks eligibility). Any failure here is silently None —
-        # never surfaced as a warning/error and never affects the primary
-        # answer already validated above.
-        if validation.result_shape in ("scalar_count", "scalar_count_distinct", "scalar_sum", "scalar_avg"):
+        # Day 4, Capability 6 (Task 4) — connection_box lets the primary
+        # query's already-open, already-authenticated live connection be
+        # reused by the insight-comparison query below instead of it paying
+        # its own live_connection_open round trip. Closed exactly once, in
+        # the finally below, regardless of which path out of this block is
+        # taken (blocked/failed/validation-failed-continue/validation-failed-
+        # stop/insight-computed/insight-skipped) — see LiveQueryEngine.
+        # execute()'s own docstring for why every governance/safety check
+        # still runs fresh on both queries either way.
+        connection_box: dict = {}
+        try:
             t0 = time.monotonic()
-            rows = data.get("rows") or []
-            current_value = next(iter(rows[0].values()), None) if rows else None
-            from data.insight_service import compute_period_comparison_insight
-
-            insight = compute_period_comparison_insight(
-                source_id, user_id, business_plan, sql_plan, current_value,
+            query_result, gov_warnings = execute_governed_query(
+                source_id, user_id, generated["sql"], sql_plan,
+                params=generated["parameters"]["values"],
+                connection_box=connection_box,
             )
-            if insight is not None:
-                data["insight"] = insight
+            dur = (time.monotonic() - t0) * 1000
+            # Total for governance recheck + LiveQueryEngine.execute combined;
+            # the two are also recorded individually at their own call sites in
+            # data/query_execution_service.py and core/live/query_engine.py.
+            stage_timer.record("governance_and_execute_sql_total", dur)
+            state.warnings.extend(gov_warnings)
+            data = query_result.to_dict()
+            state.execution_result = data
+
+            if data["status"] == "blocked":
                 _step(
-                    "compute_period_comparison_insight", "ok", f"shape={validation.result_shape}",
-                    f"percent_change={insight['percent_change']}", duration_ms=(time.monotonic() - t0) * 1000,
+                    "execute_sql", "blocked", "governed execution (ownership/live_query_enabled/safety gate)",
+                    f"status={data['status']}", reason_code="governance_or_policy_block", duration_ms=dur,
                 )
+                return _stop(
+                    AgentStatus.GOVERNANCE_BLOCKED,
+                    data.get("error") or "Execution was blocked by governance or live-query policy.",
+                    data, code="governance_or_policy_block",
+                )
+
+            if data["status"] != "success":
+                _step(
+                    "execute_sql", "failed", "governed execution",
+                    f"status={data['status']}", reason_code=data["status"], duration_ms=dur,
+                )
+                return _stop(
+                    AgentStatus.EXECUTION_FAILED,
+                    data.get("error") or f"Execution did not succeed (status={data['status']}).",
+                    data, code=data["status"],
+                )
+
+            data["generated_sql"] = generated["sql"]
+            data["sql_generation_explanation"] = generated.get("explanation") or []
+            data["business_plan"] = business_plan  # built earlier, before the investigation phase
+            _step(
+                "execute_sql", "ok", f"row_limit_applied={data.get('row_limit_applied')}",
+                f"row_count={data.get('row_count')} truncated={data.get('truncated')}", duration_ms=dur,
+            )
+
+            # --- Step: validate_execution_result (M-27) -------------------------
+            t0 = time.monotonic()
+            validation = validate_execution_result(data, sql_plan=sql_plan)
+            dur = (time.monotonic() - t0) * 1000
+            stage_timer.record("result_validation", dur)
+            state.result_validation = validation
+            # Extend, never overwrite — the investigation phase above may have
+            # already appended warnings (e.g. investigated_value_not_found) that
+            # must survive to the final answer, not be silently discarded.
+            state.warnings.extend(validation.warnings)
+
+            if not validation.valid:
+                _step(
+                    "validate_execution_result", "blocked", "structural result validation",
+                    "; ".join(validation.blocking_reasons),
+                    reason_code="result_validation_failed", duration_ms=dur,
+                )
+                if revisions_used < MAX_VALIDATION_REVISIONS and state.step_count < MAX_TOTAL_STEPS:
+                    revisions_used += 1
+                    continue  # bounded: at most one full replan+execute+validate revision
+                return _stop(
+                    AgentStatus.VALIDATION_FAILED,
+                    "; ".join(validation.blocking_reasons) or "The executed result failed structural validation.",
+                    {
+                        "executed": False, "reason": "result_validation_failed",
+                        "explanation": validation.blocking_reasons, "warnings": validation.warnings,
+                    },
+                    code="result_validation_failed",
+                )
+
+            _step(
+                "validate_execution_result", "ok", "structural result validation",
+                f"shape={validation.result_shape} warnings={len(validation.warnings)}", duration_ms=dur,
+            )
+
+            # --- Step: compute_period_comparison_insight (Day 4, Capability 2) --
+            # Bounded, best-effort: one supplementary governed query for a
+            # time-bound single-scalar aggregate only (data.insight_service
+            # itself checks eligibility). Any failure here is silently None —
+            # never surfaced as a warning/error and never affects the primary
+            # answer already validated above.
+            if validation.result_shape in ("scalar_count", "scalar_count_distinct", "scalar_sum", "scalar_avg"):
+                t0 = time.monotonic()
+                rows = data.get("rows") or []
+                current_value = next(iter(rows[0].values()), None) if rows else None
+                from data.insight_service import compute_period_comparison_insight
+
+                insight = compute_period_comparison_insight(
+                    source_id, user_id, business_plan, sql_plan, current_value,
+                    existing_connection=connection_box.get("conn"), connection_box=connection_box,
+                )
+                insight_dur = (time.monotonic() - t0) * 1000
+                stage_timer.record("insight_comparison", insight_dur)
+                if insight is not None:
+                    data["insight"] = insight
+                    _step(
+                        "compute_period_comparison_insight", "ok", f"shape={validation.result_shape}",
+                        f"percent_change={insight['percent_change']}", duration_ms=insight_dur,
+                    )
+        finally:
+            conn = connection_box.get("conn")
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
         # --- Step: build_business_answer ------------------------------------
         t0 = time.monotonic()
         state.answer_evidence_data = data
         state.answer = _build_answer(question, data, source_id=source_id, intent_confidence=intent_confidence)
         dur = (time.monotonic() - t0) * 1000
+        # Includes nested "chart_spec_generation" time, recorded separately
+        # at its own call site in core/answering/result_formatter.py.
+        stage_timer.record("answer_formatting_total", dur)
         _step(
             "build_business_answer", "ok", f"result_shape={validation.result_shape}",
             "business answer constructed", duration_ms=dur,
