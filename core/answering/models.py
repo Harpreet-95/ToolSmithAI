@@ -91,6 +91,11 @@ class EnterpriseAnswer:
     # answer, same backward-compatible-default convention as the M-25
     # fields above.
     insight: dict | None = None
+    # Day 4, Capability 3 — Automatic Charts. {chart_type, labels, series} —
+    # the exact shape frontend/src/components/ChartSection.jsx already
+    # accepts — or None whenever the result shape doesn't support a chart
+    # (core.answering.result_formatter._build_chart_spec).
+    chart: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)

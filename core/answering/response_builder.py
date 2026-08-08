@@ -116,4 +116,5 @@ def build_response(strategy, package, explanation: dict, citations, recommendati
         assumptions=explanation.get("assumptions") or [],
         truncation_notice=explanation.get("truncation_notice"),
         insight=explanation.get("insight"),
+        chart=explanation.get("chart"),
     )

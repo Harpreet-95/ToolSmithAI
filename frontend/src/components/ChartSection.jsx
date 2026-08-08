@@ -3,6 +3,7 @@
  *
  * Supported chart_type values:
  *   bar | line | pie | donut          — v1, unchanged
+ *   bar_horizontal                     — v3: same BarChart, forced HBarChart layout
  *   scatter                            — v2: {x_label, y_label, points:[{x,y}]}
  *   heatmap                            — v2: {x_labels, y_labels, values:[][]}
  *   correlation_matrix                 — v2: {columns, matrix:[][]}
@@ -159,7 +160,7 @@ function HBarChart({ labels, nums, maxVal, name, C }) {
   )
 }
 
-function BarChart({ labels, series, C }) {
+function BarChart({ labels, series, C, horizontal = false }) {
   const firstSer = series[0] || {}
   const nums     = (firstSer.data || []).map(v => (typeof v === 'number' && isFinite(v) ? v : 0))
   const name     = firstSer.name || ''
@@ -174,8 +175,10 @@ function BarChart({ labels, series, C }) {
   const n      = sortedLabels.length
   const maxVal = Math.max(...sortedNums, 1)
 
-  // Long labels or dense charts → horizontal layout eliminates rotation / truncation
-  if (sortedLabels.some(l => l.length > 10) || n > 12) {
+  // Day 4, Capability 3 — an explicit chart_type of "bar_horizontal" (a
+  // ranked/top-N result) always uses the horizontal layout, in addition to
+  // the pre-existing long-labels/dense-chart auto-switch below.
+  if (horizontal || sortedLabels.some(l => l.length > 10) || n > 12) {
     return <HBarChart labels={sortedLabels} nums={sortedNums} maxVal={maxVal} name={name} C={C} />
   }
 
@@ -1024,6 +1027,7 @@ export default function ChartSection({ chart, C }) {
   }
 
   if (chartType === 'bar')                          return <BarChart         labels={labels} series={series} C={C} />
+  if (chartType === 'bar_horizontal')               return <BarChart         labels={labels} series={series} C={C} horizontal />
   if (chartType === 'line')                         return <LineChart        labels={labels} series={series} C={C} />
   if (chartType === 'pie' || chartType === 'donut') return <DonutChart       labels={labels} series={series} C={C} />
   if (chartType === 'stacked_bar')                  return <StackedBarChart  labels={labels} series={series} C={C} />

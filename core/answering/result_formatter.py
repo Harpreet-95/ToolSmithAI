@@ -130,6 +130,72 @@ def _first_dimension_label(plan: dict) -> str | None:
     return None
 
 
+_CHART_ELIGIBLE_SHAPES = {"grouped", "ranked"}
+_MAX_CHART_CATEGORIES = 24  # beyond this a chart stops being legible; the table remains the right view
+_DONUT_MAX_CATEGORIES = 6
+
+
+def _build_chart_spec(shape: str, plan: dict, rows: list[dict]) -> dict | None:
+    """Day 4, Capability 3 — Automatic Charts. Deterministic chart-type
+    selection derived only from the already-validated business_plan/rows —
+    never issues new SQL, never invents values or categories, never picks a
+    chart type by guessing at label text (contrast
+    ChartSection.jsx's own recommendChartType, which infers from label
+    strings and would misclassify a bare year like "2023" as a numeric
+    histogram bin rather than a time series — this uses the structured
+    time_grain signal data.sql_planning_service._build_group_by already
+    attaches instead).
+
+    Returns None whenever the result shape doesn't support a meaningful
+    chart: every scalar/null/empty/tabular shape (no chart for a single
+    number), a multi-dimension group-by (no clean single label/series
+    mapping to invent), too many categories to read, or any structural
+    mismatch between the resolved dimension/measure aliases and the actual
+    row keys. A None here always means "show the answer/table normally,"
+    never an error.
+    """
+    if shape not in _CHART_ELIGIBLE_SHAPES:
+        return None
+    group_by = plan.get("group_by") or []
+    if len(group_by) != 1:
+        return None
+    dimension_alias = group_by[0].get("alias") or group_by[0].get("column_name")
+    if not dimension_alias:
+        return None
+
+    select = plan.get("select") or []
+    measure_row = next((r for r in select if r.get("aggregation")), None)
+    measure_alias = measure_row.get("alias") if measure_row else None
+    if not measure_alias:
+        return None
+
+    if not rows or len(rows) > _MAX_CHART_CATEGORIES:
+        return None
+
+    labels: list[str] = []
+    values: list[float] = []
+    for row in rows:
+        if dimension_alias not in row or measure_alias not in row:
+            return None
+        value = row[measure_alias]
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        labels.append(str(row[dimension_alias]))
+        values.append(value)
+
+    if shape == "ranked":
+        chart_type = "bar_horizontal"
+    elif group_by[0].get("time_grain"):
+        chart_type = "line"
+    elif plan.get("aggregation") == "COUNT" and 2 <= len(labels) <= _DONUT_MAX_CATEGORIES:
+        chart_type = "donut"
+    else:
+        chart_type = "bar"
+
+    measure_label = plan.get("measure_label") or plan.get("entity_label") or "value"
+    return {"chart_type": chart_type, "labels": labels, "series": [{"name": measure_label, "data": values}]}
+
+
 def build_business_answer(data: dict) -> dict:
     """Deterministic, template-based business-language answer for a
     successfully executed live query. Never uses an LLM to invent meaning —
@@ -165,6 +231,9 @@ def build_business_answer(data: dict) -> dict:
         # None for every other shape/path, same as every other data.get()
         # here that isn't always populated.
         "insight": data.get("insight"),
+        # Day 4, Capability 3 — Automatic Charts. None whenever the shape/
+        # plan/rows don't cleanly support one — see _build_chart_spec.
+        "chart": _build_chart_spec(shape, plan, rows),
     }
 
     if shape == "tabular_fallback":
