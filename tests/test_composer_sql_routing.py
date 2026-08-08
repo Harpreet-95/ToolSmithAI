@@ -435,7 +435,7 @@ class TestHowManyClientsRoutesThroughComposer:
         # Milestone M-25 — Enterprise Answer Value Rendering: a bare COUNT(*)
         # renders as real business language, not a row/column-count sentence.
         enterprise_answer = result["enterprise_answer"]
-        assert enterprise_answer["answer"] == "There are 42 sales."
+        assert enterprise_answer["answer"] == "There are 42 sales in the database."
         assert enterprise_answer["actual_value"] == 42
         assert "row(s)" not in enterprise_answer["answer"]
 

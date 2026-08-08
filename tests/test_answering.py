@@ -304,7 +304,7 @@ class TestLiveQueryBusinessValueRendering:
         data = _success_data(plan, row_count=1, columns=[{"name": "row_count"}],
                               rows=[{"row_count": 2218}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "There are 2,218 clients."
+        assert answer.answer == "There are 2,218 clients in the database."
         assert answer.actual_value == 2218
         assert answer.business_entity == "clients"
         assert answer.aggregation == "COUNT"
@@ -319,7 +319,7 @@ class TestLiveQueryBusinessValueRendering:
         data = _success_data(plan, row_count=1, columns=[{"name": "count_client_id"}],
                               rows=[{"count_client_id": 150}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "There are 150 unique clients."
+        assert answer.answer == "There are 150 unique clients in the database."
         assert answer.actual_value == 150
 
     def test_scalar_count_with_status_filter(self):
@@ -331,7 +331,7 @@ class TestLiveQueryBusinessValueRendering:
         )
         data = _success_data(plan, rows=[{"row_count": 42}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "There are 42 active clients."
+        assert answer.answer == "There are 42 active clients in the database."
         assert len(answer.applied_filters) == 1
 
     def test_scalar_sum(self):
@@ -340,7 +340,7 @@ class TestLiveQueryBusinessValueRendering:
                                         "alias": "sum_amount", "aggregation": "SUM", "distinct": False}])
         data = _success_data(plan, rows=[{"sum_amount": 1240550}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "The total payroll is 1,240,550."
+        assert answer.answer == "Total payroll is 1,240,550."
         assert answer.actual_value == 1240550
         assert answer.measure == "payroll"
         assert "$" not in answer.answer  # no governed currency metadata exists — never invent a symbol
@@ -349,13 +349,13 @@ class TestLiveQueryBusinessValueRendering:
         plan = _business_plan(aggregation="AVG", measure_label="order amount")
         data = _success_data(plan, rows=[{"avg_amount": 523.4}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "The average order amount is 523.40."
+        assert answer.answer == "Average order amount is 523.40."
 
     def test_scalar_min_max(self):
         plan = _business_plan(aggregation="MIN", measure_label="order amount")
         data = _success_data(plan, rows=[{"min_amount": 12}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "The minimum order amount is 12."
+        assert answer.answer == "Minimum order amount is 12."
 
     def test_grouped_result(self):
         plan = _business_plan(
@@ -374,7 +374,7 @@ class TestLiveQueryBusinessValueRendering:
             rows=[{"region": "West", "row_count": 10}, {"region": "East", "row_count": 5}],
         )
         answer = _build_live_query_answer(data)
-        assert answer.answer == "Clients are grouped below by Region."
+        assert answer.answer == "Most clients are West. The current breakdown is 10 west and 5 east."
         assert len(answer.result_preview) == 2
         # raw column/alias keys must not leak into the preview unlabeled
         assert "region" not in answer.result_preview[0]
@@ -396,7 +396,7 @@ class TestLiveQueryBusinessValueRendering:
         rows = [{"name": f"Client {i}", "sum_amount": 1000 * i} for i in range(10, 0, -1)]
         data = _success_data(plan, row_count=10, truncated=True, rows=rows)
         answer = _build_live_query_answer(data)
-        assert answer.answer.startswith("The top 10 clients by revenue are shown below.")
+        assert answer.answer.startswith("Client 10 leads with 10,000, followed by Client 9 and Client 8.")
         assert "truncated" in answer.answer.lower()
         assert answer.truncation_notice is not None
         assert len(answer.result_preview) == 10
@@ -491,7 +491,7 @@ class TestLiveQueryBusinessValueRendering:
         )
         data = _success_data(plan, rows=[{"row_count": 87}])
         answer = _build_live_query_answer(data)
-        assert answer.answer == "There are 87 active clients."
+        assert answer.answer == "There are 87 active clients in the database."
 
 
 # ---------------------------------------------------------------------------
