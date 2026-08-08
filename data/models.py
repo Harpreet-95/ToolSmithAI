@@ -1381,6 +1381,20 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # Phase 1 Stabilization, Task 3 — discriminates a real user-visible
+    # execution from the agent's own internal investigation probes
+    # (data.investigation_service), which write to this same table for
+    # audit/analytics but must not count toward the per-user rate limit.
+    existing_qel_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(query_execution_log)").fetchall()
+    }
+    if "execution_kind" not in existing_qel_columns:
+        cursor.execute(
+            "ALTER TABLE query_execution_log ADD COLUMN execution_kind "
+            "TEXT NOT NULL DEFAULT 'user_query'"
+        )
+    conn.commit()
+
     # ai_semantic_suggestions — pending review queue for AI-generated dictionary suggestions.
     # AI never writes directly to data_dictionary_columns; all output lands here first.
     # status: PENDING | ACCEPTED | REJECTED

@@ -538,6 +538,7 @@ def log_query_execution(
     status: str,
     error_code: "str | None",
     executed_at: str,
+    execution_kind: str = "user_query",
 ) -> None:
     """Persist one row to query_execution_log.
 
@@ -546,6 +547,16 @@ def log_query_execution(
       - Parameter values are NEVER stored — only the count.
       - Returned row values are NEVER stored.
       - PII values are NEVER stored.
+
+    execution_kind distinguishes a real user-visible execution
+    ("user_query", the default — every pre-existing call site keeps
+    counting toward the per-user rate limit unchanged) from the agent's own
+    internal investigation probes ("investigation" —
+    data.investigation_service passes this explicitly), which are still
+    persisted here for audit/analytics but must not themselves trigger
+    _check_user_rate_limit for the real execution that follows them in the
+    same turn. Daily/source-rate/repeated-query safeguards are unaffected —
+    they intentionally keep counting every row regardless of kind.
     """
     try:
         sql_hash       = hashlib.sha256(sql.encode("utf-8")).hexdigest() if sql else None
@@ -559,13 +570,15 @@ def log_query_execution(
                 INSERT INTO query_execution_log
                     (execution_id, user_id, source_id, sql_hash,
                      tables_accessed_json, param_count, row_count, truncated,
-                     duration_ms, status, error_code, executed_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     duration_ms, status, error_code, executed_at, created_at,
+                     execution_kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     execution_id, user_id, source_id, sql_hash,
                     tables_json, param_count, row_count, 1 if truncated else 0,
                     duration_ms, status, error_code, executed_at, created_at_str,
+                    execution_kind,
                 ),
             )
             conn.commit()
