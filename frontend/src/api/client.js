@@ -1204,3 +1204,36 @@ export async function askComposer(token, payload) {
   })
   return parseResponse(res)
 }
+
+// Day 4, Capability 5 — Export. Round-trips the exact enterprise_answer/
+// agent_status this same tab already received from askComposer() — the
+// backend never re-executes SQL or looks anything up by id. Mirrors
+// exportReport()'s blob-download pattern (client.js:369) for consistency
+// with the existing report-export UX, as its own independent function
+// since the request shape (POST + JSON body) differs from that GET.
+export async function exportComposerAnswer(token, { question, enterpriseAnswer, agentStatus, format }) {
+  const res = await fetch('/v1/composer/export', {
+    method: 'POST',
+    headers: AUTH_HEADERS(token),
+    body: JSON.stringify({
+      question, enterprise_answer: enterpriseAnswer, agent_status: agentStatus ?? null, format,
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg
+    try { msg = JSON.parse(text)?.message || text } catch { msg = text }
+    throw new Error(`${res.status}: ${msg}`)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  const cd = res.headers.get('Content-Disposition') || ''
+  const match = cd.match(/filename="([^"]+)"/)
+  a.download = match ? match[1] : `toolsmithai_answer.${format}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}

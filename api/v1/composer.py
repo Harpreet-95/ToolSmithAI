@@ -6,8 +6,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, field_validator
 
 from auth.jwt_auth import AuthenticatedUser, require_jwt
@@ -59,6 +59,25 @@ class ComposerRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("session_id cannot be empty")
         return v.strip()
+
+
+# Day 4, Capability 5 — Export. Stateless request: the caller round-trips
+# the exact enterprise_answer dict its own prior POST /composer/ask response
+# returned, plus that same response's top-level agent_status (None for the
+# legacy non-agent path) — never re-executed, never looked up server-side.
+class ComposerExportRequest(BaseModel):
+    question: str
+    enterprise_answer: Dict[str, Any]
+    agent_status: Optional[str] = None
+    format: str
+
+    @field_validator("format")
+    @classmethod
+    def format_supported(cls, v: str) -> str:
+        from core.answering.export_service import ALLOWED_FORMATS
+        if v not in ALLOWED_FORMATS:
+            raise ValueError(f"format must be one of {sorted(ALLOWED_FORMATS)}")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -1251,3 +1270,80 @@ def composer_ask(
         "enterprise_answer": enterprise_answer.to_dict() if enterprise_answer else None,
         "execution_strategy": execution_strategy.to_dict() if execution_strategy else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Day 4, Capability 5 — Export
+# ---------------------------------------------------------------------------
+
+def _export_client_ip(request: Request) -> Optional[str]:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    if request.client:
+        return request.client.host
+    return None
+
+
+@composer_router.post("/composer/export")
+def composer_export(
+    body: ComposerExportRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(require_jwt),
+) -> Response:
+    """Builds an .xlsx/.csv/.pdf file directly from an already-computed
+    EnterpriseAnswer the caller already has (its own prior /composer/ask
+    response) — never re-executes SQL, never looks up an execution_id
+    server-side (core.live.query_engine.LiveQueryEngine persists nothing
+    after a request completes, so there would be nothing to look up).
+
+    Refuses (400) whenever core.answering.export_service.check_exportable
+    finds the answer was refused, still needs clarification, or otherwise
+    didn't reach a successful terminal state — the one hard backend gate
+    behind Day 4's "never export a refused/clarification-required answer"
+    rule, independent of whatever the frontend's own Export button state
+    already enforced.
+    """
+    from core.answering.export_service import build_export, check_exportable
+    from data.export_log_service import create_export_log
+
+    ip = _export_client_ip(request)
+    ua = (request.headers.get("User-Agent") or "")[:512]
+
+    refusal_reason = check_exportable(body.enterprise_answer, body.agent_status)
+    if refusal_reason is not None:
+        try:
+            create_export_log(
+                user_id=str(user.user_id), report_id=None, export_format=body.format,
+                status="failed", error_reason=refusal_reason[:500], ip_address=ip, user_agent=ua,
+            )
+        except Exception:  # noqa: BLE001 — audit logging must never block the response
+            pass
+        return JSONResponse(status_code=400, content=build_error_response(refusal_reason))
+
+    try:
+        content, filename, media_type = build_export(body.question, body.enterprise_answer, body.format)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("composer.export failed user_id=%s format=%s", user.user_id, body.format)
+        try:
+            create_export_log(
+                user_id=str(user.user_id), report_id=None, export_format=body.format,
+                status="failed", error_reason=str(e)[:500], ip_address=ip, user_agent=ua,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return JSONResponse(status_code=500, content=build_error_response("Failed to build export file"))
+
+    try:
+        create_export_log(
+            user_id=str(user.user_id), report_id=None, export_format=body.format,
+            filename=filename, file_size_bytes=len(content), status="success",
+            ip_address=ip, user_agent=ua,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return Response(
+        content=content, media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
