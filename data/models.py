@@ -909,6 +909,154 @@ def init_db() -> None:
     """)
     conn.commit()
 
+    # concept_table_mappings — Phase 2 scoped semantic memory: remembers that
+    # a business concept term (e.g. "clients") resolves to a specific
+    # table/column on a given source, with confidence/evidence/governance
+    # state, mirroring the domain_assignments pattern above but keyed for
+    # MULTIPLE competing candidate rows per (source_id, concept_term) rather
+    # than domain_assignments' one-row-per-table shape — a concept can have
+    # several candidate tables before one is ever approved. column_name uses
+    # '' (not NULL) as the table-level sentinel: SQLite unique indexes treat
+    # NULL as non-colliding, so a nullable column_name would silently defeat
+    # this uniqueness constraint for every table-level (concept-only) row.
+    # "Only one approved mapping active per term" is an application-level
+    # invariant (see data/concept_mapping_service.py's sibling-demotion on
+    # approval), not a DB constraint — this repo doesn't use partial unique
+    # indexes/triggers elsewhere, so this matches existing style.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS concept_table_mappings (
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id                 INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            concept_term              TEXT    NOT NULL,
+            table_fqn                 TEXT    NOT NULL,
+            column_name               TEXT    NOT NULL DEFAULT '',
+            confidence                REAL    NOT NULL DEFAULT 0.0,
+            evidence_json             TEXT    NOT NULL DEFAULT '[]',
+            competing_candidates_json TEXT    NOT NULL DEFAULT '[]',
+            assignment_source         TEXT    NOT NULL DEFAULT 'human'
+                                       CHECK (assignment_source IN ('human','auto_governance','inferred_retrieval')),
+            governance_state          TEXT    NOT NULL DEFAULT 'HUMAN_APPROVED',
+            created_by                TEXT,
+            created_at                TEXT    NOT NULL,
+            updated_at                TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ctm_source_term_table_column
+            ON concept_table_mappings (source_id, concept_term, table_fqn, column_name);
+        CREATE INDEX IF NOT EXISTS idx_ctm_source_term
+            ON concept_table_mappings (source_id, concept_term);
+        CREATE INDEX IF NOT EXISTS idx_ctm_source_id
+            ON concept_table_mappings (source_id);
+    """)
+    conn.commit()
+
+    # concept_term_synonyms — Phase 3 natural-language learning: records that
+    # a concept term (synonym_term) has been taught by a human, via the
+    # clarification "remember this choice" action, to mean the same thing as
+    # another term (canonical_term) that already has an approved mapping in
+    # concept_table_mappings, scoped per source. One row per synonym_term —
+    # a term means one thing at a time; teaching it a new meaning requires
+    # explicit user confirmation to replace the row (see
+    # concept_mapping_service.remember_synonym), never a silent or automatic
+    # overwrite. Deliberately no confidence/approval-state lifecycle: this is
+    # conversational memory ("the AI learned your terminology"), not a
+    # governed metadata object like concept_table_mappings. Distinct from the
+    # existing static data/synonyms.json (global, curated) — this is
+    # per-source and learned from what a human actually taught it.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS concept_term_synonyms (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id         INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            synonym_term      TEXT    NOT NULL,
+            canonical_term    TEXT    NOT NULL,
+            created_by        TEXT,
+            created_at        TEXT    NOT NULL,
+            updated_at        TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cts_source_synonym
+            ON concept_term_synonyms (source_id, synonym_term);
+        CREATE INDEX IF NOT EXISTS idx_cts_source_id
+            ON concept_term_synonyms (source_id);
+    """)
+    conn.commit()
+
+    # generated_business_vocabulary — Enterprise Phase 4 autonomous vocabulary
+    # bootstrap: business terms (organization, candidate, placement, ...)
+    # derived deterministically from schema/table/column names, dictionary
+    # descriptions, and relationship/domain/entity evidence for a source,
+    # WITHOUT any human approval step. Deliberately a separate table from
+    # concept_table_mappings (human/governance-approved) and
+    # concept_term_synonyms (human-taught conversational memory) — a
+    # generated row is never promoted into either of those tables and never
+    # outranks them; retrieval always consults explicit/approved vocabulary
+    # first (see data/vocabulary_bootstrap_service.py). Idempotent and
+    # replaceable: a rerun for a source deletes and re-derives every row for
+    # that source_id in one transaction, so rediscovery never accumulates
+    # stale rows. Multiple competing rows per (source_id, term) are expected
+    # and intentional when a term is genuinely ambiguous across tables — this
+    # table never silently collapses ambiguity to one winner; that decision
+    # is left to the existing retrieval/clarification gates that already
+    # consume concept_table_mappings.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS generated_business_vocabulary (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id          INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            schema_snapshot_id INTEGER NOT NULL REFERENCES schema_snapshots(id) ON DELETE CASCADE,
+            term               TEXT    NOT NULL,
+            table_fqn          TEXT    NOT NULL,
+            column_name        TEXT    NOT NULL DEFAULT '',
+            confidence_tier    TEXT    NOT NULL CHECK (confidence_tier IN ('HIGH','MEDIUM','LOW')),
+            confidence_score   REAL    NOT NULL DEFAULT 0.0,
+            evidence_json      TEXT    NOT NULL DEFAULT '[]',
+            created_at         TEXT    NOT NULL,
+            updated_at         TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_gbv_source_term_table_column
+            ON generated_business_vocabulary (source_id, term, table_fqn, column_name);
+        CREATE INDEX IF NOT EXISTS idx_gbv_source_term
+            ON generated_business_vocabulary (source_id, term);
+        CREATE INDEX IF NOT EXISTS idx_gbv_source_id
+            ON generated_business_vocabulary (source_id);
+    """)
+    conn.commit()
+
+    # semantic_entity_contracts — Day 2B (Automatic Business Semantic
+    # Grounding). One versioned, auto-generated "contract" per fixed
+    # business-entity name (Student, Invoice, ...) per source, resolving
+    # entity name -> ONE preferred table/view + curated business semantics
+    # (status/date/measure columns, verified status values, trusted
+    # relationships, excluded derivative objects). Never overwritten —
+    # always insert a new contract_version row, same idiom as
+    # schema_snapshots.snapshot_version; readers take MAX(contract_version).
+    # No governance/approval columns: contracts are fully automatic
+    # (data.semantic_contract_service), never routed through
+    # governance_state_map.
+    cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS semantic_entity_contracts (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id          INTEGER NOT NULL REFERENCES data_source_connections(id) ON DELETE CASCADE,
+            entity_name        TEXT    NOT NULL,
+            contract_version   INTEGER NOT NULL DEFAULT 1,
+            canonical_table_fqn TEXT,
+            preferred_view_fqn TEXT,
+            resolution_status  TEXT    NOT NULL DEFAULT 'RESOLVED',
+            confidence         REAL    NOT NULL DEFAULT 0.0,
+            contract_json      TEXT    NOT NULL DEFAULT '{}',
+            metadata_revision  TEXT    NOT NULL,
+            generation_method  TEXT    NOT NULL DEFAULT 'auto_grounding',
+            created_at         TEXT    NOT NULL,
+            updated_at         TEXT    NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_sec_source_entity_version
+            ON semantic_entity_contracts (source_id, entity_name, contract_version);
+        CREATE INDEX IF NOT EXISTS idx_sec_source_entity
+            ON semantic_entity_contracts (source_id, entity_name);
+    """)
+    conn.commit()
+
     # domain_learning_rules — per-source learned naming conventions.
     # UNIQUE(source_id, pattern_type, pattern_value) lets re-runs skip
     # already-suggested patterns via ON CONFLICT DO NOTHING.
