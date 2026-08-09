@@ -29,8 +29,11 @@ from data.semantic_retrieval_service import (
     _select_domain_filter,
     _expand_relationships,
     _search_tables,
+    _search_columns_as_tables,
+    _search_all,
     _merge_best,
     get_candidate_tables,
+    get_candidate_tables_with_ranking,
 )
 
 _NOW = "2026-07-14T00:00:00+00:00"
@@ -147,6 +150,29 @@ def _add_table(db, table_fqn, *, domain=None, domain_confidence=0.0, business_na
     c.close()
 
 
+def _add_column(db, table_fqn, column_name, *, business_label=None, meaning=None):
+    c = _c(db)
+    cid = abs(hash((table_fqn, column_name))) % 100000
+    c.execute(
+        "INSERT OR REPLACE INTO profiling_column_profiles "
+        "(id, profiling_snapshot_id, source_id, table_fqn, column_name, data_type, "
+        " is_primary_key, is_identity, uniqueness_score, is_nullable, null_percentage, "
+        " cardinality_tier, pii_name_heuristic, pii_confirmed, created_at, updated_at) "
+        "VALUES (?,1,1,?,?,'DECIMAL',0,0,0.1,0,0.0,'MEDIUM',0,0,?,?)",
+        (cid, table_fqn, column_name, _NOW, _NOW),
+    )
+    if business_label or meaning:
+        c.execute(
+            "INSERT OR REPLACE INTO data_dictionary_columns "
+            "(source_id, snapshot_id, table_fqn, column_name, business_label, meaning, "
+            " is_approved, generation_method, created_at, updated_at) "
+            "VALUES (1,1,?,?,?,?,1,'rule_based',?,?)",
+            (table_fqn, column_name, business_label, meaning, _NOW, _NOW),
+        )
+    c.commit()
+    c.close()
+
+
 def _add_relationship(db, from_fqn, to_fqn, *, status="AUTO", rel_id=None):
     c = _c(db)
     c.execute(
@@ -202,6 +228,138 @@ def test_domain_gate_no_keyword_match_returns_none():
 def test_get_candidate_tables_no_terms_returns_empty_set(tmp_path, monkeypatch):
     env(tmp_path, monkeypatch)
     assert get_candidate_tables(1, "u1", "anything", []) == set()
+
+
+def test_get_candidate_tables_resolves_remembered_synonym_before_search(tmp_path, monkeypatch):
+    # Phase 3, Step 2 — "clients" has no matching table by name/business_name
+    # at all; only a remembered synonym (taught via remember_synonym) can
+    # resolve it to "customer", which does match. If synonym resolution ran
+    # after (or not before) fuzzy search, this would find nothing.
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Customers", business_name="Customer")
+
+    from data.concept_mapping_service import remember_synonym
+    remember_synonym(1, "u1", "clients", "customer", actor_id="u1")
+
+    result = get_candidate_tables(1, "u1", "show my clients", ["clients"])
+    assert "dbo.Customers" in result
+
+
+def test_get_candidate_tables_unknown_synonym_falls_back_to_existing_behavior(tmp_path, monkeypatch):
+    # No synonym has ever been taught for "student" on this source —
+    # get_synonym_canonical returns None, so retrieval must behave exactly
+    # as it did before Phase 3 (pinning the pre-existing domain-filtered
+    # match below against a regression).
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Students", domain="Student Lifecycle", domain_confidence=0.9,
+               business_name="Students")
+    result = get_candidate_tables(
+        1, "u1", "list all student enrollment records by course", ["student"],
+    )
+    assert "dbo.Students" in result
+
+
+def test_synonym_resolution_is_scoped_to_its_source(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Customers", business_name="Customer")
+    conn = _c(db)
+    conn.execute(
+        "INSERT INTO data_source_connections "
+        "(id, user_id, display_name, source_type, source_category, "
+        " encrypted_config_json, config_schema_version, capabilities_json, "
+        " metadata_json, source_status, is_active, created_at, updated_at) "
+        "VALUES (2,'u1','Test2','mssql','RELATIONAL','{}',1,'[]','{}','ACTIVE',1,?,?)",
+        (_NOW, _NOW),
+    )
+    conn.commit()
+    conn.close()
+
+    from data.concept_mapping_service import remember_synonym
+    remember_synonym(1, "u1", "clients", "customer", actor_id="u1")
+
+    # Source 2 was never taught this synonym and has no table of its own —
+    # "clients" must not resolve through source 1's remembered mapping.
+    result = get_candidate_tables(2, "u1", "show my clients", ["clients"])
+    assert "dbo.Customers" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 3, Step 4 — remembered-terminology explainability (3rd return value
+# of get_candidate_tables_with_ranking / _retrieve). Pure evidence: none of
+# these tests assert anything about table_fqns/ranked beyond what the tests
+# above already pin unchanged.
+# ---------------------------------------------------------------------------
+
+def test_with_ranking_reports_one_evidence_record_for_a_remembered_synonym(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Customers", business_name="Customer")
+    from data.concept_mapping_service import remember_synonym
+    remember_synonym(1, "u1", "clients", "customer", actor_id="u1")
+
+    _tables, _ranked, remembered = get_candidate_tables_with_ranking(1, "u1", "show my clients", ["clients"])
+    assert remembered == [{
+        "evidence_type": "remembered_terminology",
+        "original_term": "clients",
+        "canonical_term": "customer",
+        "source": "user_memory",
+    }]
+
+
+def test_with_ranking_reports_no_evidence_for_unknown_term(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Students", domain="Student Lifecycle", domain_confidence=0.9,
+               business_name="Students")
+    _tables, _ranked, remembered = get_candidate_tables_with_ranking(
+        1, "u1", "list all student enrollment records by course", ["student"],
+    )
+    assert remembered == []
+
+
+def test_with_ranking_reports_no_evidence_when_canonical_term_used_directly(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Customers", business_name="Customer")
+    from data.concept_mapping_service import remember_synonym
+    remember_synonym(1, "u1", "clients", "customer", actor_id="u1")
+
+    _tables, _ranked, remembered = get_candidate_tables_with_ranking(1, "u1", "show my customers", ["customer"])
+    assert remembered == []
+
+
+def test_with_ranking_evidence_is_scoped_to_its_source(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Customers", business_name="Customer")
+    conn = _c(db)
+    conn.execute(
+        "INSERT INTO data_source_connections "
+        "(id, user_id, display_name, source_type, source_category, "
+        " encrypted_config_json, config_schema_version, capabilities_json, "
+        " metadata_json, source_status, is_active, created_at, updated_at) "
+        "VALUES (2,'u1','Test2','mssql','RELATIONAL','{}',1,'[]','{}','ACTIVE',1,?,?)",
+        (_NOW, _NOW),
+    )
+    conn.commit()
+    conn.close()
+
+    from data.concept_mapping_service import remember_synonym
+    remember_synonym(1, "u1", "clients", "customer", actor_id="u1")
+
+    _tables, _ranked, remembered = get_candidate_tables_with_ranking(2, "u1", "show my clients", ["clients"])
+    assert remembered == []
+
+
+def test_get_candidate_tables_return_value_unaffected_by_evidence_addition(tmp_path, monkeypatch):
+    # get_candidate_tables() (the 2-arg-return legacy contract every other
+    # caller/test in this file relies on) must stay a bare set — proves the
+    # new 3rd element on _retrieve/get_candidate_tables_with_ranking never
+    # leaks into it.
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.Customers", business_name="Customer")
+    from data.concept_mapping_service import remember_synonym
+    remember_synonym(1, "u1", "clients", "customer", actor_id="u1")
+
+    result = get_candidate_tables(1, "u1", "show my clients", ["clients"])
+    assert isinstance(result, set)
+    assert "dbo.Customers" in result
 
 
 def test_get_candidate_tables_finds_domain_filtered_table(tmp_path, monkeypatch):
@@ -419,3 +577,204 @@ def test_merge_best_keeps_higher_score_on_collision():
     ])
     assert merged["dbo.A"]["relevance_score"] == 100
     assert merged["dbo.B"]["relevance_score"] == 10
+
+
+# ---------------------------------------------------------------------------
+# Column-level search (Semantic Retrieval Integration fix) — most
+# measure/dimension terms are column business labels, never table names.
+# ---------------------------------------------------------------------------
+
+def test_column_level_term_finds_owning_table(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _add_table(db, "dbo.orders", business_name="Orders")
+    _add_column(db, "dbo.orders", "amount", business_label="Revenue")
+
+    # "revenue" matches nothing at the table level (name/business_name are
+    # both "orders"/"Orders") — only the column business_label carries it.
+    assert _search_tables("revenue", 1, None) == []
+    columns = _search_columns_as_tables("revenue", 1, None)
+    assert any(r["qualified_name"] == "dbo.orders" for r in columns)
+
+    result = get_candidate_tables(1, "u1", "revenue by status", ["revenue"])
+    assert "dbo.orders" in result
+
+
+def test_search_all_combines_and_sorts_table_and_column_matches(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    # Table-level match: "clients" is the table's own business_name.
+    _add_table(db, "dbo.adf_clients", business_name="Clients")
+    # Column-only match: "revenue" only appears as a column business_label
+    # on an unrelated table.
+    _add_table(db, "dbo.orders", business_name="Orders")
+    _add_column(db, "dbo.orders", "amount", business_label="Revenue")
+
+    combined = _search_all("clients revenue", 1, None)
+    fqns = {r["qualified_name"] for r in combined}
+    assert "dbo.adf_clients" in fqns
+    assert "dbo.orders" in fqns
+    # Sorted descending by relevance_score across both branches.
+    scores = [r["relevance_score"] for r in combined]
+    assert scores == sorted(scores, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Broad term across unrelated domains (does not admit every match)
+# ---------------------------------------------------------------------------
+
+def test_broad_term_does_not_admit_every_unrelated_domain_table(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    # The correct, domain-matching table for a confidently-scoped question.
+    _add_table(db, "dbo.AdmissionsApplicants", domain="Admissions", domain_confidence=0.9,
+               business_name="Applicants")
+    # A broad term ("applicant") shared by tables spread across several
+    # unrelated domains — none of these are domain-assigned to Admissions.
+    other_domains = [
+        "Finance", "Operations", "Communications", "Reporting & Analytics",
+        "System / Platform", "Reference Data", "Alumni", "Staffing & Recruiting",
+    ]
+    for i, other_domain in enumerate(other_domains):
+        _add_table(db, f"dbo.OtherApplicant{i}", domain=other_domain, domain_confidence=0.9,
+                   business_name=f"Applicant Record {i}")
+
+    question = "show applicant admission decisions for this cycle"
+    domain = _select_domain_filter(question, ["applicant"])
+    assert domain == "Admissions"
+
+    result = get_candidate_tables(1, "u1", question, ["applicant"])
+    assert "dbo.AdmissionsApplicants" in result
+    unrelated = [fqn for fqn in result if fqn.startswith("dbo.OtherApplicant")]
+    # Bounded rescue — never "every" similarly-named table across unrelated
+    # domains, only up to the existing rescue cap.
+    assert len(unrelated) <= 5
+    assert len(unrelated) < len(other_domains)
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Phase 4 — generated_business_vocabulary additive merge
+# ---------------------------------------------------------------------------
+
+def _add_generated_vocab(db, term, table_fqn, *, tier="HIGH", score=0.9, column_name="", evidence=None):
+    c = _c(db)
+    c.execute(
+        "INSERT INTO generated_business_vocabulary "
+        "(source_id, schema_snapshot_id, term, table_fqn, column_name, "
+        " confidence_tier, confidence_score, evidence_json, created_at, updated_at) "
+        "VALUES (1,1,?,?,?,?,?,?,?,?)",
+        (term, table_fqn, column_name, tier, score, json.dumps(evidence or []), _NOW, _NOW),
+    )
+    c.commit()
+    c.close()
+
+
+def test_generated_vocabulary_high_tier_merged_into_candidates(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _register_in_snapshot(db, "dbo.ADF_BHCandidates")
+    _add_generated_vocab(db, "candidate", "dbo.ADF_BHCandidates", tier="HIGH", score=0.9)
+
+    # No dictionary/profiling row exists at all for this table — pure fuzzy
+    # search would find nothing (the term "candidate" never appears in the
+    # raw table name once tokenized/scored) — only the generated-vocabulary
+    # merge can surface it.
+    result = get_candidate_tables(1, "u1", "how many candidates", ["candidate"])
+    assert "dbo.ADF_BHCandidates" in result
+
+
+def test_generated_vocabulary_low_tier_never_merged(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    # Table name itself shares no token with "export" — the only way it
+    # could enter the candidate set is the generated-vocabulary merge, which
+    # must never surface a LOW-tier row.
+    _register_in_snapshot(db, "dbo.UnrelatedThing")
+    _add_generated_vocab(db, "export", "dbo.UnrelatedThing", tier="LOW", score=0.2)
+
+    result = get_candidate_tables(1, "u1", "show export", ["export"])
+    assert "dbo.UnrelatedThing" not in result
+
+
+def test_generated_vocabulary_never_outranks_approved_mapping_for_same_term(tmp_path, monkeypatch):
+    db = env(tmp_path, monkeypatch)
+    _register_in_snapshot(db, "dbo.ADF_BHCandidates")
+    _register_in_snapshot(db, "dbo.CB_HotList_Candidates")
+    _add_generated_vocab(db, "candidate", "dbo.ADF_BHCandidates", tier="HIGH", score=0.9)
+
+    from data.concept_mapping_service import promote_clarification_selection
+    promote_clarification_selection(
+        1, "u1", "candidate", "dbo.CB_HotList_Candidates", actor_id="u1",
+    )
+
+    _, ranked, _ = get_candidate_tables_with_ranking(1, "u1", "how many candidates", ["candidate"])
+    scores = {r["qualified_name"]: r["relevance_score"] for r in ranked}
+    assert scores["dbo.CB_HotList_Candidates"] > scores["dbo.ADF_BHCandidates"]
+
+
+def test_generated_vocabulary_column_name_only_evidence_never_merged(tmp_path, monkeypatch):
+    """A generated-vocabulary row whose only evidence is a single column's
+    name (e.g. an unrelated table that merely happens to have a "Widget"
+    column) must never enter the candidate pool — that evidence supports
+    the COLUMN, not the TABLE, and the merge's synthetic score floor would
+    otherwise guarantee it survives ranking on par with genuinely
+    well-evidenced tables. No other match is possible for this term (the
+    table name itself shares no token with it), so the only way it could
+    appear is via the generated-vocabulary merge."""
+    db = env(tmp_path, monkeypatch)
+    _register_in_snapshot(db, "dbo.UnrelatedThing")
+    _add_generated_vocab(
+        db, "widget", "dbo.UnrelatedThing", tier="MEDIUM", score=0.4, column_name="Widget",
+        evidence=[{"type": "column_name", "table_fqn": "dbo.UnrelatedThing", "column_name": "Widget"}],
+    )
+
+    result = get_candidate_tables(1, "u1", "show widget", ["widget"])
+    assert "dbo.UnrelatedThing" not in result
+
+
+def test_generated_vocabulary_table_identity_evidence_still_merged(tmp_path, monkeypatch):
+    """table_name_token, dictionary_business_name, and curated_synonym
+    evidence — all about the table's own identity, never a bare column
+    name — must still be merged exactly as before this exclusion."""
+    db = env(tmp_path, monkeypatch)
+    for evidence_type, table_fqn in [
+        ("table_name_token", "dbo.WidgetOrders"),
+        ("dictionary_business_name", "dbo.WidgetLedger"),
+        ("curated_synonym", "dbo.WidgetInvoices"),
+    ]:
+        _register_in_snapshot(db, table_fqn)
+        _add_generated_vocab(
+            db, "widget", table_fqn, tier="MEDIUM", score=0.5,
+            evidence=[{"type": evidence_type, "table_fqn": table_fqn}],
+        )
+
+    result = get_candidate_tables(1, "u1", "show widget", ["widget"])
+    assert "dbo.WidgetOrders" in result
+    assert "dbo.WidgetLedger" in result
+    assert "dbo.WidgetInvoices" in result
+
+
+def test_generated_vocabulary_mixed_evidence_still_merged(tmp_path, monkeypatch):
+    """A row is excluded only when EVERY evidence entry is column_name —
+    one column_name entry alongside a table-identity entry is still
+    genuine table-level evidence and must still be merged."""
+    db = env(tmp_path, monkeypatch)
+    _register_in_snapshot(db, "dbo.WidgetCatalog")
+    _add_generated_vocab(
+        db, "widget", "dbo.WidgetCatalog", tier="MEDIUM", score=0.5,
+        evidence=[
+            {"type": "column_name", "table_fqn": "dbo.WidgetCatalog", "column_name": "Widget"},
+            {"type": "table_name_token", "table_fqn": "dbo.WidgetCatalog"},
+        ],
+    )
+
+    result = get_candidate_tables(1, "u1", "show widget", ["widget"])
+    assert "dbo.WidgetCatalog" in result
+
+
+def test_generated_vocabulary_high_tier_merge_unaffected_by_evidence_filter(tmp_path, monkeypatch):
+    """Sanity check that previously valid candidate retrieval is unchanged:
+    the existing high-tier merge (empty evidence, as recorded by real
+    vocabulary-bootstrap rows that predate the evidence_json column being
+    populated) still surfaces its table exactly as before."""
+    db = env(tmp_path, monkeypatch)
+    _register_in_snapshot(db, "dbo.ADF_BHCandidates")
+    _add_generated_vocab(db, "candidate", "dbo.ADF_BHCandidates", tier="HIGH", score=0.9)
+
+    result = get_candidate_tables(1, "u1", "how many candidates", ["candidate"])
+    assert "dbo.ADF_BHCandidates" in result

@@ -11,6 +11,10 @@ import json
 import logging
 
 from data.db import get_connection
+from data.profiling_snapshot_resolver import (
+    get_latest_profiling_snapshot,
+    get_latest_profiling_snapshot_detail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +35,6 @@ def _verify_source(conn, source_id: int, user_id: str):
 def _latest_schema_snap_id(conn, source_id: int) -> int | None:
     row = conn.execute(
         "SELECT id FROM schema_snapshots WHERE source_id = ? "
-        "ORDER BY snapshot_version DESC LIMIT 1",
-        (source_id,),
-    ).fetchone()
-    return row["id"] if row else None
-
-
-def _latest_profiling_snap_id(conn, source_id: int) -> int | None:
-    row = conn.execute(
-        "SELECT id FROM profiling_snapshots WHERE source_id = ? "
         "ORDER BY snapshot_version DESC LIMIT 1",
         (source_id,),
     ).fetchone()
@@ -126,6 +121,8 @@ def get_table_business_context(
     source_id: int,
     user_id: str,
     table_fqn: str,
+    *,
+    session=None,
 ) -> dict | None:
     """
     Return a complete business context for one table, assembled from all
@@ -135,15 +132,35 @@ def get_table_business_context(
     caller can distinguish "no data" from "data with zero values".
 
     Returns None if source_id does not exist or is not owned by user_id.
+
+    Phase 3.2A: with a session, called once per candidate table this is
+    still N queries per category (see get_table_business_contexts_batch for
+    the batched equivalent used by query_planning_service's per-candidate
+    loop) — session here only buys connection reuse and the shared
+    schema/profiling-snapshot-id constants, not query batching.
     """
-    conn = get_connection()
+    own_connection = session is None
+    conn = get_connection() if own_connection else session.conn
     try:
         source_row = _verify_source(conn, source_id, user_id)
         if source_row is None:
             return None
 
-        schema_snap_id = _latest_schema_snap_id(conn, source_id)
-        prof_snap_id   = _latest_profiling_snap_id(conn, source_id)
+        if session is not None:
+            schema_snap_id = session.get_or_compute(
+                f"latest_schema_snapshot_id:{source_id}",
+                lambda: _latest_schema_snap_id(conn, source_id),
+            )
+            prof_snap_id = session.get_or_compute(
+                f"latest_profiling_snapshot_id:{source_id}",
+                lambda: (lambda s: s.id if s else None)(
+                    get_latest_profiling_snapshot(source_id, conn=conn)
+                ),
+            )
+        else:
+            schema_snap_id = _latest_schema_snap_id(conn, source_id)
+            snapshot       = get_latest_profiling_snapshot(source_id)
+            prof_snap_id   = snapshot.id if snapshot else None
 
         # ── Dictionary ────────────────────────────────────────────────────
         dict_table = conn.execute(
@@ -237,9 +254,51 @@ def get_table_business_context(
                 (source_id, schema_snap_id, table_fqn),
             ).fetchall()
 
-    finally:
-        conn.close()
+            # Sprint 2, Signal #2 — Weighted All-Status Relationship
+            # Centrality: a SEPARATE, ranking-only read of ALL
+            # relationship_status values (not just AUTO/APPROVED above).
+            # `relationships` stays the trusted join-planning contract,
+            # unchanged; this is bounded to the fields canonicality ranking
+            # needs and is never used to build a join.
+            relationship_evidence_rows = conn.execute(
+                """SELECT 'outbound' AS direction, id AS relationship_id,
+                          to_table_fqn AS related_table,
+                          relationship_status, confidence
+                   FROM table_relationships
+                   WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn = ?
+                   UNION ALL
+                   SELECT 'inbound' AS direction, id AS relationship_id,
+                          from_table_fqn AS related_table,
+                          relationship_status, confidence
+                   FROM table_relationships
+                   WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn = ?""",
+                (source_id, schema_snap_id, table_fqn,
+                 source_id, schema_snap_id, table_fqn),
+            ).fetchall()
+        else:
+            relationship_evidence_rows = []
 
+    finally:
+        if own_connection:
+            conn.close()
+
+    return _assemble_table_business_context(
+        source_id, table_fqn, source_row, dict_table, dict_cols, domain_row, entity_row,
+        table_profile, col_profiles, outbound_rels, inbound_rels, relationship_evidence_rows,
+    )
+
+
+def _assemble_table_business_context(
+    source_id, table_fqn, source_row, dict_table, dict_cols, domain_row, entity_row,
+    table_profile, col_profiles, outbound_rels, inbound_rels, relationship_evidence_rows,
+) -> dict:
+    """Pure assembly of get_table_business_context's return shape from
+    already-fetched rows — shared by the single-table fetch above and
+    get_table_business_contexts_batch below, so both paths produce
+    byte-identical output for the same underlying data. Row objects may
+    carry extra columns (e.g. table_fqn, added for batch grouping) beyond
+    what a single-table fetch selects — harmless, since only named keys
+    used below are read."""
     # ── Merge columns from profiling + dictionary ─────────────────────────
     prof_col_map = {r["column_name"]: dict(r) for r in col_profiles}
     dict_col_map = {r["column_name"]: dict(r) for r in dict_cols}
@@ -395,6 +454,7 @@ def get_table_business_context(
             "outbound": [dict(r) for r in outbound_rels],
             "inbound":  [dict(r) for r in inbound_rels],
         },
+        "relationship_evidence": [dict(r) for r in relationship_evidence_rows],
         "governance":            governance_section,
         "search_keywords":       keywords,
         "overall_confidence":    _compute_table_confidence(dict_table, domain_row, entity_row, table_profile),
@@ -402,73 +462,217 @@ def get_table_business_context(
     }
 
 
-def get_column_business_context(
+def get_table_business_contexts_batch(
     source_id: int,
     user_id: str,
-    table_fqn: str,
-    column_name: str,
-) -> dict | None:
-    """
-    Return a complete business context for one column by composing its
-    dictionary entry, profiling statistics, and parent-table domain/entity.
+    table_fqns: "list[str] | set[str]",
+    *,
+    session=None,
+) -> dict[str, dict]:
+    """Phase 3.2A / Task 4 — batched equivalent of calling
+    get_table_business_context() once per table_fqn. One IN-clause query per
+    metadata category (dictionary, columns, domain, entity, table profile,
+    column profiles, outbound/inbound relationships, relationship evidence)
+    instead of one query per category PER TABLE — the per-candidate N+1
+    pattern query_planning_service.plan_business_query used to run (16
+    connections/~9 queries each on a real 16-candidate question).
 
-    Returns None if source_id does not exist or is not owned by user_id.
-    Sections that have not been populated yet are returned as None.
+    Shares _assemble_table_business_context with the single-table function
+    above, so output is byte-identical to calling get_table_business_context
+    once per table_fqn — this function only changes how rows are fetched,
+    never scoring, ordering, or content. Every requested table_fqn gets an
+    entry, even one with no matching metadata anywhere (an empty-shell
+    dict — every section None/empty — exactly like calling
+    get_table_business_context() for it directly; None is reserved for
+    "source not owned", not "no data for this table").
+
+    Returns {} if source_id is not owned by user_id, or table_fqns is empty.
     """
-    conn = get_connection()
+    table_fqns = list(dict.fromkeys(table_fqns))
+    if not table_fqns:
+        return {}
+
+    own_connection = session is None
+    conn = get_connection() if own_connection else session.conn
     try:
         source_row = _verify_source(conn, source_id, user_id)
         if source_row is None:
-            return None
+            return {}
 
-        prof_snap_id = _latest_profiling_snap_id(conn, source_id)
+        if session is not None:
+            schema_snap_id = session.get_or_compute(
+                f"latest_schema_snapshot_id:{source_id}",
+                lambda: _latest_schema_snap_id(conn, source_id),
+            )
+            prof_snap_id = session.get_or_compute(
+                f"latest_profiling_snapshot_id:{source_id}",
+                lambda: (lambda s: s.id if s else None)(
+                    get_latest_profiling_snapshot(source_id, conn=conn)
+                ),
+            )
+        else:
+            schema_snap_id = _latest_schema_snap_id(conn, source_id)
+            snapshot       = get_latest_profiling_snapshot(source_id, conn=conn)
+            prof_snap_id   = snapshot.id if snapshot else None
 
-        # ── Dictionary ────────────────────────────────────────────────────
-        dict_col = conn.execute(
-            """SELECT business_label, meaning, semantic_type,
+        ph = ",".join("?" * len(table_fqns))
+
+        dict_table_rows = conn.execute(
+            f"""SELECT table_fqn, business_name, description, domain, grain,
+                      is_approved, approved_by, approved_at, generation_method, updated_at
+               FROM data_dictionary_tables
+               WHERE source_id = ? AND table_fqn IN ({ph})""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        dict_table_by_fqn = {r["table_fqn"]: r for r in dict_table_rows}
+
+        dict_col_rows = conn.execute(
+            f"""SELECT table_fqn, column_name, business_label, meaning, semantic_type,
                       is_metric, is_dimension, is_date, is_id, pii_risk,
-                      is_approved, approved_by, approved_at, generation_method
+                      is_approved, approved_by, generation_method
                FROM data_dictionary_columns
-               WHERE source_id = ? AND table_fqn = ? AND column_name = ?""",
-            (source_id, table_fqn, column_name),
-        ).fetchone()
+               WHERE source_id = ? AND table_fqn IN ({ph})
+               ORDER BY table_fqn, column_name""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        dict_cols_by_fqn: dict[str, list] = {}
+        for r in dict_col_rows:
+            dict_cols_by_fqn.setdefault(r["table_fqn"], []).append(r)
 
-        # ── Profiling ─────────────────────────────────────────────────────
-        col_profile = None
+        domain_rows = conn.execute(
+            f"""SELECT table_fqn, domain, confidence, evidence_json
+               FROM domain_assignments WHERE source_id = ? AND table_fqn IN ({ph})""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        domain_by_fqn = {r["table_fqn"]: r for r in domain_rows}
+
+        entity_rows = conn.execute(
+            f"""SELECT table_fqn, entity, confidence, evidence_json
+               FROM entity_assignments WHERE source_id = ? AND table_fqn IN ({ph})""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        entity_by_fqn = {r["table_fqn"]: r for r in entity_rows}
+
+        table_profile_by_fqn: dict[str, object] = {}
+        col_profiles_by_fqn: dict[str, list] = {}
         if prof_snap_id is not None:
-            col_profile = conn.execute(
-                """SELECT data_type, raw_type, is_nullable, is_primary_key,
-                          is_identity, ordinal_position,
-                          null_count, null_percentage, populated_count, populated_percentage,
-                          distinct_count, distinct_percentage, uniqueness_score, cardinality_tier,
+            table_profile_rows = conn.execute(
+                f"""SELECT table_fqn, table_name, schema_name, table_type,
+                          exact_row_count, estimated_row_count, row_count_tier,
+                          has_date_column, date_column_name, data_currency,
+                          column_count, pk_column_count, fk_count, referenced_by_count,
+                          is_junction_table, is_root_table, is_leaf_table, has_identity_column,
+                          avg_null_percentage, completeness_score,
+                          table_class, classification_confidence, classification_evidence_json,
+                          pii_column_count, confirmed_pii_count,
+                          profiling_depth, profiling_status, profiled_at
+                   FROM profiling_table_profiles
+                   WHERE profiling_snapshot_id = ? AND table_fqn IN ({ph})""",
+                (prof_snap_id, *table_fqns),
+            ).fetchall()
+            table_profile_by_fqn = {r["table_fqn"]: r for r in table_profile_rows}
+
+            col_profile_rows = conn.execute(
+                f"""SELECT table_fqn, column_name, data_type, raw_type,
+                          is_nullable, is_primary_key, is_identity, ordinal_position,
+                          null_percentage, distinct_count, distinct_percentage,
+                          uniqueness_score, cardinality_tier,
                           min_value, max_value, avg_length,
-                          mean_value, std_deviation, p5_value, p95_value,
-                          dominant_pattern, pattern_coverage,
                           semantic_type, semantic_confidence, semantic_evidence_json,
                           pii_name_heuristic, pii_confirmed, pii_signals_json,
                           profiling_depth, profiling_status
                    FROM profiling_column_profiles
-                   WHERE profiling_snapshot_id = ? AND table_fqn = ? AND column_name = ?""",
-                (prof_snap_id, table_fqn, column_name),
-            ).fetchone()
+                   WHERE profiling_snapshot_id = ? AND table_fqn IN ({ph})
+                   ORDER BY table_fqn, ordinal_position""",
+                (prof_snap_id, *table_fqns),
+            ).fetchall()
+            for r in col_profile_rows:
+                col_profiles_by_fqn.setdefault(r["table_fqn"], []).append(r)
 
-        # ── Parent-table domain and entity (for context) ──────────────────
-        domain_row = conn.execute(
-            "SELECT domain, confidence FROM domain_assignments "
-            "WHERE source_id = ? AND table_fqn = ?",
-            (source_id, table_fqn),
-        ).fetchone()
+        outbound_by_fqn: dict[str, list] = {}
+        inbound_by_fqn: dict[str, list] = {}
+        rel_evidence_by_fqn: dict[str, list] = {}
+        if schema_snap_id is not None:
+            outbound_rows = conn.execute(
+                f"""SELECT from_table_fqn, from_column, to_schema, to_table, to_table_fqn,
+                          to_column, relationship_name, relationship_type, confidence
+                   FROM table_relationships
+                   WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn IN ({ph})
+                     AND relationship_status IN ('AUTO', 'APPROVED')
+                   ORDER BY from_table_fqn, from_column""",
+                (source_id, schema_snap_id, *table_fqns),
+            ).fetchall()
+            for r in outbound_rows:
+                d = dict(r)
+                key = d.pop("from_table_fqn")  # grouping-only column, not part of the per-table shape
+                outbound_by_fqn.setdefault(key, []).append(d)
 
-        entity_row = conn.execute(
-            "SELECT entity, confidence FROM entity_assignments "
-            "WHERE source_id = ? AND table_fqn = ?",
-            (source_id, table_fqn),
-        ).fetchone()
+            inbound_rows = conn.execute(
+                f"""SELECT to_table_fqn, from_table_fqn, from_schema, from_table, from_column,
+                          to_column, relationship_name, relationship_type, confidence
+                   FROM table_relationships
+                   WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn IN ({ph})
+                     AND relationship_status IN ('AUTO', 'APPROVED')
+                   ORDER BY to_table_fqn, from_table_fqn, from_column""",
+                (source_id, schema_snap_id, *table_fqns),
+            ).fetchall()
+            for r in inbound_rows:
+                d = dict(r)
+                key = d.pop("to_table_fqn")  # grouping-only column, not part of the per-table shape
+                inbound_by_fqn.setdefault(key, []).append(d)
 
+            rel_evidence_rows = conn.execute(
+                f"""SELECT 'outbound' AS direction, id AS relationship_id,
+                          to_table_fqn AS related_table, relationship_status, confidence,
+                          from_table_fqn AS anchor_fqn
+                   FROM table_relationships
+                   WHERE source_id = ? AND snapshot_id = ? AND from_table_fqn IN ({ph})
+                   UNION ALL
+                   SELECT 'inbound' AS direction, id AS relationship_id,
+                          from_table_fqn AS related_table, relationship_status, confidence,
+                          to_table_fqn AS anchor_fqn
+                   FROM table_relationships
+                   WHERE source_id = ? AND snapshot_id = ? AND to_table_fqn IN ({ph})""",
+                (source_id, schema_snap_id, *table_fqns,
+                 source_id, schema_snap_id, *table_fqns),
+            ).fetchall()
+            for r in rel_evidence_rows:
+                d = dict(r)
+                key = d.pop("anchor_fqn")  # grouping-only column, not part of the per-table shape
+                rel_evidence_by_fqn.setdefault(key, []).append(d)
     finally:
-        conn.close()
+        if own_connection:
+            conn.close()
 
-    # ── Assemble sections ─────────────────────────────────────────────────
+    results: dict[str, dict] = {}
+    for fqn in table_fqns:
+        results[fqn] = _assemble_table_business_context(
+            source_id, fqn, source_row,
+            dict_table_by_fqn.get(fqn), dict_cols_by_fqn.get(fqn, []),
+            domain_by_fqn.get(fqn), entity_by_fqn.get(fqn),
+            table_profile_by_fqn.get(fqn), col_profiles_by_fqn.get(fqn, []),
+            outbound_by_fqn.get(fqn, []), inbound_by_fqn.get(fqn, []),
+            rel_evidence_by_fqn.get(fqn, []),
+        )
+    return results
+
+
+def _assemble_column_business_context(
+    source_id: int,
+    table_fqn: str,
+    column_name: str,
+    dict_col,
+    col_profile,
+    domain_row,
+    entity_row,
+) -> dict:
+    """Shared assembly for get_column_business_context and
+    get_column_business_contexts_batch (Day 4, Capability 6, Task 3) — the
+    two only differ in how dict_col/col_profile/domain_row/entity_row are
+    fetched (one row at a time vs. one IN-clause query per category across
+    many columns/tables), never in how they're assembled. Mirrors
+    _assemble_table_business_context's own single-source-of-truth role for
+    the table-level batch function above."""
     schema_section = {
         "data_type":        col_profile["data_type"],
         "raw_type":         col_profile["raw_type"],
@@ -536,6 +740,179 @@ def get_column_business_context(
     }
 
 
+def get_column_business_context(
+    source_id: int,
+    user_id: str,
+    table_fqn: str,
+    column_name: str,
+) -> dict | None:
+    """
+    Return a complete business context for one column by composing its
+    dictionary entry, profiling statistics, and parent-table domain/entity.
+
+    Returns None if source_id does not exist or is not owned by user_id.
+    Sections that have not been populated yet are returned as None.
+    """
+    conn = get_connection()
+    try:
+        source_row = _verify_source(conn, source_id, user_id)
+        if source_row is None:
+            return None
+
+        snapshot     = get_latest_profiling_snapshot(source_id)
+        prof_snap_id = snapshot.id if snapshot else None
+
+        # ── Dictionary ────────────────────────────────────────────────────
+        dict_col = conn.execute(
+            """SELECT business_label, meaning, semantic_type,
+                      is_metric, is_dimension, is_date, is_id, pii_risk,
+                      is_approved, approved_by, approved_at, generation_method
+               FROM data_dictionary_columns
+               WHERE source_id = ? AND table_fqn = ? AND column_name = ?""",
+            (source_id, table_fqn, column_name),
+        ).fetchone()
+
+        # ── Profiling ─────────────────────────────────────────────────────
+        col_profile = None
+        if prof_snap_id is not None:
+            col_profile = conn.execute(
+                """SELECT data_type, raw_type, is_nullable, is_primary_key,
+                          is_identity, ordinal_position,
+                          null_count, null_percentage, populated_count, populated_percentage,
+                          distinct_count, distinct_percentage, uniqueness_score, cardinality_tier,
+                          min_value, max_value, avg_length,
+                          mean_value, std_deviation, p5_value, p95_value,
+                          dominant_pattern, pattern_coverage,
+                          semantic_type, semantic_confidence, semantic_evidence_json,
+                          pii_name_heuristic, pii_confirmed, pii_signals_json,
+                          profiling_depth, profiling_status
+                   FROM profiling_column_profiles
+                   WHERE profiling_snapshot_id = ? AND table_fqn = ? AND column_name = ?""",
+                (prof_snap_id, table_fqn, column_name),
+            ).fetchone()
+
+        # ── Parent-table domain and entity (for context) ──────────────────
+        domain_row = conn.execute(
+            "SELECT domain, confidence FROM domain_assignments "
+            "WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+
+        entity_row = conn.execute(
+            "SELECT entity, confidence FROM entity_assignments "
+            "WHERE source_id = ? AND table_fqn = ?",
+            (source_id, table_fqn),
+        ).fetchone()
+
+    finally:
+        conn.close()
+
+    return _assemble_column_business_context(
+        source_id, table_fqn, column_name, dict_col, col_profile, domain_row, entity_row,
+    )
+
+
+def get_column_business_contexts_batch(
+    source_id: int,
+    user_id: str,
+    columns: "list[tuple[str, str]]",
+) -> "dict[tuple[str, str], dict]":
+    """Day 4, Capability 6 (Task 3) — batched equivalent of calling
+    get_column_business_context() once per (table_fqn, column_name) pair.
+    Mirrors get_table_business_contexts_batch's approach: one IN-clause
+    query per metadata category across the distinct set of tables involved,
+    instead of one dictionary/profiling/domain/entity/source-verify/
+    snapshot-lookup round trip — and one fresh SQLite connection — PER
+    COLUMN. This was the N+1 pattern data.query_execution_service.
+    _governance_recheck used to run (measured: 1817 SQLite statements across
+    18 columns on a real 3-table join question, ~140-200ms of governance
+    recheck time vs 3-10ms for a single-table question).
+
+    Shares _assemble_column_business_context with the single-column function
+    above, so output for each pair is byte-identical to calling
+    get_column_business_context() for it directly — only how rows are
+    fetched changes, never the assembled content.
+
+    Returns {} if source_id is not owned by user_id, or columns is empty.
+    Every requested pair still gets an entry — value None only for "no
+    metadata anywhere for this exact column", the same signal
+    get_column_business_context returns for it directly (not for "source
+    not owned", which instead makes the whole return value {}).
+    """
+    columns = list(dict.fromkeys(columns))
+    if not columns:
+        return {}
+
+    table_fqns = list(dict.fromkeys(t for t, _c in columns))
+
+    conn = get_connection()
+    try:
+        source_row = _verify_source(conn, source_id, user_id)
+        if source_row is None:
+            return {}
+
+        snapshot     = get_latest_profiling_snapshot(source_id)
+        prof_snap_id = snapshot.id if snapshot else None
+
+        ph = ",".join("?" * len(table_fqns))
+
+        dict_col_rows = conn.execute(
+            f"""SELECT table_fqn, column_name, business_label, meaning, semantic_type,
+                      is_metric, is_dimension, is_date, is_id, pii_risk,
+                      is_approved, approved_by, approved_at, generation_method
+               FROM data_dictionary_columns
+               WHERE source_id = ? AND table_fqn IN ({ph})""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        dict_col_by_key = {(r["table_fqn"], r["column_name"]): r for r in dict_col_rows}
+
+        col_profile_by_key: dict = {}
+        if prof_snap_id is not None:
+            col_profile_rows = conn.execute(
+                f"""SELECT table_fqn, column_name, data_type, raw_type,
+                          is_nullable, is_primary_key, is_identity, ordinal_position,
+                          null_count, null_percentage, populated_count, populated_percentage,
+                          distinct_count, distinct_percentage, uniqueness_score, cardinality_tier,
+                          min_value, max_value, avg_length,
+                          mean_value, std_deviation, p5_value, p95_value,
+                          dominant_pattern, pattern_coverage,
+                          semantic_type, semantic_confidence, semantic_evidence_json,
+                          pii_name_heuristic, pii_confirmed, pii_signals_json,
+                          profiling_depth, profiling_status
+                   FROM profiling_column_profiles
+                   WHERE profiling_snapshot_id = ? AND table_fqn IN ({ph})""",
+                (prof_snap_id, *table_fqns),
+            ).fetchall()
+            col_profile_by_key = {(r["table_fqn"], r["column_name"]): r for r in col_profile_rows}
+
+        domain_rows = conn.execute(
+            f"""SELECT table_fqn, domain, confidence FROM domain_assignments
+               WHERE source_id = ? AND table_fqn IN ({ph})""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        domain_by_fqn = {r["table_fqn"]: r for r in domain_rows}
+
+        entity_rows = conn.execute(
+            f"""SELECT table_fqn, entity, confidence FROM entity_assignments
+               WHERE source_id = ? AND table_fqn IN ({ph})""",
+            (source_id, *table_fqns),
+        ).fetchall()
+        entity_by_fqn = {r["table_fqn"]: r for r in entity_rows}
+    finally:
+        conn.close()
+
+    results: dict = {}
+    for table_fqn, column_name in columns:
+        results[(table_fqn, column_name)] = _assemble_column_business_context(
+            source_id, table_fqn, column_name,
+            dict_col_by_key.get((table_fqn, column_name)),
+            col_profile_by_key.get((table_fqn, column_name)),
+            domain_by_fqn.get(table_fqn),
+            entity_by_fqn.get(table_fqn),
+        )
+    return results
+
+
 def get_business_summary(source_id: int, user_id: str) -> dict | None:
     """
     Return enterprise-level aggregate metrics for a source by reading from
@@ -558,14 +935,13 @@ def get_business_summary(source_id: int, user_id: str) -> dict | None:
         ).fetchone()
 
         # ── Profiling stats ───────────────────────────────────────────────
-        prof_snap = conn.execute(
-            """SELECT id, tables_total, tables_profiled, columns_profiled,
-                      pii_columns_found, mode, status, completed_at
-               FROM profiling_snapshots WHERE source_id = ?
-               ORDER BY snapshot_version DESC LIMIT 1""",
-            (source_id,),
-        ).fetchone()
-        prof_snap_id   = prof_snap["id"] if prof_snap else None
+        # Phase 2A.2 migration: snapshot selection now owned by
+        # data.profiling_snapshot_resolver.get_latest_profiling_snapshot_detail,
+        # which reproduces the exact query this used to run inline (highest
+        # snapshot_version for source_id, status-independent) — no behavior
+        # change, just removing the duplicated SQL from this call site.
+        detail = get_latest_profiling_snapshot_detail(source_id)
+        prof_snap_id   = detail.id if detail else None
         schema_snap_id = schema_snap["id"] if schema_snap else None
 
         # ── Dictionary stats ──────────────────────────────────────────────
@@ -661,7 +1037,7 @@ def get_business_summary(source_id: int, user_id: str) -> dict | None:
     def _safe_rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator > 0 else 0.0
 
-    profile_coverage  = _safe_rate(prof_snap["tables_profiled"]  if prof_snap else 0, schema_table_count)
+    profile_coverage  = _safe_rate(detail.tables_profiled if detail else 0, schema_table_count)
     dict_coverage     = _safe_rate(dict_t_row["total"],                                schema_table_count)
     domain_coverage   = _safe_rate(domain_total_assigned,                              schema_table_count)
     entity_coverage   = _safe_rate(entity_total_assigned,                              schema_table_count)
@@ -688,12 +1064,12 @@ def get_business_summary(source_id: int, user_id: str) -> dict | None:
             "last_discovered_at": schema_snap["discovered_at"] if schema_snap else None,
         },
         "profiling": {
-            "snapshot_id":       prof_snap["id"]               if prof_snap else None,
-            "tables_profiled":   prof_snap["tables_profiled"]  if prof_snap else 0,
-            "columns_profiled":  prof_snap["columns_profiled"] if prof_snap else 0,
-            "pii_columns_found": prof_snap["pii_columns_found"] if prof_snap else 0,
-            "status":            prof_snap["status"]            if prof_snap else None,
-            "completed_at":      prof_snap["completed_at"]      if prof_snap else None,
+            "snapshot_id":       detail.id               if detail else None,
+            "tables_profiled":   detail.tables_profiled  if detail else 0,
+            "columns_profiled":  detail.columns_profiled if detail else 0,
+            "pii_columns_found": detail.pii_columns_found if detail else 0,
+            "status":            detail.status            if detail else None,
+            "completed_at":      detail.completed_at      if detail else None,
         },
         "dictionary": {
             "tables_with_definitions": int(dict_t_row["total"]),

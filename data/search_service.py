@@ -826,6 +826,8 @@ def search_metadata(
     dictionary_status: Optional[str] = None,
     classification: Optional[str] = None,
     profile_status: Optional[str] = None,
+    *,
+    session=None,
 ) -> dict:
     """
     Keyword search across all stored metadata with server-side filtering.
@@ -865,7 +867,13 @@ def search_metadata(
     include_tables  = asset_type in (None, "table", "dictionary", "domain", "entity")
     include_columns = asset_type in (None, "column", "dictionary")
 
-    conn = get_connection()
+    # Request-scoped session (see data.request_metadata_session) reuses one
+    # connection across every search_metadata() call in a planning request
+    # instead of opening a fresh one each time — optional and additive:
+    # legacy callers with no session keep today's own-connection behavior,
+    # own_connection tracks which cleanup path applies below.
+    own_connection = session is None
+    conn = get_connection() if own_connection else session.conn
     cursor = conn.cursor()
     results: list[dict] = []
 
@@ -1058,7 +1066,8 @@ def search_metadata(
                 })
 
     finally:
-        conn.close()
+        if own_connection:
+            conn.close()
 
     results.sort(key=lambda r: r["relevance_score"], reverse=True)
     total  = len(results)

@@ -21,6 +21,7 @@ import re
 from data.db import get_connection
 from data.knowledge_graph_service import find_business_assets, _compute_importance_score
 from data.business_knowledge_service import get_table_business_context
+from data.request_metadata_session import MetadataSearchFailedError
 from data.semantic_layer_service import analyze_join_quality, recommend_best_join_path
 from core.dictionary.rule_classifier import _METRIC_TOKENS, _tokenize
 from core.semantic.concept_resolver import extract_query_intent, derive_analytics_intent
@@ -1192,9 +1193,18 @@ def plan_business_query(source_id: int, user_id: str, request: dict) -> dict | N
     # Sprint 1 AI Brain: try domain-ranked retrieval first; an empty result
     # (weak/ambiguous domain, no search_metadata match, or any failure)
     # falls back to the original unbounded _collect_candidate_tables() path
-    # unchanged, per the Sprint 1 contract.
+    # unchanged, per the Sprint 1 contract. A genuine metadata-search
+    # infrastructure failure (MetadataSearchFailedError) is folded into
+    # that same "empty result" fallback rather than left to propagate
+    # uncaught — this call site had no knowledge of that exception type at
+    # all before, so any infrastructure failure crashed the whole planning
+    # request instead of degrading like every other retrieval failure mode
+    # already does.
     if all_terms:
-        candidate_tables = _get_ai_candidate_tables(source_id, user_id, question, all_terms)
+        try:
+            candidate_tables = _get_ai_candidate_tables(source_id, user_id, question, all_terms)
+        except MetadataSearchFailedError:
+            candidate_tables = set()
         if not candidate_tables:
             candidate_tables = _collect_candidate_tables(source_id, user_id, all_terms)
     else:
