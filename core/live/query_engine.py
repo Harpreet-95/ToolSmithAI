@@ -53,6 +53,8 @@ class LiveQueryEngine:
         page: int = 1,
         page_size: Optional[int] = None,
         max_payload_bytes: Optional[int] = None,
+        pii_aliases: Optional[set] = None,
+        execution_kind: str = "user_query",
         existing_connection: Optional[object] = None,
         connection_box: Optional[dict] = None,
     ) -> QueryResult:
@@ -90,6 +92,7 @@ class LiveQueryEngine:
                     param_count=len(params), row_count=row_count, truncated=truncated,
                     duration_ms=dur, status=status, error_code=error_code,
                     executed_at=started_at.isoformat(),
+                    execution_kind=execution_kind,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning(
@@ -119,8 +122,23 @@ class LiveQueryEngine:
         context = resolution.context
 
         # ── Rate limits (reused as-is) ─────────────────────────────────────────
+        # Day 4, Capability 2 — a non-"user_query" execution_kind (currently
+        # only data.insight_service's bounded, single, same-turn period-
+        # comparison query) is exempt from the tight 2-second per-user
+        # collision window: it is not a new user action, it is a bounded
+        # supplementary query for the ONE question already rate-limited/
+        # authorized earlier in this same turn. Without this, it would
+        # always self-collide with the primary query's own just-written log
+        # row (RATE_LIMIT_WINDOW_S=2s, the same self-collision class already
+        # fixed once for the agent's investigation probes — see
+        # _check_user_rate_limit's own docstring). Daily/source-rate limits
+        # below are deliberately UNCHANGED — they still count every
+        # execution_kind, so real query volume is still throttled.
+        # Original sequential short-circuit order/laziness is unchanged —
+        # stage_timer.measure only wraps it for timing, via __enter__/__exit__
+        # around the block including its early returns.
         with stage_timer.measure("rate_limit_checks"):
-            if _check_user_rate_limit(user_id):
+            if execution_kind == "user_query" and _check_user_rate_limit(user_id):
                 dur = _log("rate_limited", error_code="user_rate_limit")
                 return QueryResult(
                     execution_id=execution_id, status=QueryStatus.RATE_LIMITED,
@@ -215,7 +233,7 @@ class LiveQueryEngine:
             rows_raw = rows_raw or []
             truncated = len(rows_raw) > limits.row_limit
             rows_raw = rows_raw[:limits.row_limit]
-            columns = _build_columns(description, set())
+            columns = _build_columns(description, pii_aliases or set())
             rows = _build_rows(rows_raw, columns)
 
             # ── Payload-size guard ────────────────────────────────────────────

@@ -30,7 +30,7 @@ import core.connectors.registry as _registry
 from core.connectors.base import DataSourceConfig
 from core.secrets.manager import get_secret_manager
 from data.audit import log_audit_event
-from data.business_knowledge_service import get_column_business_context
+from data.business_knowledge_service import get_column_business_contexts_batch
 from data.db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -151,7 +151,25 @@ def _governance_recheck(
     pii_aliases:  set[str]  = set()
     warnings:     list[dict] = []
 
-    for sel in (sql_plan.get("select") or []):
+    selections = sql_plan.get("select") or []
+    # Day 4, Capability 6 (Task 3) — one batched lookup for every selected
+    # column instead of one get_column_business_context() call (its own
+    # fresh SQLite connection + source-verify + snapshot-lookup) PER COLUMN.
+    # Same fallback contract as before: a failure here must never block
+    # execution — every column just falls through as if no context were
+    # found (ctx is None), same as a per-column failure used to.
+    requested_columns = [
+        (sel.get("table_fqn"), sel.get("column_name"))
+        for sel in selections
+        if sel.get("table_fqn") and sel.get("column_name")
+    ]
+    try:
+        ctx_by_column = get_column_business_contexts_batch(source_id, user_id, requested_columns)
+    except Exception:
+        logger.warning("_governance_recheck: get_column_business_contexts_batch failed for source_id=%s", source_id)
+        ctx_by_column = {}
+
+    for sel in selections:
         table_fqn   = sel.get("table_fqn")
         column_name = sel.get("column_name")
         alias       = (sel.get("alias") or column_name or "").lower()
@@ -159,15 +177,7 @@ def _governance_recheck(
         if not table_fqn or not column_name:
             continue
 
-        try:
-            ctx = get_column_business_context(source_id, user_id, table_fqn, column_name)
-        except Exception:
-            logger.warning(
-                "_governance_recheck: get_column_business_context failed for %s.%s",
-                table_fqn, column_name,
-            )
-            ctx = None
-
+        ctx = ctx_by_column.get((table_fqn, column_name))
         if ctx is None:
             continue
 
@@ -222,6 +232,92 @@ def _governance_recheck(
             })
 
     return blocked_cols, pii_aliases, warnings
+
+
+# ---------------------------------------------------------------------------
+# Governed execution — the one entry point every live-SQL caller must use
+# ---------------------------------------------------------------------------
+
+def execute_governed_query(
+    source_id: int,
+    user_id: str,
+    sql: str,
+    sql_plan: dict,
+    *,
+    params: "list | None" = None,
+    row_limit: "int | None" = None,
+    timeout_s: "int | None" = None,
+    page: int = 1,
+    page_size: "int | None" = None,
+    max_payload_bytes: "int | None" = None,
+    execution_kind: str = "user_query",
+    existing_connection: object = None,
+    connection_box: "dict | None" = None,
+):
+    """The one governed entry point for executing SQL derived from a
+    business question (chat, execute-query REST route, and every
+    context_builder._live_query branch).
+
+    existing_connection/connection_box (Day 4, Capability 6, Task 4) —
+    passed straight through to LiveQueryEngine.execute(); see its own
+    docstring. Every existing caller that omits them gets byte-identical
+    behavior to before these parameters existed.
+
+    Runs _governance_recheck and enforces both halves of its result before
+    any row is returned: unconfirmed PII (blocked_cols) blocks execution
+    outright; confirmed PII (pii_aliases) is passed through to
+    LiveQueryEngine.execute() for masking. No caller should call
+    LiveQueryEngine.execute() directly with SQL derived from an NL question
+    — doing so would apply masking but silently skip the unconfirmed-PII
+    block.
+
+    Returns (query_result, governance_warnings) — governance_warnings is the
+    structured {"type", "severity", "message"} list from _governance_recheck.
+    It is not merged into query_result automatically (query_result may be a
+    bare QueryResult with no dependency on this module); callers that surface
+    warnings to the user are responsible for merging it into their own
+    response shape.
+
+    execution_kind — passed straight through to LiveQueryEngine.execute().
+    Defaults to "user_query" (identical behavior to before this parameter
+    existed) for every existing caller. See its own docstring for the one
+    other value in use ("insight_comparison", data.insight_service).
+    """
+    from core.live.query_engine import LiveQueryEngine
+    from core.live.query_result import QueryResult, QueryStatus
+    from core.perf import stage_timer
+
+    with stage_timer.measure("governance_pii_recheck"):
+        blocked_cols, pii_aliases, gov_warnings = _governance_recheck(
+            source_id, user_id, sql_plan
+        )
+
+    if blocked_cols:
+        execution_id = str(uuid.uuid4())
+        started_at = datetime.now(timezone.utc)
+        _write_audit(
+            "query_execution", "governance_block", user_id, source_id,
+            execution_id=execution_id,
+        )
+        blocked_result = QueryResult(
+            execution_id=execution_id,
+            status=QueryStatus.BLOCKED,
+            source_id=source_id,
+            executed_at=started_at.isoformat(),
+            duration_ms=0,
+            warnings=[w["message"] for w in gov_warnings],
+            error=f"Blocked: unconfirmed PII column(s): {', '.join(blocked_cols)}",
+        )
+        return blocked_result, gov_warnings
+
+    result = LiveQueryEngine().execute(
+        source_id, user_id, sql,
+        params=params, row_limit=row_limit, timeout_s=timeout_s,
+        page=page, page_size=page_size, max_payload_bytes=max_payload_bytes,
+        pii_aliases=pii_aliases, execution_kind=execution_kind,
+        existing_connection=existing_connection, connection_box=connection_box,
+    )
+    return result, gov_warnings
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +738,15 @@ def list_query_executions(
 def _check_user_rate_limit(user_id: str) -> bool:
     """Return True (blocked) if user has executed within the last RATE_LIMIT_WINDOW_S seconds.
 
+    Only counts execution_kind='user_query' rows — the agent's own bounded
+    internal investigation probes (data.investigation_service) write to this
+    same table for audit/analytics but must never cause the real,
+    user-visible execution that follows them in the same turn to
+    self-rate-limit. Every other safeguard (daily limit, per-source rate,
+    repeated-query protection) deliberately keeps counting all rows
+    regardless of kind — this narrowing is specific to the 2-second
+    per-user window.
+
     Returns False (fail-open) on any DB error so that infrastructure failures
     never block legitimate executions.
     """
@@ -650,7 +755,8 @@ def _check_user_rate_limit(user_id: str) -> bool:
         try:
             row = conn.execute(
                 "SELECT executed_at FROM query_execution_log "
-                "WHERE user_id = ? ORDER BY executed_at DESC LIMIT 1",
+                "WHERE user_id = ? AND execution_kind = 'user_query' "
+                "ORDER BY executed_at DESC LIMIT 1",
                 (user_id,),
             ).fetchone()
         finally:
