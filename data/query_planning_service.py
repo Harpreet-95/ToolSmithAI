@@ -47,6 +47,21 @@ _AGGREGATION_HINTS = {
     "average": "AVG", "avg": "AVG", "mean": "AVG",
 }
 
+# Word -> date-order role root, shared vocabulary for classifying "created"/
+# "started"/"completed"/"updated"-shaped date columns and question words.
+# Currently consumed by data.semantic_contract_service._classify_date_columns
+# (applied to COLUMN NAMES, not question text) — this module's own question-
+# text date-hint resolution is a separate, not-yet-landed feature and does
+# not read this dict yet.
+_DATE_ORDER_HINT_ROOTS: dict[str, str] = {
+    "added": "insert", "add": "insert", "created": "insert", "create": "insert",
+    "inserted": "insert", "insert": "insert", "registered": "insert",
+    "started": "start", "start": "start", "began": "start", "begin": "start",
+    "ended": "end", "end": "end", "completed": "end", "complete": "end",
+    "finished": "end", "finish": "end",
+    "updated": "update", "update": "update", "modified": "update", "modify": "update",
+}
+
 # ---------------------------------------------------------------------------
 # Enterprise Authoritative Source Ranking (Milestone M-2) — negative naming
 # signals for non-authoritative table variants. Token-exact matches (via the
