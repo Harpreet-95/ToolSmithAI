@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 import time
 import uuid
 from datetime import datetime
@@ -158,23 +159,173 @@ def _live_metadata(req: OrchestratorRequest) -> Any:
 # touched — only query_planning_service's own already-computed output.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# EDP Day 1 — Candidate-family resolution.
+#
+# _extract_ambiguous_terms below surfaces every ambiguous_* candidate group
+# as a clarification turn, whether the tied candidates are genuinely
+# different business objects or just physical variants of the SAME object
+# (a trusted view over the base table, an export/report copy, a backup/
+# history/temp snapshot, a derivative/rolling view). Day 1 requires the
+# former to still clarify and the latter to resolve silently ("obvious
+# duplicates must not create clarification... genuine source-system
+# ambiguity must still clarify").
+#
+# This never touches query_planning_service's own scoring (name_score/
+# authority_bonus/table_object_type) — it only classifies, from each
+# candidate's own table_fqn/table_object_type, whether a tied group is one
+# object wearing several disguises from the SAME schema, or genuinely
+# separate objects/source systems. When it's the former, the highest-ranked
+# disguise is fed back through _apply_clarification_overrides exactly as a
+# user's own clarification pick would be — no second "selected" mechanism.
+# ---------------------------------------------------------------------------
+
+_FAMILY_RANK: dict[str, int] = {
+    "canonical":    0,
+    "trusted_view": 1,
+    "derivative":   2,
+    "export":       3,
+    "backup":       4,
+}
+
+# Order matters: first pattern that matches the bare table name wins.
+_FAMILY_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("backup",     re.compile(r"(_bak|_backup|_old|_archive|_hist(?:ory)?|_temp|_tmp|_staging|_deprecated)$", re.IGNORECASE)),
+    ("export",     re.compile(r"(_export|_extract|_rpt|_report(?:_copy)?)$|^rpt_", re.IGNORECASE)),
+    ("derivative", re.compile(r"(_rolling|_derived|_calc|_mv|_summary)$", re.IGNORECASE)),
+]
+_VIEW_PREFIX_RE = re.compile(r"^(vw_|v_)", re.IGNORECASE)
+
+
+def _infer_candidate_family(candidate: dict) -> tuple[int, str]:
+    """Return (rank, family_label) for one candidate — lower rank wins a tie.
+    table_object_type ("VIEW"/"TABLE") comes straight from the already-
+    fetched schema metadata (query_planning_service._score_candidates);
+    naming heuristics run only on the bare table name (schema stripped).
+    """
+    table_fqn = candidate.get("table_fqn") or ""
+    table_name = table_fqn.split(".")[-1]
+    object_type = (candidate.get("table_object_type") or "").upper()
+
+    for family, pattern in _FAMILY_PATTERNS:
+        if pattern.search(table_name):
+            return _FAMILY_RANK[family], family
+
+    if object_type == "VIEW" or _VIEW_PREFIX_RE.match(table_name):
+        return _FAMILY_RANK["trusted_view"], "trusted_view"
+
+    return _FAMILY_RANK["canonical"], "canonical"
+
+
+def _candidate_base_name(candidate: dict) -> str:
+    """Strip family suffixes/prefixes so 'Students', 'vw_Students', and
+    'Students_export' all normalize to the same base name."""
+    table_fqn = candidate.get("table_fqn") or ""
+    table_name = table_fqn.split(".")[-1]
+    stripped = _VIEW_PREFIX_RE.sub("", table_name)
+    for _family, pattern in _FAMILY_PATTERNS:
+        stripped = pattern.sub("", stripped)
+    return stripped.lower()
+
+
+def _candidate_source_system(candidate: dict) -> str:
+    """Proxy for 'separate source system': the schema portion of table_fqn.
+    Two candidates in different schemas are never collapsed automatically —
+    that is exactly the genuine ambiguity Day 1 requires to still clarify.
+    """
+    table_fqn = candidate.get("table_fqn") or ""
+    parts = table_fqn.split(".")
+    return parts[0].lower() if len(parts) > 1 else ""
+
+
+def _auto_resolve_duplicate_families(ambiguous_terms: list[dict]) -> list[dict]:
+    """For each ambiguous term, group its candidates by (base_name,
+    source_system). When every candidate collapses into a SINGLE group —
+    i.e. every tied candidate is just a physical variant of the same
+    business object from the same source system — return a clarification-
+    style selection for the group's highest-ranked (canonical-first) member
+    instead of leaving the term ambiguous. A term whose candidates span more
+    than one group (a genuinely different base object, or the same object
+    duplicated across source systems/schemas) is left out — still ambiguous,
+    still clarified by the caller.
+
+    Returns selections in the exact {"term", "table_fqn", "column_name"}
+    shape _apply_clarification_overrides already accepts from a real user
+    clarification answer — no second resolution path.
+    """
+    auto_selections: list[dict] = []
+    for group in ambiguous_terms:
+        candidates = group.get("candidates") or []
+        if len(candidates) < 2:
+            continue
+        keys = {(_candidate_base_name(c), _candidate_source_system(c)) for c in candidates}
+        if len(keys) != 1:
+            continue  # more than one real object or source system — genuine ambiguity
+        best = min(candidates, key=lambda c: (_infer_candidate_family(c)[0], -(c.get("score") or 0.0)))
+        auto_selections.append({
+            "term": group.get("term"),
+            "table_fqn": best.get("table_fqn"),
+            "column_name": best.get("column_name"),
+        })
+    return auto_selections
+
+
 def _extract_ambiguous_terms(query_plan: dict) -> list[dict]:
     """Normalize query_plan's unresolved, ambiguous measures/dimensions into
     a clarification-ready shape. A term only qualifies when
     query_planning_service itself flagged it ambiguous (not just missing)
-    and left >=2 ranked candidates — never invents ambiguity on its own.
+    and left >=1 ranked candidate — never invents ambiguity on its own.
 
-    Mirrors sql_planning_service.py's own existing leniency exactly: when at
-    least one OTHER measure/dimension already resolved, an extra ambiguous
-    term is skipped with a warning rather than blocking the whole question
-    (build_sql_plan's "if select: skip unresolved ones" rule) — so this only
-    ever intercepts the case that would otherwise become a hard refusal
-    (nothing in the plan resolved at all), never a question that already has
-    a confident answer alongside one ambiguous extra word.
+    Day 2C follow-up ("material qualifier policy"): each measure/dimension
+    term is now evaluated independently, regardless of whether some OTHER
+    term in the same question already resolved. Previously this function
+    bailed out entirely — returning [] — the moment ANY measure/dimension
+    had a `selected` value, mirroring sql_planning_service.py's own "if
+    select: skip unresolved ones" leniency. That leniency is appropriate for
+    a genuinely decorative extra word, but verified live against real CCPP
+    it silently swallowed a real one too: "How many students are currently
+    enrolled?" resolves "students" confidently (aggregation_target=
+    entity_count) while "currently"/"enrolled" both come back
+    ambiguous_measure with zero usable signal — and the old bail-out meant
+    that was NEVER offered as a clarification, silently becoming "how many
+    students are there at all" instead. Now every ambiguous_{kind} entry is
+    surfaced independently; a genuinely resolved OTHER term no longer
+    suppresses it. data.sql_planning_service.build_sql_plan's own leniency
+    is a separate, narrower backstop (see its own updated docstring) for
+    exactly the case this function can't reach: a caller with no
+    clarification wiring at all (execute_query_route).
+
+    Each returned group carries "tied": True when >=2 candidates scored
+    within the ambiguity margin of each other (a genuine tie — the original,
+    unchanged case), or False when exactly one candidate was found but
+    didn't clear the auto-select confidence threshold on its own (Phase 2 —
+    query_planning_service's own _resolve_term already emits an
+    "ambiguous_{kind}" warning for this single-weak-candidate case, e.g.
+    "No confident measure match... below the 0.50 threshold" — offered as a
+    single-guess clarification rather than silently dropped either way; the
+    caller renders "tied" vs not with different wording so a genuine tie
+    is never described as a single guess, or vice versa).
     """
-    all_entries = (query_plan.get("measures") or []) + (query_plan.get("dimensions") or [])
-    if any(entry.get("selected") for entry in all_entries):
-        return []
+    intent = query_plan.get("intent") or {}
+    no_aggregation = intent.get("aggregation") is None and intent.get("aggregation_target") is None
+
+    # extract_terms() puts every "before"-clause word into both `concepts`
+    # and `measures` (data.query_planning_service reads `measures` as
+    # candidate METRIC columns to resolve). For a bare/ranked entity
+    # listing with no aggregation ("Show the 10 most recently added
+    # students") that dual-classification is a false positive: "students"
+    # already resolved confidently as the query's business entity via
+    # query_plan["concepts"], but the SAME word, tried again as a measure
+    # column name, predictably finds nothing but weak/unrelated numeric
+    # columns and gets flagged "ambiguous_measure" — a byproduct of the
+    # dual-classification, not real ambiguity. Left unfiltered, that
+    # spurious entry used to block the Entity-Centric Planner fallback
+    # below even though the entity itself was never actually ambiguous.
+    resolved_concept_terms = {
+        (c.get("term") or "").lower()
+        for c in (query_plan.get("concepts") or [])
+        if c.get("selected")
+    }
 
     ambiguous: list[dict] = []
     for kind, entries in (
@@ -186,9 +337,129 @@ def _extract_ambiguous_terms(query_plan: dict) -> list[dict]:
             is_ambiguous = any(
                 str(w.get("type", "")).startswith("ambiguous_") for w in (entry.get("warnings") or [])
             )
-            if is_ambiguous and len(candidates) >= 2:
-                ambiguous.append({"term": entry.get("term"), "kind": kind, "candidates": candidates})
+            if not (is_ambiguous and candidates):
+                continue
+            term = entry.get("term")
+            if kind == "measure" and no_aggregation and (term or "").lower() in resolved_concept_terms:
+                continue
+            deduped_candidates: list[dict] = []
+            seen_candidates: set[tuple] = set()
+            for c in candidates:
+                key = (c.get("table_fqn"), c.get("column_name"))
+                if key in seen_candidates:
+                    continue
+                seen_candidates.add(key)
+                deduped_candidates.append(c)
+            # Day 2C follow-up ("material qualifier policy") — a MULTI-
+            # candidate list where EVERY entry scores exactly 0 is not a
+            # genuine "did you mean X or Y" choice; it's a fake tie with no
+            # real differentiation between the options, functionally
+            # identical to missing_{kind}. Reproduced against a real
+            # fixture: "Top 10 sales by amount" flagged "amount" ambiguous_
+            # dimension against 5 unrelated columns that all scored 0.0.
+            # Deliberately does NOT exclude a SINGLE candidate at score 0 —
+            # that is the pre-existing, deliberate Phase 2 design (a bare-
+            # entity-count term against the only table in the database is a
+            # legitimate, if weak, single-guess clarification, not a fake
+            # tie — see this function's own docstring above and
+            # tests/test_composer_sql_routing.py::
+            # test_returns_enterprise_answer_with_live_query_citation),
+            # left completely unchanged.
+            if len(deduped_candidates) >= 2 and not any((c.get("score") or 0) > 0 for c in deduped_candidates):
+                continue
+            ambiguous.append({
+                "term": term, "kind": kind, "candidates": deduped_candidates,
+                "tied": len(deduped_candidates) >= 2,
+            })
+
+    # Entity-Centric Planner (A5 Milestone 1) — a bare business-entity
+    # question ("Show candidates") has no measure/dimension term at all, so
+    # the loop above finds nothing to flag; the ambiguity instead lives on
+    # query_plan["concepts"] (query_planning_service._resolve_concept's own
+    # pre-existing table-resolution — the SAME _score_term_match/
+    # _score_table_authority/_AUTO_SELECT_MIN_CONFIDENCE/_AMBIGUITY_MARGIN
+    # machinery already used above, never a second scorer). Only surfaced
+    # when:
+    #   - nothing else in the plan resolved OR was even flagged ambiguous
+    #     (the `if not ambiguous` guard — measure/dimension ambiguity, when
+    #     present, always takes priority, unchanged);
+    #   - no aggregation/ranking was requested (query_plan["intent"], already
+    #     computed by extract_query_intent()/_build_intent(), never
+    #     re-derived here) — "Total revenue"/"Top recruiters" must never
+    #     fall back to a bare entity listing just because their metric-
+    #     column search happened to find nothing;
+    #   - exactly one concept term was extracted — a multi-concept bare
+    #     request ("show clients and invoices") stays a plain refusal,
+    #     mirroring _build_intent's own existing list_entities eligibility
+    #     rule exactly, rather than guessing which concept to clarify.
+    if not ambiguous:
+        order = intent.get("order") or {}
+        # A chronological order ("most recently added", "earliest") needs no
+        # measure column at all — its table_fqn/column_name are already
+        # resolved directly off the date column (extract_query_intent's own
+        # order.target=="date" path), independent of measures/concepts. Only
+        # a ranking BY A METRIC (order present, no "date" target) still
+        # requires the measure path and must keep blocking this fallback —
+        # "Top recruiters by placements" must never fall back to a bare
+        # entity listing just because its metric-column search found
+        # nothing, unchanged.
+        no_ranking = not order or order.get("target") == "date"
+        concepts = query_plan.get("concepts") or []
+        if no_aggregation and no_ranking and len(concepts) == 1:
+            concept = concepts[0]
+            candidates = concept.get("candidates") or []
+            if not concept.get("selected") and candidates:
+                normalized_candidates = [
+                    {
+                        "table_fqn":           c.get("table_fqn"),
+                        "column_name":         None,
+                        "business_label":      None,
+                        "table_business_name": c.get("business_name"),
+                        "entity_name":         c.get("entity"),
+                        "domain_name":         c.get("domain"),
+                        "score":               c.get("score"),
+                    }
+                    for c in candidates
+                ]
+                ambiguous.append({
+                    "term": concept.get("term"), "kind": "concept",
+                    "candidates": normalized_candidates,
+                    "tied": len(normalized_candidates) >= 2,
+                })
     return ambiguous
+
+
+def _extract_ambiguous_terms_after_family_collapse(
+    query_plan: dict, source_id: int, user_id: str, question: str,
+) -> list[dict]:
+    """EDP Day 1 — _extract_ambiguous_terms, but first silently auto-
+    resolves obvious same-object candidate-family duplicates (a trusted
+    view, export copy, or backup/history table of the SAME canonical
+    object in the SAME schema — see _auto_resolve_duplicate_families)
+    before ever surfacing a clarification turn.
+
+    Both _live_query (below) and core.orchestrator.agent's own
+    clarification check call this instead of calling
+    _extract_ambiguous_terms directly, so obvious-duplicate collapsing
+    behaves identically on every question-answering path — one resolution
+    rule, not two copies that could drift.
+    """
+    ambiguous_terms = _extract_ambiguous_terms(query_plan)
+    if not ambiguous_terms:
+        return ambiguous_terms
+
+    auto_selections = _auto_resolve_duplicate_families(ambiguous_terms)
+    if not auto_selections:
+        return ambiguous_terms
+
+    from core.semantic.concept_resolver import extract_query_intent
+
+    distinct_requested = extract_query_intent(question).get("aggregation_target") == "distinct_entity_count"
+    _apply_clarification_overrides(
+        query_plan, auto_selections, source_id, user_id,
+        distinct_requested=distinct_requested,
+    )
+    return _extract_ambiguous_terms(query_plan)
 
 
 def _apply_clarification_overrides(
@@ -210,10 +481,19 @@ def _apply_clarification_overrides(
         return
 
     by_term = {sel.get("term"): sel for sel in selections if sel.get("term")}
+    concept_resolved = False
 
     for kind, entries in (
         ("measure", query_plan.get("measures") or []),
         ("dimension", query_plan.get("dimensions") or []),
+        # Entity-Centric Planner (A5 Milestone 1) — a concept-kind
+        # ambiguous_terms group is _extract_ambiguous_terms' normalized copy
+        # of query_plan["concepts"][i]["candidates"] (_resolve_concept's own
+        # output); the match/select logic below is identical to measure/
+        # dimension resume, since concept candidates never carry a
+        # column_name either (the existing "choice.get('column_name') is
+        # None" branch already covers it, unchanged).
+        ("concept", query_plan.get("concepts") or []),
     ):
         for entry in entries:
             if entry.get("selected") is not None:
@@ -241,9 +521,16 @@ def _apply_clarification_overrides(
                 )
 
             entry["selected"] = match
-            entry["warnings"] = [
-                w for w in (entry.get("warnings") or []) if not str(w.get("type", "")).startswith("ambiguous_")
-            ]
+            if kind == "concept":
+                # _resolve_concept's own contract — "resolved"/"ambiguity_reason",
+                # never a "warnings" list (see query_planning_service.py).
+                entry["resolved"] = True
+                entry["ambiguity_reason"] = None
+                concept_resolved = True
+            else:
+                entry["warnings"] = [
+                    w for w in (entry.get("warnings") or []) if not str(w.get("type", "")).startswith("ambiguous_")
+                ]
 
     # Sprint 1.5 — Join-Aware Clarification. The join_plan attached to
     # query_plan above was computed before any of this function's overrides
@@ -270,6 +557,29 @@ def _apply_clarification_overrides(
             selected_tables.add(sel["table_fqn"])
 
     query_plan["join_plan"] = _plan_joins(source_id, user_id, primary_table, selected_tables)
+
+    # Entity-Centric Planner (A5 Milestone 1) — a concept resolved above was,
+    # by construction (see _extract_ambiguous_terms), the ONLY term in the
+    # whole plan with no measure/dimension selected — exactly the condition
+    # _build_intent's own "bare entity" branch already checks
+    # (len(resolved_concepts)==1 and len(resolved)==1) to decide
+    # intent.type=="list_entities". _build_intent ran on the first pass
+    # before this concept resolved, so its output is stale here — this sets
+    # the SAME field to the SAME value _build_intent would compute if
+    # re-invoked now, the same "recompute after override" idiom already used
+    # above for join_plan/order, never a second intent-classification rule.
+    # sql_planning_service.build_sql_plan's existing (unmodified) bare-
+    # entity-list routing is strictly gated on this exact field/value.
+    if concept_resolved:
+        query_plan["intent"]["type"] = "list_entities"
+        resolved_concept = next(
+            (c for c in (query_plan.get("concepts") or []) if c.get("selected")), None,
+        )
+        if resolved_concept is not None:
+            query_plan["entity"] = resolved_concept.get("term")
+            query_plan["entity_table"] = resolved_concept["selected"].get("table_fqn")
+            query_plan["entity_confidence"] = resolved_concept.get("confidence")
+            query_plan["entity_candidates"] = resolved_concept.get("candidates") or []
 
     # Enterprise Implementation — Recompute Order After Clarification. A
     # ranking question ("Which courses have the highest enrollment?") has
@@ -517,7 +827,12 @@ def _filter_joinable_clarification(
             ),
             key=lambda pair: pair[0],
         )
-        filtered_terms.append({**term, "candidates": [c for _, c in kept]})
+        kept_candidates = [c for _, c in kept]
+        # "tied" is recomputed against the POST-filter candidate count: join-
+        # ability filtering can narrow an originally-tied term down to a
+        # single joinable candidate, at which point it is no longer a real
+        # tie for wording purposes (see _extract_ambiguous_terms).
+        filtered_terms.append({**term, "candidates": kept_candidates, "tied": len(kept_candidates) >= 2})
 
     return filtered_terms, False
 
@@ -590,7 +905,300 @@ def _build_business_plan(question: str, query_plan: dict, sql_plan: dict) -> dic
         "date_context": date_context,
         "status_label": status_label,
         "source_tables": sorted({r["table_fqn"] for r in select if r.get("table_fqn")}),
+        # Phase 3, Step 4 — passed straight through from query_plan (already
+        # deduplicated by query_planning_service.plan_business_query); pure
+        # explainability, read only by citation_builder._cite_live_query,
+        # never by SQL generation or planning.
+        "remembered_terminology": query_plan.get("remembered_terminology") or [],
+        # Enterprise Phase 4 — same pass-through pattern, one row per
+        # (original_term, generated_term) pair whose generated-vocabulary
+        # bonus actually decided a selected candidate (already deduplicated
+        # by plan_business_query). Read only by
+        # citation_builder._cite_generated_vocabulary.
+        "generated_vocabulary_evidence": query_plan.get("generated_vocabulary_evidence") or [],
+        # Rule G — real per-stage confidence, passed straight through (never
+        # re-derived) for core.answering.explanation_builder._explain_live_query
+        # to fold into the final answer confidence instead of a hardcoded
+        # constant. "plan_confidence" is query_planning_service._compute_
+        # confidence's 0-100 blend of measure/dimension match score, join
+        # confidence, and warning penalties; "entity_confidence" is the
+        # bare-concept resolution score (0-1) for a list_entities/
+        # joined_detail_list question, where plan_confidence alone
+        # under-represents a confident table match (no measure/dimension
+        # score to average).
+        "plan_confidence": query_plan.get("confidence"),
+        "entity_confidence": query_plan.get("entity_confidence"),
     }
+
+
+# ---------------------------------------------------------------------------
+# EDP Day 1 — Modern Semantic Understanding.
+#
+# One structured AI pass over the raw question, run BEFORE
+# plan_business_query (the deterministic planner) below. Additive only: on
+# success, the AI's entities/measures/dimensions are unioned onto
+# extract_terms()'s own regex-based lists, never replacing them — same
+# fail-closed philosophy as every other optional AI layer in this codebase
+# (see core.ai.semantic_intelligence). Disabled by default
+# (ENABLE_AI_QUESTION_INTERPRETER); any failure, timeout, or schema
+# violation inside core.semantic.ai_interpreter.interpret() returns None and
+# this function is a no-op, so plan_business_query always still runs off the
+# deterministic extract_terms() output alone.
+# ---------------------------------------------------------------------------
+
+def _run_ai_question_interpreter(source_id: int, user_id: str, question: str):
+    from core.config import ENABLE_AI_QUESTION_INTERPRETER
+    if not ENABLE_AI_QUESTION_INTERPRETER:
+        return None
+    from core.semantic.ai_interpreter import build_grounding_vocabulary, interpret
+
+    vocabulary = build_grounding_vocabulary(source_id, user_id)
+    return interpret(question, known_vocabulary=vocabulary)
+
+
+def _phrase_singular_plural_equivalent(a: str, b: str) -> bool:
+    """True if a and b are the same phrase modulo a simple singular/plural
+    (or other short trailing-suffix) variant on each word — e.g.
+    "invoice"/"invoices", "job order"/"job orders". Mirrors the narrow,
+    non-stemming tolerance of data.query_planning_service._tokens_near_match
+    (same length-difference cap), reimplemented locally rather than imported
+    so this orchestrator-level merge doesn't reach into that module's
+    private planning internals.
+    """
+    a_words = a.lower().split()
+    b_words = b.lower().split()
+    if len(a_words) != len(b_words):
+        return False
+    for wa, wb in zip(a_words, b_words):
+        if wa == wb:
+            continue
+        shorter, longer = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+        if len(shorter) >= 3 and longer.startswith(shorter) and len(longer) - len(shorter) <= 2:
+            continue
+        return False
+    return True
+
+
+def _merge_ai_terms(existing: list[str], additions: list[str]) -> list[str]:
+    """Merge AI-interpreter entities/measures/dimensions into the
+    deterministically-extracted terms, treating a singular/plural variant of
+    an already-present term as a duplicate rather than a new concept.
+
+    Without this, a term like "invoice" (AI, singular per its own prompt
+    rule) and "invoices" (deterministic, the literal word in the question)
+    both survive the old dict.fromkeys() dedup as distinct strings, which
+    silently breaks the bare_entity_term guard in
+    data.query_planning_service (requires len(concepts) == 1 to keep a bare
+    "<status> <entity>" question a row list instead of running it through
+    measure-column resolution).
+    """
+    merged = list(existing)
+    for term in additions:
+        if term in merged:
+            continue
+        if any(_phrase_singular_plural_equivalent(term, seen) for seen in merged):
+            continue
+        merged.append(term)
+    return merged
+
+
+def _plan_with_autonomous_preparation(
+    source_id: int,
+    user_id: str,
+    question: str,
+    *,
+    filters: list | None = None,
+    allow_unconfirmed_pii: bool = False,
+    on_plan_resolved: Optional[Callable[[dict], Optional[dict]]] = None,
+) -> dict:
+    """
+    Shared planning core for BOTH production question paths — _live_query
+    (POST /v1/composer/ask, via EnterpriseOrchestrator) and
+    POST /v1/sources/{id}/execute-query (api/v1/routes.execute_query_route) —
+    so neither route re-implements its own planner-retry policy.
+
+    Runs plan_business_query -> build_sql_plan -> generate_sql. AI-Native.2 —
+    Autonomous Preparation Contract: when generation refuses purely because
+    an already-identified candidate table lacks column-level metadata, runs
+    one bounded targeted-preparation cycle (data.metadata_preparation_service
+    .prepare_selected_tables, scoped only to that plan's candidate tables)
+    and retries the whole plan -> build -> generate sequence exactly once.
+    Never retries more than once, and never retries when the plan found no
+    candidate table at all (nothing to prepare) — see prepare_selected_tables
+    and its own tests for the preparation step's own bounds.
+
+    on_plan_resolved, if given, is called with each freshly-resolved
+    query_plan (before SQL planning/generation) and may return an early-exit
+    result dict to short-circuit the whole call — used by _live_query for
+    its clarification-required / no_valid_join handling, which must never
+    reach SQL generation and must never trigger preparation (a genuinely
+    ambiguous question needs clarification, not more metadata). Callers that
+    don't need this (execute_query_route today has no clarification
+    handling of its own) simply omit it.
+
+    Returns one of:
+      {"outcome": "unowned"}                          — unknown/unowned source
+      {"outcome": "early_exit", "result": <dict>}      — on_plan_resolved short-circuited
+      {"outcome": "planned"|"refused",
+       "query_plan":, "sql_plan":, "generated":, "preparation_trace": dict | None}
+    """
+    from core.semantic.concept_resolver import extract_terms
+    from data.query_planning_service import plan_business_query
+    from data.sql_planning_service import build_sql_plan
+    from data.sql_generation_service import detect_dialect, generate_sql
+
+    concepts, measures, dimensions = extract_terms(question)
+
+    # Day 2B, Task 6 / Day 2C, Task 5 — skip the AI interpreter's OpenAI
+    # round-trip (the dominant single latency contributor observed in Day
+    # 2A frontend verification, 6-30s per question) ONLY when every
+    # material entity this question names is actually grounded (a verified
+    # RESOLVED/PARTIAL contract with a canonical table — apply_grounding's
+    # own "fully_grounded" criterion), not merely whenever any one term
+    # lexically matches a target-entity name. Day 2B's original check
+    # (match_entities_for_terms alone) skipped the interpreter for the
+    # WHOLE question the moment ANY term matched one of the 10 target-
+    # entity names, even if that entity had no contract at all yet (still
+    # NO_CANDIDATE) and even if OTHER entities in the same multi-entity
+    # question (e.g. Student grounded, Enrollment/Course not) were
+    # completely unresolved — exactly the failure mode Day 2C's
+    # verification flagged: "skipping the AI interpreter whenever any one
+    # term is grounded may damage multi-entity questions". apply_grounding
+    # is cache-backed (get_or_build_entity_contract does no rediscovery on
+    # a fresh cache hit — tests/test_semantic_contract_service.py::
+    # test_cache_hit_skips_discovery_entirely), so this second call here
+    # (the real planning pass a few lines later calls apply_grounding again
+    # via plan_business_query) is a cheap cache read, not a duplicated
+    # discovery pass — an already-grounded Student contract is reused, not
+    # re-derived. Any question naming no target entity at all keeps
+    # today's behavior exactly (interpreter runs when enabled).
+    from data.semantic_contract_service import apply_grounding, grounding_fully_accounted, match_entities_for_terms
+
+    # Day 2E, Task 3 — also skip when every matched entity is fully
+    # contract-ACCOUNTED-for: grounded OR confirmed-unsupported (Task 4).
+    # A confirmed dead end (e.g. Recruiter/Placement) is exactly as settled
+    # as a verified contract for this purpose — an AI interpretation pass
+    # cannot resolve either one differently, so paying its latency (and, in
+    # this environment, a real OpenAI call) for a question the pipeline
+    # will fast-exit moments later is pure waste, live-confirmed at 55.7s
+    # for "Show recruiters and their placements."
+    from core.perf import stage_timer
+
+    ai_interpretation = None
+    if match_entities_for_terms(question, concepts, measures, dimensions):
+        grounding_precheck = apply_grounding(source_id, user_id, question, concepts, measures, dimensions)
+        if not grounding_fully_accounted(grounding_precheck):
+            with stage_timer.measure("ai_question_interpretation"):
+                ai_interpretation = _run_ai_question_interpreter(source_id, user_id, question)
+    else:
+        with stage_timer.measure("ai_question_interpretation"):
+            ai_interpretation = _run_ai_question_interpreter(source_id, user_id, question)
+    if ai_interpretation is not None:
+        concepts = _merge_ai_terms(concepts, list(ai_interpretation.entities))
+        measures = _merge_ai_terms(measures, list(ai_interpretation.measures))
+        dimensions = _merge_ai_terms(dimensions, list(ai_interpretation.dimensions))
+
+    request_payload = {
+        "question": question,
+        "concepts": concepts,
+        "measures": measures,
+        "dimensions": dimensions,
+        "filters": filters or [],
+    }
+    if ai_interpretation is not None:
+        # Explainability/Day-2 handoff only — plan_business_query reads only
+        # question/concepts/measures/dimensions/filters from this dict
+        # (data/query_planning_service.py::_plan_business_query_impl) and
+        # ignores unknown keys, so attaching this never changes planning
+        # behavior. date_range/sorting/filters/relationship_intent here are
+        # not yet threaded into SQL planning — Day 2 scope.
+        request_payload["ai_interpretation"] = {
+            "entities": list(ai_interpretation.entities),
+            "measures": list(ai_interpretation.measures),
+            "dimensions": list(ai_interpretation.dimensions),
+            "requested_attributes": list(ai_interpretation.requested_attributes),
+            "relationship_intent": ai_interpretation.relationship_intent,
+            "expected_result_shape": ai_interpretation.expected_result_shape,
+            "date_range": ai_interpretation.date_range,
+            "sorting": ai_interpretation.sorting,
+            "clarification_required": ai_interpretation.clarification_required,
+            "clarification_reason": ai_interpretation.clarification_reason,
+        }
+
+    preparation_trace: dict | None = None
+    already_retried = False
+
+    while True:
+        query_plan = plan_business_query(source_id, user_id, request_payload)
+        if query_plan is None:
+            return {"outcome": "unowned"}
+
+        # Day 2E, Task 5 — a confirmed-unsupported entity (Task 4) short-
+        # circuits here, BEFORE build_sql_plan/generate_sql ever run and
+        # before on_plan_resolved's own ambiguous-term/clarification-picker
+        # check — there is nothing to build SQL from, and no genuine
+        # ambiguity to offer a physical-table choice for: the contract
+        # already positively confirmed no reliable table exists. Returns
+        # the same {"outcome": "early_exit", "result": {...}} shape
+        # on_plan_resolved itself returns, so core.orchestrator.agent's
+        # existing early-exit dispatch handles it via one more `reason`
+        # branch rather than a new outcome type.
+        if query_plan.get("unsupported_entities"):
+            return {"outcome": "early_exit", "result": {
+                "executed": False, "reason": "unsupported_entity",
+                "question": question,
+                "unsupported_entities": query_plan["unsupported_entities"],
+                "business_messages": query_plan.get("business_messages") or [],
+                "warnings": query_plan.get("warnings") or [],
+            }}
+
+        if on_plan_resolved is not None:
+            early = on_plan_resolved(query_plan)
+            if early is not None:
+                return {"outcome": "early_exit", "result": early}
+
+        sql_plan = build_sql_plan(
+            source_id, user_id, query_plan,
+            allow_unconfirmed_pii=allow_unconfirmed_pii,
+        )
+        generated = generate_sql(source_id, user_id, sql_plan, dialect=detect_dialect(source_id))
+
+        if generated.get("sql"):
+            return {
+                "outcome": "planned", "query_plan": query_plan, "sql_plan": sql_plan,
+                "generated": generated, "preparation_trace": preparation_trace,
+            }
+
+        candidate_tables = query_plan.get("tables") or []
+        if already_retried or not candidate_tables:
+            # Bounded: never retry a second time, and never retry when the
+            # plan found no candidate table at all (nothing to prepare).
+            return {
+                "outcome": "refused", "query_plan": query_plan, "sql_plan": sql_plan,
+                "generated": generated, "preparation_trace": preparation_trace,
+            }
+
+        from data.metadata_preparation_service import prepare_selected_tables
+
+        already_retried = True
+        prep_result = prepare_selected_tables(source_id, user_id, candidate_tables)
+        preparation_trace = {
+            "candidate_tables": candidate_tables,
+            "prepared_tables": prep_result.prepared,
+            "skipped_tables": prep_result.skipped,
+            "failed_tables": prep_result.failed,
+            "retried": bool(prep_result.changed),
+        }
+        if not prep_result.changed:
+            # Preparation added nothing new (already-thin metadata that
+            # couldn't be improved, or every table failed) — no point
+            # retrying planning with unchanged inputs.
+            return {
+                "outcome": "refused", "query_plan": query_plan, "sql_plan": sql_plan,
+                "generated": generated, "preparation_trace": preparation_trace,
+            }
+        # Preparation added column metadata for at least one candidate table
+        # — retry planning exactly once with the same request payload.
 
 
 def _live_query(req: OrchestratorRequest) -> Any:
