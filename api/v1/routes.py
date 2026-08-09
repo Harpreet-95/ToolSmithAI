@@ -5020,51 +5020,27 @@ def execute_query_route(
     if not request.question or not request.question.strip():
         return JSONResponse(status_code=400, content=build_error_response("question must not be empty."))
     try:
-        from data.query_planning_service import plan_business_query
-        from data.sql_planning_service import build_sql_plan
-        from data.sql_generation_service import detect_dialect, generate_sql
-        from data.query_execution_service import execute_generated_query
+        # Enterprise Milestone M-30 — Production Route Integration: this
+        # route now calls the single shared agent entry point
+        # (core.orchestrator.agent.answer_business_question) instead of
+        # re-implementing its own plan -> build -> generate -> execute
+        # sequence. answer_business_question already reuses
+        # _plan_with_autonomous_preparation (same bounded planner-retry
+        # policy this route always shared with composer/ask) plus governed
+        # execution, M-27 result validation, and M-29 targeted
+        # investigation — none of that is duplicated here.
+        from core.orchestrator.agent import answer_business_question
+        from api.v1.agent_response_adapters import build_execute_query_response
 
-        concepts, measure_terms, dimension_terms = _extract_query_terms(request.question.strip())
-        user_input = {
-            "question":   request.question.strip(),
-            "concepts":   concepts,
-            "measures":   measure_terms,
-            "dimensions": dimension_terms,
-            "filters":    [],
-        }
-
-        query_plan = plan_business_query(source_id, user.user_id, user_input)
-        if query_plan is None:
-            return JSONResponse(status_code=404, content=build_error_response("Data source not found."))
-
-        sql_plan = build_sql_plan(
-            source_id, user.user_id, query_plan,
-            allow_unconfirmed_pii=False,
-        )
-
-        sql_generation = generate_sql(
-            source_id, user.user_id, sql_plan,
-            dialect=detect_dialect(source_id),
-        )
-
-        execution = execute_generated_query(
-            source_id, user.user_id, sql_generation, sql_plan
-        )
-
+        state = answer_business_question(source_id, user.user_id, request.question.strip())
+        status_code, body = build_execute_query_response(state)
     except Exception:
         logger.exception("execute_query_route failed for source_id=%s", source_id)
         return JSONResponse(status_code=500, content=build_error_response("Query execution failed."))
 
-    return {
-        "status": "success",
-        "data": {
-            "query_plan":     query_plan,
-            "sql_plan":       sql_plan,
-            "sql_generation": sql_generation,
-            "execution":      execution,
-        },
-    }
+    if status_code != 200:
+        return JSONResponse(status_code=status_code, content=body)
+    return body
 
 
 # ---------------------------------------------------------------------------

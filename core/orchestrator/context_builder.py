@@ -1204,14 +1204,17 @@ def _plan_with_autonomous_preparation(
 def _live_query(req: OrchestratorRequest) -> Any:
     if req.source_id is None or req.user_id is None:
         return None
-    from core.live.query_engine import LiveQueryEngine
+    from data.query_execution_service import execute_governed_query
 
     sql = req.params.get("sql")
     if sql:
         # Trusted caller already has exact SQL to run (Phase 7 bypass) —
-        # unchanged behavior.
-        result = LiveQueryEngine().execute(
-            req.source_id, req.user_id, sql,
+        # unchanged behavior. No sql_plan exists for a caller-supplied raw
+        # SQL string, so _governance_recheck has no columns to classify;
+        # routed through execute_governed_query anyway so every live
+        # execution shares one governed entry point, audit included.
+        result, _gov_warnings = execute_governed_query(
+            req.source_id, req.user_id, sql, {},
             params=req.params.get("sql_params"),
             row_limit=req.params.get("row_limit"),
             timeout_s=req.params.get("timeout_s"),
@@ -1254,8 +1257,12 @@ def _live_query(req: OrchestratorRequest) -> Any:
         }
     if ranking_entity == "class":
         sql = _class_enrollment_sql(detect_dialect(req.source_id))
-        result = LiveQueryEngine().execute(
-            req.source_id, req.user_id, sql,
+        # Fixed, hand-verified query with no PII columns — still routed
+        # through execute_governed_query (no sql_plan to classify) so every
+        # branch shares the one governed entry point rather than being
+        # exempted by construction.
+        result, _gov_warnings = execute_governed_query(
+            req.source_id, req.user_id, sql, {},
             row_limit=req.params.get("row_limit"),
             timeout_s=req.params.get("timeout_s"),
             page=req.params.get("page", 1),
@@ -1271,76 +1278,97 @@ def _live_query(req: OrchestratorRequest) -> Any:
         ]
         return data
 
-    from core.semantic.concept_resolver import extract_terms, extract_query_intent
-    from data.query_planning_service import plan_business_query
-    from data.sql_planning_service import build_sql_plan
-    from data.sql_generation_service import generate_sql
+    from core.semantic.concept_resolver import extract_query_intent
 
-    concepts, measures, dimensions = extract_terms(question)
-    query_plan = plan_business_query(req.source_id, req.user_id, {
-        "question": question,
-        "concepts": concepts,
-        "measures": measures,
-        "dimensions": dimensions,
-        "filters": req.params.get("filters") or [],
-    })
-    if query_plan is None:
-        return None  # unknown/unowned source — same contract as the raw-SQL branch
-
-    # Milestone Phase 6.6 — Enterprise Clarification Intelligence. A prior
-    # clarification answer (if any) is applied to query_plan's own
-    # already-ranked candidates before anything is asked/executed again.
-    cancel_clarification = bool(req.params.get("cancel_clarification"))
-    clarification_selection = req.params.get("clarification_selection") or []
-    if clarification_selection and not cancel_clarification:
-        distinct_requested = extract_query_intent(question).get("aggregation_target") == "distinct_entity_count"
-        _apply_clarification_overrides(
-            query_plan, clarification_selection, req.source_id, req.user_id,
-            distinct_requested=distinct_requested,
-        )
-
-    if not cancel_clarification:
-        ambiguous_terms = _extract_ambiguous_terms(query_plan)
-        if ambiguous_terms:
-            # Sprint 1.5 — Join-Aware Clarification: don't offer (or ask
-            # about) combinations that can't actually be joined together.
-            ambiguous_terms, no_valid_join = _filter_joinable_clarification(
-                ambiguous_terms, req.source_id, req.user_id,
+    def _on_plan_resolved(query_plan: dict) -> Optional[dict]:
+        # Milestone Phase 6.6 — Enterprise Clarification Intelligence. A prior
+        # clarification answer (if any) is applied to query_plan's own
+        # already-ranked candidates before anything is asked/executed again.
+        cancel_clarification = bool(req.params.get("cancel_clarification"))
+        clarification_selection = req.params.get("clarification_selection") or []
+        if clarification_selection and not cancel_clarification:
+            distinct_requested = extract_query_intent(question).get("aggregation_target") == "distinct_entity_count"
+            _apply_clarification_overrides(
+                query_plan, clarification_selection, req.source_id, req.user_id,
+                distinct_requested=distinct_requested,
             )
-            if no_valid_join:
+
+        if not cancel_clarification:
+            # EDP Day 1 — obvious same-object candidate-family duplicates
+            # are collapsed silently inside this call; only genuine
+            # cross-object or cross-source-system ambiguity reaches
+            # clarification below (see _extract_ambiguous_terms_after_family_collapse).
+            ambiguous_terms = _extract_ambiguous_terms_after_family_collapse(
+                query_plan, req.source_id, req.user_id, question,
+            )
+            if ambiguous_terms:
+                # Sprint 1.5 — Join-Aware Clarification: don't offer (or ask
+                # about) combinations that can't actually be joined together.
+                ambiguous_terms, no_valid_join = _filter_joinable_clarification(
+                    ambiguous_terms, req.source_id, req.user_id,
+                )
+                if no_valid_join:
+                    return {
+                        "executed": False,
+                        "reason": "no_valid_join",
+                        "question": question,
+                        "message": NO_VALID_JOIN_MESSAGE,
+                    }
+                # Never generate or execute SQL while a real ambiguity remains —
+                # ask instead of guessing. Never triggers preparation: a
+                # genuinely ambiguous question needs clarification, not more
+                # metadata.
+                #
+                # Phase 2 — distinguish "these tied" from "this is my best
+                # weak guess" in the reason value, so the rendered message
+                # (explanation_builder._explain_clarification) never
+                # describes a single below-threshold candidate as if it were
+                # competing against an equally-confident rival. Any group
+                # still tied (>=2 candidates) keeps the original wording —
+                # only when EVERY group is a lone weak match does the
+                # low_confidence_match wording apply. The option-picking/
+                # resume machinery (_apply_clarification_overrides) is
+                # identical either way.
+                reason = (
+                    "clarification_required"
+                    if any(t.get("tied") for t in ambiguous_terms)
+                    else "low_confidence_match"
+                )
                 return {
                     "executed": False,
-                    "reason": "no_valid_join",
+                    "reason": reason,
                     "question": question,
-                    "message": NO_VALID_JOIN_MESSAGE,
+                    "ambiguous_terms": ambiguous_terms,
                 }
-            # Never generate or execute SQL while a real ambiguity remains —
-            # ask instead of guessing.
-            return {
-                "executed": False,
-                "reason": "clarification_required",
-                "question": question,
-                "ambiguous_terms": ambiguous_terms,
-            }
+        return None
 
-    sql_plan = build_sql_plan(
-        req.source_id, req.user_id, query_plan,
+    outcome = _plan_with_autonomous_preparation(
+        req.source_id, req.user_id, question,
+        filters=req.params.get("filters"),
         allow_unconfirmed_pii=req.params.get("allow_unconfirmed_pii", False),
+        on_plan_resolved=_on_plan_resolved,
     )
-    generated = generate_sql(
-        req.source_id, req.user_id, sql_plan,
-        dialect=detect_dialect(req.source_id),
-    )
-    if not generated.get("sql"):
+    if outcome["outcome"] == "unowned":
+        return None  # unknown/unowned source — same contract as the raw-SQL branch
+    if outcome["outcome"] == "early_exit":
+        return outcome["result"]
+
+    query_plan = outcome["query_plan"]
+    sql_plan = outcome["sql_plan"]
+    generated = outcome["generated"]
+    preparation_trace = outcome["preparation_trace"]
+
+    if outcome["outcome"] == "refused":
         return {
             "executed": False,
             "reason": "sql_generation_refused",
             "explanation": generated.get("explanation") or [],
             "warnings": generated.get("warnings") or sql_plan.get("warnings") or [],
+            **({"preparation": preparation_trace} if preparation_trace else {}),
         }
 
-    result = LiveQueryEngine().execute(
-        req.source_id, req.user_id, generated["sql"],
+    result, gov_warnings = execute_governed_query(
+        req.source_id, req.user_id, generated["sql"], sql_plan,
         params=generated["parameters"]["values"],
         row_limit=req.params.get("row_limit"),
         timeout_s=req.params.get("timeout_s"),
@@ -1349,9 +1377,13 @@ def _live_query(req: OrchestratorRequest) -> Any:
         max_payload_bytes=req.params.get("max_payload_bytes"),
     )
     data = result.to_dict()
+    if gov_warnings:
+        data["warnings"] = [*(data.get("warnings") or []), *[w["message"] for w in gov_warnings]]
     data["generated_sql"] = generated["sql"]
     data["sql_generation_explanation"] = generated.get("explanation") or []
     data["business_plan"] = _build_business_plan(question, query_plan, sql_plan)
+    if preparation_trace:
+        data["metadata_preparation"] = preparation_trace
     return data
 
 
