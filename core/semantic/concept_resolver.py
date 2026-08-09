@@ -39,6 +39,20 @@ _STOPWORDS = frozenset({
     "latest", "newest", "earliest", "oldest", "current", "recent", "top", "bottom",
     "distinct", "unique",
     "total", "average", "highest", "lowest", "sum", "percent", "percentage", "compare",
+    # Day 2C follow-up ("material qualifier policy") — "database" is a
+    # generic, self-referential word ("how many students are in the
+    # database?") that never names a real business concept and predictably
+    # fails every resolver, but was previously silently absorbed by
+    # sql_planning_service.py's/context_builder.py's own "some other term
+    # resolved, skip the rest" leniency. That leniency is now narrower (see
+    # both modules' own updated docstrings), so a genuinely decorative word
+    # like this must be filtered here instead, the same way every other
+    # grammatical-filler word above already is — same category, not a new
+    # exception. Reproduced against a real fixture
+    # (tests/test_live_sql_qa_repro.py::test_scalar_count_students).
+    # "system" is the identical case ("how many clients are in the
+    # system?") — same category, same fix.
+    "database", "system",
     # NOTE: bare calendar words (year/month/quarter/week/day/today/yesterday)
     # were tried and reverted — an existing fixture/test
     # (test_composer_sql_routing.py::test_date_range_filter_end_to_end)
@@ -72,19 +86,85 @@ def extract_terms(question: str) -> tuple[list[str], list[str], list[str]]:
     the original flat-measures behavior when this pattern doesn't match
     either.
     """
-    words = [w for w in _tokenize(question or "") if w]
+    # Date-range phrases ("this year", "last month", ...) are already fully
+    # parsed elsewhere by extract_query_intent()/_DATE_LABEL_PATTERNS (below
+    # in this same file). The calendar word of a MATCHED phrase is redundant
+    # here and, worse, can spuriously column-match an unrelated table (e.g.
+    # bare "year" token-matching a "YearsExpValue" column on a completely
+    # unrelated table, silently selecting the wrong table for the whole
+    # question — reproduced against real CCPP). Only the words of a phrase
+    # that actually matched are removed; a bare, unqualified calendar word
+    # (no "this"/"last" prefix) is deliberately left alone, since it can be
+    # the only term that resolves a literal date dimension column like
+    # "order_month" when there's no "this/last" phrase for date_range to
+    # match instead (see _STOPWORDS' own note above).
+    _date_phrase_words: set[str] = set()
+    for _label, _pattern in _DATE_LABEL_PATTERNS:
+        if _pattern.search(question or ""):
+            _date_phrase_words.update(_tokenize(_label.replace("_", " ")))
+
+    # "<entity> are stalled, active, graduated, or not started?" — the
+    # enumerated status/category values are predicate values, not business
+    # concepts to search table names/columns for; dropped the same way
+    # _date_phrase_words is, so they never leak into concept/measure
+    # candidate-table search (previously the exact cause of a real
+    # multi-concept join-search slowdown/refusal for this question shape).
+    _status_enum_words: set[str] = set()
+    for _phrase in _extract_status_enumeration(question or ""):
+        _status_enum_words.update(_tokenize(_phrase))
+
+    # "on file" / "on record" — see _IDIOM_PHRASES' own docstring. Only the
+    # words of a phrase that actually matched are removed, same discipline
+    # as _date_phrase_words above.
+    _idiom_phrase_words: set[str] = set()
+    for _label, _pattern in _IDIOM_PHRASES:
+        if _pattern.search(question or ""):
+            _idiom_phrase_words.update(_tokenize(_label.replace("_", " ")))
+
+    # A bare numeral ("10") is never a business concept/measure/dimension
+    # name — it is always either a LIMIT (already parsed separately by
+    # extract_query_intent()'s _TOP_N_RE/_BOTTOM_N_RE/_N_MOST_RECENT_RE) or
+    # otherwise grammatically inert here. Dropped unconditionally, the same
+    # way _date_phrase_words is dropped above, so a numeral never leaks into
+    # business-dictionary ambiguity resolution downstream.
+    words = [
+        w for w in _tokenize(question or "")
+        if w and w not in _date_phrase_words and w not in _status_enum_words
+        and w not in _idiom_phrase_words and not w.isdigit()
+    ]
     try:
         by_idx = words.index("by")
         after = [w for w in words[by_idx + 1:] if w not in _STOPWORDS]
         before = [w for w in words[:by_idx] if w not in _STOPWORDS]
     except ValueError:
         wh_match = _WH_RANKING_RE.match(question or "")
+        each_per_match = None if wh_match else _EACH_PER_RE.search(question or "")
+        of_attr_match = None if (wh_match or each_per_match) else _OF_ATTRIBUTE_RE.search(question or "")
         if wh_match:
             # entity -> dimension, measure -> measure. The verb between them
             # ("have", "teach", "executed", ...) is intentionally dropped —
             # it's grammatical scaffolding, not a business term.
-            after = [w for w in _tokenize(wh_match.group("entity")) if w not in _STOPWORDS]
-            before = [w for w in _tokenize(wh_match.group("measure")) if w not in _STOPWORDS]
+            after = [
+                w for w in _tokenize(wh_match.group("entity"))
+                if w not in _STOPWORDS and w not in _date_phrase_words
+            ]
+            before = [
+                w for w in _tokenize(wh_match.group("measure"))
+                if w not in _STOPWORDS and w not in _date_phrase_words
+            ]
+        elif each_per_match:
+            # "each year" / "per class" — the same role split as an explicit
+            # "by" clause ("revenue by month"), just spelled with "each"/
+            # "per" instead of "by". The grain/dimension word itself becomes
+            # the sole dimension term; everything else becomes the
+            # concept/measure term(s), exactly like the "by" branch above.
+            grain_word = each_per_match.group(1).lower()
+            after = [grain_word]
+            before = [w for w in words if w not in _STOPWORDS and w != grain_word]
+        elif of_attr_match:
+            attr_word = of_attr_match.group(1).lower()
+            after = [attr_word]
+            before = [w for w in words if w not in _STOPWORDS and w != attr_word]
         else:
             after = []
             before = [w for w in words if w not in _STOPWORDS]
@@ -93,6 +173,89 @@ def extract_terms(question: str) -> tuple[list[str], list[str], list[str]]:
     measures = list(dict.fromkeys(before))
     dimensions = list(dict.fromkeys(after))
     return concepts, measures, dimensions
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Accuracy Program A2/Phase C — Compound Business Phrase Candidates
+#
+# extract_terms() above is intentionally left untouched: it still returns
+# single-word tokens, and every existing caller keeps working byte-for-byte
+# identically. This section adds a separate, additive, pure (no DB, no
+# scoring) helper that proposes BOUNDED adjacent-word phrase candidates from
+# an already-extracted token list (e.g. concepts=['job','orders']) for a
+# caller (data/query_planning_service.py) to try resolving against real
+# metadata BEFORE falling back to the individual tokens. This function only
+# proposes candidates — it never decides whether a phrase is a real business
+# term; that is left entirely to the existing, unmodified
+# _resolve_concept()/_resolve_term()/_resolve_entity_count() confidence and
+# ambiguity gates.
+#
+# Deliberately generic — no CCPP-specific phrase list, no hardcoded table or
+# domain names. The exclusions below fall out of properties every one of the
+# spec's negative examples already has, not a lookup table:
+#   - "by" clauses: extract_terms() already splits measures/dimensions across
+#     "by" before this ever runs, so the two halves are never in the same
+#     token list to begin with.
+#   - conjunctions/commas ("clients and invoices"): the raw-adjacency check
+#     below requires literally nothing (not even a dropped stopword) between
+#     the two words in the ORIGINAL question text.
+#   - time expressions ("last quarter"): already removed from the token list
+#     by extract_terms()'s own _date_phrase_words filter before this runs.
+#   - ranking/top-N language ("top 5 clients"): "top"/"bottom" are already
+#     _STOPWORDS, dropped before this stage; a bare numeral is additionally
+#     never allowed to participate below (numerals are never half of a real
+#     business entity/measure name).
+# ---------------------------------------------------------------------------
+
+_COMPOUND_MAX_CANDIDATES_PER_QUESTION = 5
+
+
+def _raw_adjacent(question: str, first: str, second: str) -> bool:
+    """True iff `first` and `second` appear literally consecutive in
+    `question` (case-insensitive, optionally hyphen-joined, only whitespace
+    or a hyphen between them — nothing else, not a dropped stopword, not a
+    conjunction, not "by"). Purely a substring/regex check against the raw
+    question text; independent of any metadata."""
+    if not first or not second:
+        return False
+    pattern = rf"\b{re.escape(first)}\b[\s-]+\b{re.escape(second)}\b"
+    return re.search(pattern, question or "", re.IGNORECASE) is not None
+
+
+def generate_compound_phrase_candidates(question: str, tokens: list[str]) -> list[dict]:
+    """
+    Propose bounded, generic, metadata-independent 2-word phrase candidates
+    from an already-extracted token list (one of extract_terms()'s own
+    concepts/measures/dimensions lists), for a caller to try resolving
+    against real metadata before falling back to individual tokens.
+
+    Only literally-adjacent word pairs (see _raw_adjacent) are proposed —
+    never every possible pair, never a 3+-word phrase (the spec's own worked
+    example for a 3-token list, ["client","job","orders"], expects exactly
+    the two adjacent bigrams ["client job", "job orders"], never the trigram
+    "client job orders"). A pair containing a purely-numeric token is
+    excluded (never a meaningful half of a business entity/measure name).
+    Deduplicated, left-to-right, capped at
+    _COMPOUND_MAX_CANDIDATES_PER_QUESTION.
+
+    Returns [{"phrase": "job orders", "components": ("job", "orders")}, ...].
+    """
+    candidates: list[dict] = []
+    seen_phrases: set[str] = set()
+    for i in range(len(tokens) - 1):
+        first, second = tokens[i], tokens[i + 1]
+        if first.isdigit() or second.isdigit():
+            continue
+        if not _raw_adjacent(question, first, second):
+            continue
+        phrase = f"{first} {second}"
+        if phrase in seen_phrases:
+            continue
+        seen_phrases.add(phrase)
+        candidates.append({"phrase": phrase, "components": (first, second)})
+        if len(candidates) >= _COMPOUND_MAX_CANDIDATES_PER_QUESTION:
+            break
+    return candidates
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +299,23 @@ _WH_RANKING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "each year" / "per class" — an implicit "by <dimension>" split spelled with
+# "each"/"per" instead of "by" (rule A: "each year", "per class" must be
+# recognized as analytical/grouping operators, not business terms). Only
+# tried by extract_terms() when no "by" clause and no WH-ranking match are
+# present, so it never touches either of those existing paths. Matches the
+# single word immediately after "each"/"per" — the same one-word-dimension
+# shape the "by" branch already produces for "revenue by month".
+_EACH_PER_RE = re.compile(r"\b(?:each|per)\s+([a-z]+)\b", re.IGNORECASE)
+
+# "names of the students" — an attribute-of-entity phrase, the mirror image
+# of "revenue by month": the attribute word (immediately before "of") is the
+# dimension being requested, everything else is the entity. Reuses the same
+# attribute keyword data.query_planning_service._resolve_related_attribute_
+# dimension recognizes ("name"/"names" only, for now — the one attribute
+# this milestone's reproduction requires; not a general preposition parser).
+_OF_ATTRIBUTE_RE = re.compile(r"\b(names?)\s+of\b", re.IGNORECASE)
+
 _DISTINCT_RE   = re.compile(r"\bdistinct\b|\bunique\b", re.IGNORECASE)
 
 _TOP_N_RE      = re.compile(r"\btop\s+(\d+)\b", re.IGNORECASE)
@@ -165,9 +345,56 @@ _STATUS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "<entity> are stalled, active, graduated, or not started?" — a GRAMMATICAL
+# pattern (an Oxford-comma-style list of predicate values after a linking
+# verb), not a hardcoded status-word vocabulary like _STATUS_VALUES above:
+# works for any schema's own category/status labels, never just the ones in
+# that closed list. Only treated as a genuine enumeration when the tail
+# after "is"/"are" contains an actual COMMA-separated list (>=2 phrases) —
+# requiring a literal comma (not just a bare "and"/"or") is what tells
+# "stalled, active, graduated, or not started" (a real value list) apart
+# from "clients and invoices related" (an entity conjunction sharing one
+# trailing predicate, no comma at all — must stay two ordinary concept
+# terms, not be shredded into fake status values). A single trailing
+# predicate with no comma ("How many students are in the database?" -> tail
+# "in the database") is likewise left alone.
+_LINKING_VERB_LIST_RE = re.compile(r"\b(?:is|are)\s+(?P<list>.+?)\s*\??\s*$", re.IGNORECASE)
+_TRAILING_CONNECTOR_RE = re.compile(r"^(?:or|and)\s+", re.IGNORECASE)
+
+
+def _extract_status_enumeration(question: str) -> list[str]:
+    m = _LINKING_VERB_LIST_RE.search(question or "")
+    if not m:
+        return []
+    tail = m.group("list")
+    if "," not in tail:
+        return []
+    raw_phrases = tail.split(",")
+    phrases = []
+    for i, p in enumerate(raw_phrases):
+        p = p.strip()
+        if i == len(raw_phrases) - 1:
+            p = _TRAILING_CONNECTOR_RE.sub("", p).strip()
+        if p:
+            phrases.append(p)
+    return phrases if len(phrases) >= 2 else []
+
 _BETWEEN_DATES_RE = re.compile(
     r"\bbetween\s+(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\s+and\s+(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})\b",
     re.IGNORECASE,
+)
+
+# Phase 4, Milestone 1 — idioms whose literal words are not the business
+# concept they name. "on file"/"on record" mean "recorded/available", not a
+# reference to a document/file entity — decomposed literally, "file" alone
+# can confidently name-match a real (but completely unrelated) table, e.g.
+# a CMS attachments table, producing a wrong answer with high confidence.
+# Phrase-scoped (like _DATE_LABEL_PATTERNS/_extract_status_enumeration
+# below) so only the words of a MATCHED idiom are dropped — "file"/"record"
+# used as genuine business nouns elsewhere are never globally banned.
+_IDIOM_PHRASES = (
+    ("on_file", re.compile(r"\bon file\b", re.IGNORECASE)),
+    ("on_record", re.compile(r"\bon record\b", re.IGNORECASE)),
 )
 
 # Ordered so more specific phrases ("this week") are checked before anything
@@ -275,6 +502,7 @@ def extract_query_intent(question: str, *, today: date | None = None) -> dict:
           "order": {"direction": "ASC"|"DESC", "limit": int} | None,
           "date_range": {"label": str, "start": iso, "end": iso} | None,
           "status_value": "Active"|"Inactive"|...|None,
+          "null_check_requested": bool,
         }
     """
     q = question or ""
@@ -327,6 +555,26 @@ def extract_query_intent(question: str, *, today: date | None = None) -> dict:
         canonical = _STATUS_ALIASES.get(raw, raw)
         status_value = canonical.capitalize()
 
+    # "are stalled, active, graduated, or not started" — a genuine
+    # multi-value status/category ENUMERATION (grouped-count shape),
+    # distinct from status_value's single-value FILTER shape above. See
+    # _extract_status_enumeration's own docstring for the grammatical
+    # (not vocabulary-based) detection rule.
+    status_values = _extract_status_enumeration(q)
+
+    # Day 2C follow-up ("material qualifier policy", Part B) — "have a
+    # phone number on file"/"... on record" is an implied NOT NULL
+    # condition on whatever attribute the idiom modifies. extract_terms()
+    # already detects and strips this idiom's own words from term search
+    # (_IDIOM_PHRASES, module-level below) but previously never told any
+    # caller a null-check was actually requested, so the qualifier was
+    # silently dropped rather than becoming a filter — verified live
+    # against real CCPP ("How many clients have a phone number on file?"
+    # silently counted every client). Surfaced here as a plain bool;
+    # data.query_planning_service pairs it with whichever single
+    # already-resolved column the idiom's subject term maps to.
+    null_check_requested = any(pattern.search(q) for _label, pattern in _IDIOM_PHRASES)
+
     # Milestone Phase 6.2 — Aggregation Shape Correctness. A pure relabeling
     # of the aggregation/distinct signals already detected above — no new
     # phrasing detection. COUNT is always an entity/record-cardinality
@@ -359,6 +607,8 @@ def extract_query_intent(question: str, *, today: date | None = None) -> dict:
         "order": order,
         "date_range": date_range,
         "status_value": status_value,
+        "status_values": status_values,
+        "null_check_requested": null_check_requested,
     }
 
 
@@ -375,7 +625,9 @@ def extract_query_intent(question: str, *, today: date | None = None) -> dict:
 
 _TREND_RE = re.compile(
     r"\bover time\b|\bby month\b|\bby year\b|\bby week\b|\bby quarter\b|\bmonthly\b|"
-    r"\byearly\b|\bweekly\b|\bquarterly\b|\bgrowth\b|\btrend\b",
+    r"\byearly\b|\bweekly\b|\bquarterly\b|\bgrowth\b|\btrend\b|"
+    r"\beach year\b|\beach month\b|\beach week\b|\beach quarter\b|"
+    r"\bper year\b|\bper month\b|\bper week\b|\bper quarter\b",
     re.IGNORECASE,
 )
 _COMPARISON_RE = re.compile(

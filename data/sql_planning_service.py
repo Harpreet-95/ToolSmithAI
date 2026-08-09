@@ -14,21 +14,31 @@ resolved table_fqn+column_name, a join_plan with per-edge join_type/
 cardinality/fanout_risk/confidence already trust-filtered to AUTO/APPROVED
 relationships, resolved filters, and the full candidate column set).
 
-The one new call this module makes is
-business_knowledge_service.get_column_business_context, used only for
-precise structured PII/approval validation (Step 8) on the small set of
-columns actually selected — everything else is reached transitively through
-query_plan, exactly as query_planning_service reached profiling_service/
-governance_service transitively through get_table_business_context.
+The new calls this module makes are business_knowledge_service.
+get_column_business_context, used only for precise structured PII/approval
+validation (Step 8) on the small set of columns actually selected, and
+business_knowledge_service.get_table_business_context, used only for the
+bare-entity-list column-selection carve-out (intent.type == "list_entities")
+to choose which of a table's known columns are safe to auto-select — one
+bounded call per resolved list-entity table, never per column. Everything
+else is reached transitively through query_plan, exactly as
+query_planning_service reached profiling_service/governance_service
+transitively through get_table_business_context.
 """
 import logging
 import re
 
-from data.business_knowledge_service import get_column_business_context
+from data.business_knowledge_service import get_column_business_context, get_table_business_context
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_OPERATORS = {"=", "!=", ">", ">=", "<", "<=", "IN", "BETWEEN", "LIKE"}
+_ALLOWED_OPERATORS = {"=", "!=", ">", ">=", "<", "<=", "IN", "BETWEEN", "LIKE", "IS NOT NULL", "IS NULL"}
+
+# Enterprise AI Analyst Agent — bare entity list routing (intent.type ==
+# "list_entities"). A concept resolves to a whole table, not a column, so
+# there is no measure/dimension column to select — cap the listed columns
+# instead of an unbounded SELECT *.
+_MAX_LIST_ENTITY_COLUMNS = 25
 
 # Defense-in-depth: reject filter values shaped like raw SQL injection
 # attempts, even though this layer never builds a SQL string itself — the
@@ -59,6 +69,16 @@ def _columns_known(table_fqn: str | None, column_name: str | None, known_columns
     if not table_fqn or not column_name:
         return False
     return column_name in (known_columns.get(table_fqn) or [])
+
+
+def _grain_alias(column_name: str, grain: str) -> str:
+    """'StartDate' + 'year' -> 'start_year'. Strips a trailing "Date" suffix
+    (the overwhelmingly common naming convention for the date columns this
+    resolves against) so the alias reads as the grouped value, not the raw
+    column; falls back to the full lowercased column name when there's no
+    such suffix to strip."""
+    base = re.sub(r"(?i)date$", "", column_name).strip() or column_name
+    return f"{base.lower()}_{grain}"
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +121,15 @@ def _select_entries(
             unresolved.append(entry["term"])
             continue
         column_name = sel.get("column_name")
+        time_grain = sel.get("time_grain")
         if column_name is None:
             alias = "row_count"
+        elif time_grain:
+            # Calendar-grain dimension ("each year" -> YEAR(StartDate)) —
+            # aliased on the grain, not the raw column, so
+            # "start_year"/"start_month" reads as the grouped value it is,
+            # not the raw date column.
+            alias = _grain_alias(column_name, time_grain)
         else:
             alias = f"{aggregation.lower()}_{column_name}" if aggregation else column_name
         rows.append({
@@ -111,6 +138,7 @@ def _select_entries(
             "alias":       alias,
             "aggregation": aggregation,
             "distinct":    bool((distinct or sel.get("distinct")) and aggregation and column_name is not None),
+            "time_grain":  time_grain,
         })
     return rows, unresolved
 
@@ -239,12 +267,24 @@ def _build_where(filters: list[dict]) -> tuple[list[dict], list[str]]:
 def _build_group_by(select: list[dict]) -> list[dict]:
     """All non-aggregated (dimension) columns must be grouped whenever at
     least one aggregated measure is present — prevents an invalid mixed
-    aggregate/non-aggregate query. No measures selected -> nothing to group."""
+    aggregate/non-aggregate query. No measures selected -> nothing to group.
+
+    Always carries the row's `alias` alongside `column_name`: for a plain
+    dimension the two are identical, but for a calendar-grain dimension
+    (`time_grain` set) the SELECT/GROUP BY clause projects under the grain
+    alias (e.g. "start_year" for `YEAR(StartDate)`), never the logical
+    column name — downstream result validation checks the alias, since
+    that's the only thing the returned rows actually contain."""
     has_measure = any(row["aggregation"] for row in select)
     if not has_measure:
         return []
     return [
-        {"table_fqn": row["table_fqn"], "column_name": row["column_name"]}
+        (
+            {"table_fqn": row["table_fqn"], "column_name": row["column_name"],
+             "time_grain": row["time_grain"], "alias": row["alias"]}
+            if row.get("time_grain") else
+            {"table_fqn": row["table_fqn"], "column_name": row["column_name"], "alias": row["alias"]}
+        )
         for row in select if not row["aggregation"]
     ]
 
@@ -252,6 +292,14 @@ def _build_group_by(select: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Step 8 — PII/approval validation (the one new call this module makes)
 # ---------------------------------------------------------------------------
+
+def _is_pii_flagged(dic: dict | None, prof: dict | None) -> bool:
+    """Single source of truth for 'does this column carry a PII signal',
+    shared by the Step 8 block check and the list_entities safe-column
+    filter below — deliberately the same two flags, so there is only ever
+    one place that decides what counts as PII in this module."""
+    return bool((prof and prof.get("pii_name_heuristic")) or (dic and dic.get("pii_risk")))
+
 
 def _check_pii_and_approval(
     source_id: int, user_id: str, select: list[dict], allow_unconfirmed_pii: bool,
@@ -277,8 +325,7 @@ def _check_pii_and_approval(
                 "message": f"{row['table_fqn']}.{row['column_name']} has no approved dictionary entry.",
             })
 
-        pii_flagged = (prof and prof.get("pii_name_heuristic")) or (dic and dic.get("pii_risk"))
-        if pii_flagged:
+        if _is_pii_flagged(dic, prof):
             confirmed  = bool(prof and prof.get("pii_confirmed"))
             aggregation = row.get("aggregation")
             warnings.append({
@@ -294,6 +341,63 @@ def _check_pii_and_approval(
                 pii_blocks.append(f"{row['table_fqn']}.{row['column_name']} (unconfirmed PII)")
 
     return pii_blocks, warnings
+
+
+# Priority tiers for auto-selected bare-entity-list columns — lower sorts
+# first. Built entirely from existing dictionary/profiling flags already
+# returned by get_table_business_context; no new classification.
+_LIST_ENTITY_TIER_IDENTIFIER = 0
+_LIST_ENTITY_TIER_BUSINESS_LABEL = 1
+_LIST_ENTITY_TIER_STATUS = 2
+_LIST_ENTITY_TIER_DATE = 3
+_LIST_ENTITY_TIER_DIMENSION = 4
+_LIST_ENTITY_TIER_OTHER = 5
+
+
+def _list_entity_column_tier(dic: dict | None, schema: dict | None) -> int:
+    if (schema and schema.get("is_primary_key")) or (dic and dic.get("is_id")):
+        return _LIST_ENTITY_TIER_IDENTIFIER
+    if dic and dic.get("business_label"):
+        return _LIST_ENTITY_TIER_BUSINESS_LABEL
+    if dic and dic.get("semantic_type") == "STATUS":
+        return _LIST_ENTITY_TIER_STATUS
+    if dic and dic.get("is_date"):
+        return _LIST_ENTITY_TIER_DATE
+    if dic and dic.get("is_dimension"):
+        return _LIST_ENTITY_TIER_DIMENSION
+    return _LIST_ENTITY_TIER_OTHER
+
+
+def _select_safe_list_entity_columns(
+    source_id: int, user_id: str, table_fqn: str, known_column_names: list[str],
+) -> list[str]:
+    """
+    Choose which of a bare-entity-list table's known columns are safe to
+    auto-select — the user asked to "list clients", not for any specific
+    column, so nothing PII-flagged (confirmed or unconfirmed) should enter
+    the SELECT without being explicitly requested by name. One bounded
+    get_table_business_context call for this single already-resolved table
+    (never per column, never for the full candidate set) supplies the same
+    dictionary/profiling flags Step 8 already reads elsewhere in this
+    module. Preference order: identifier, business label, status, date,
+    other dimensions, then any other safe column — ties keep known_columns'
+    original order. Capped at _MAX_LIST_ENTITY_COLUMNS, same as before.
+    """
+    ctx = get_table_business_context(source_id, user_id, table_fqn)
+    col_ctx_by_name = {c["column_name"]: c for c in (ctx.get("columns") or [])} if ctx else {}
+
+    safe: list[tuple[int, int, str]] = []
+    for idx, col_name in enumerate(known_column_names):
+        col_ctx = col_ctx_by_name.get(col_name)
+        dic = col_ctx.get("dictionary") if col_ctx else None
+        prof = col_ctx.get("profiling") if col_ctx else None
+        schema = col_ctx.get("schema") if col_ctx else None
+        if _is_pii_flagged(dic, prof):
+            continue
+        safe.append((_list_entity_column_tier(dic, schema), idx, col_name))
+
+    safe.sort(key=lambda t: (t[0], t[1]))
+    return [col_name for _, _, col_name in safe[:_MAX_LIST_ENTITY_COLUMNS]]
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +454,96 @@ def build_sql_plan(
     dimension_rows, unresolved_dimensions = _select_entries(query_plan.get("dimensions") or [], None)
     select = measure_rows + dimension_rows
 
+    # --- Bare entity list routing (Enterprise AI Analyst Agent) -----------
+    # query_planning_service._build_intent routes a confidently-resolved,
+    # single bare-concept question ("Show clients") to intent.type ==
+    # "list_entities". Concepts never carry a column_name (they resolve to a
+    # whole table, not a metric/dimension column), so SELECT is built here
+    # from that table's own known columns instead of from measures/
+    # dimensions — capped at _MAX_LIST_ENTITY_COLUMNS rather than an
+    # unbounded SELECT *. A6.1: the column pool itself is pre-filtered to
+    # exclude anything PII-flagged (confirmed or unconfirmed) via
+    # _select_safe_list_entity_columns, since these columns were never
+    # explicitly requested by name — only the resulting safe columns reach
+    # Step 8's PII/approval check below, same as any other selected column.
+    # joined_detail_list (Enterprise AI Analyst Agent) — the mirror-image
+    # question ("names of the students"): same single-bare-concept routing
+    # as list_entities above, plus the one dimension query_planning_service
+    # already resolved on a table joined via a declared, trusted
+    # relationship (e.g. dnnuser.Users.FirstName via
+    # dbo.ADF_Student.StudentUserID -> dnnuser.Users.UserID) appended to the
+    # concept table's own known columns.
+    if intent.get("type") in ("list_entities", "joined_detail_list") and not select:
+        resolved_list_concepts = [c for c in (query_plan.get("concepts") or []) if c.get("selected")]
+        if len(resolved_list_concepts) == 1:
+            list_entity_table = resolved_list_concepts[0]["selected"]["table_fqn"]
+            raw_known_columns = known_columns.get(list_entity_table) or []
+            safe_column_names = _select_safe_list_entity_columns(
+                source_id, user_id, list_entity_table, raw_known_columns,
+            )
+            select = [
+                {
+                    "table_fqn": list_entity_table, "column_name": col_name,
+                    "alias": col_name, "aggregation": None, "distinct": False,
+                }
+                for col_name in safe_column_names
+            ]
+            if intent.get("type") == "joined_detail_list":
+                select += dimension_rows
+            if raw_known_columns and not safe_column_names:
+                warnings.append({
+                    "type": "no_safe_columns_available", "severity": "LOW",
+                    "message": (
+                        f"{list_entity_table} has no columns safe to auto-select — every "
+                        "known column is PII-flagged or otherwise blocked by governance "
+                        "metadata. Refusing to select any column rather than expose "
+                        "sensitive data that was never explicitly requested."
+                    ),
+                })
+
+    # --- Relationship list routing (Day 3, Task 1) -------------------------
+    # query_planning_service._try_build_relationship_plan routes a bare "show
+    # <entity> and their <entity>[, and <entity>]" question — 2-3 fully-
+    # grounded entities, no measure/dimension — to intent.type ==
+    # "relationship_list". Mirrors the list_entities/joined_detail_list
+    # carve-out above (each entity's own known columns, PII-filtered via the
+    # same _select_safe_list_entity_columns), just for every grounded entity
+    # in query_plan["concepts"] instead of requiring exactly one. Aliases are
+    # prefixed with the owning entity's name — unlike the single-entity carve
+    # -out above, 2-3 different tables commonly share a column name (Id,
+    # Status, CreatedDate, ...), and an unqualified alias collision would
+    # silently overwrite one entity's value with another's in the result row
+    # (exactly the "silent dropping" Day 3 explicitly forbids), not just look
+    # untidy.
+    if intent.get("type") == "relationship_list" and not select:
+        for concept in query_plan.get("concepts") or []:
+            sel = concept.get("selected")
+            if not sel:
+                continue
+            entity_table = sel["table_fqn"]
+            entity_prefix = re.sub(r"\s+", "_", (concept.get("term") or entity_table).strip().lower())
+            raw_known_columns = known_columns.get(entity_table) or []
+            safe_column_names = _select_safe_list_entity_columns(
+                source_id, user_id, entity_table, raw_known_columns,
+            )
+            select += [
+                {
+                    "table_fqn": entity_table, "column_name": col_name,
+                    "alias": f"{entity_prefix}__{col_name}", "aggregation": None, "distinct": False,
+                }
+                for col_name in safe_column_names
+            ]
+            if raw_known_columns and not safe_column_names:
+                warnings.append({
+                    "type": "no_safe_columns_available", "severity": "LOW",
+                    "message": (
+                        f"{entity_table} has no columns safe to auto-select — every "
+                        "known column is PII-flagged or otherwise blocked by governance "
+                        "metadata. Refusing to select any column rather than expose "
+                        "sensitive data that was never explicitly requested."
+                    ),
+                })
+
     # --- Aggregation Plan (Milestone Phase 6.2) ---------------------------
     # Purely informational passthrough — explicitly records the
     # aggregation-shape decision query_planning_service._resolve_entity_count
@@ -405,15 +599,107 @@ def build_sql_plan(
     checks["no_ambiguous_unresolved_terms"] = not unresolved_terms
     if unresolved_terms:
         if select:
-            # Some terms resolved — skip unresolved ones, continue with plan.
-            # Blocking here would reject valid NL queries that contain extra words.
-            warnings.append({
-                "type": "unresolved_terms", "severity": "LOW",
-                "message": (
-                    f"Some terms could not be resolved and were skipped: "
-                    f"{', '.join(unresolved_terms)}."
-                ),
-            })
+            # Day 2C follow-up ("material qualifier policy") — a term with
+            # ZERO candidates at all (missing_{kind}) has nothing a
+            # clarification could ever offer, so it is promoted straight to
+            # a hard refusal here — the same "never silently drop a
+            # material qualifier" principle Step 6a below already applies
+            # to date/status filters specifically, now generalized to any
+            # measure/dimension term. Verified live against real CCPP:
+            # "How many clients have a phone number on file?" used to
+            # silently become "how many clients are there at all", with no
+            # disclosed limitation. An AMBIGUOUS term (>=1 real candidate,
+            # however weak) is deliberately left on the soft warning below
+            # instead — core.orchestrator.context_builder._extract_
+            # ambiguous_terms now independently evaluates every such entry
+            # (a sibling Day 2C follow-up fix removing that function's own
+            # "bail out if anything else resolved" early return) and offers
+            # it as a clarification question BEFORE this function ever
+            # runs, for every caller that wires clarification; the one
+            # caller that doesn't (execute_query_route, per its own
+            # documented no-clarification-handling) keeps this soft warning
+            # as its existing, unchanged fallback.
+            #
+            # Excludes a term that ALSO already resolved as a bare business
+            # concept (query_plan["concepts"]) — extract_terms() puts every
+            # "before"-clause word into both concepts and measures, so a
+            # bare-entity question ("names of the students") predictably
+            # re-tries "students" as a metric COLUMN name after it already
+            # resolved fine as the concept/table itself, and predictably
+            # finds nothing (missing_measure) purely as a byproduct of that
+            # dual-classification — not a real dropped qualifier. Mirrors
+            # core.orchestrator.context_builder._extract_ambiguous_terms'
+            # own resolved_concept_terms exclusion for the identical reason.
+            resolved_concept_terms = {
+                (c.get("term") or "").lower()
+                for c in (query_plan.get("concepts") or [])
+                if c.get("selected")
+            }
+            # A metric-ranking Top N/Bottom N question ("Top 10 sales by
+            # amount") is structurally ambiguous for its "by X" phrase:
+            # extract_terms() always classifies X as a DIMENSION term (a
+            # GROUP BY candidate), but the SAME phrase is exactly as likely
+            # to mean "ranked/ordered by X" — already resolved separately,
+            # from `measures`, by _resolve_ranking_order_column below (Step
+            # "Ordering"). Reproduced against a real fixture: "amount" is a
+            # metric column, never matches as a dimension, and blocking on
+            # it would refuse a perfectly well-formed ranking question
+            # (tests/test_composer_sql_routing.py::
+            # test_top_n_generates_order_by_and_tightened_limit). Only a
+            # DATE-targeted order ("most recently added") is exempted from
+            # this carve-out — that shape resolves its date column via a
+            # completely separate path (_find_date_column_with_hint) that
+            # never touches `dimensions` at all, so an unresolved dimension
+            # alongside it is never this same ambiguity.
+            metric_ranking_active = bool(order_intent) and order_intent.get("target") != "date"
+
+            def _is_unusable(entry: dict, kind: str) -> bool:
+                warning_types = {w.get("type") for w in (entry.get("warnings") or [])}
+                if f"missing_{kind}" in warning_types:
+                    return True
+                if f"ambiguous_{kind}" in warning_types:
+                    # core.orchestrator.context_builder._extract_ambiguous_
+                    # terms' own mirrored rule: a MULTI-candidate list where
+                    # EVERY entry scores exactly 0 is a fake tie, not a
+                    # genuine clarification opportunity — functionally
+                    # identical to missing_{kind}, so it gets the same hard-
+                    # refusal treatment here. A SINGLE candidate at score 0
+                    # is deliberately NOT included — that is the pre-
+                    # existing Phase 2 design (a bare-entity-count term
+                    # against the only table in the database is a
+                    # legitimate, if weak, single-guess clarification,
+                    # handled by _extract_ambiguous_terms upstream, not a
+                    # dropped qualifier this function needs to refuse).
+                    candidates = entry.get("candidates") or []
+                    return len(candidates) >= 2 and not any((c.get("score") or 0) > 0 for c in candidates)
+                return False
+
+            missing_terms = [
+                entry["term"]
+                for kind, entries in (
+                    ("measure", query_plan.get("measures") or []),
+                    ("dimension", query_plan.get("dimensions") or []),
+                )
+                for entry in entries
+                if entry.get("selected") is None
+                and _is_unusable(entry, kind)
+                and (entry.get("term") or "").lower() not in resolved_concept_terms
+                and not (kind == "dimension" and metric_ranking_active)
+            ]
+            remaining = [t for t in unresolved_terms if t not in missing_terms]
+            if missing_terms:
+                blocking_reasons.append(
+                    "Term(s) could not be matched to any field, and dropping them "
+                    f"would change the meaning of the question: {', '.join(missing_terms)}."
+                )
+            if remaining:
+                warnings.append({
+                    "type": "unresolved_terms", "severity": "LOW",
+                    "message": (
+                        f"Some terms could not be resolved and were skipped: "
+                        f"{', '.join(remaining)}."
+                    ),
+                })
         else:
             blocking_reasons.append(
                 f"Unresolved term(s) cannot be planned: {', '.join(unresolved_terms)}."
@@ -476,15 +762,32 @@ def build_sql_plan(
     if rejected_filters:
         blocking_reasons.append(f"Invalid filter(s) rejected: {'; '.join(rejected_filters)}.")
 
+    # --- Step 6a: requested date/status filter that couldn't be located ------
+    # query_planning_service emits date_column_not_found/status_column_not_found
+    # as an informational warning when the question explicitly asked for a
+    # time- or status-scoped answer ("last year", "open job orders") but no
+    # matching column was found among the resolved tables — previously this
+    # was non-blocking, and generation would silently proceed as if the
+    # question had no such constraint at all. That's a materially different,
+    # wrong answer, not a safe degradation: refuse instead, the same
+    # never-silently-drop-a-reference principle the out-of-graph guard below
+    # already applies to columns that WERE found on the wrong table.
+    dropped_filter_types = {"date_column_not_found", "status_column_not_found"}
+    dropped_filters = [w for w in warnings if w.get("type") in dropped_filter_types]
+    checks["no_dropped_requested_filters"] = not dropped_filters
+    for w in dropped_filters:
+        blocking_reasons.append(w["message"])
+
     # --- Step 6b: Plan-integrity guard — table membership (Phase 6.1) --------
     # Every selected measure/dimension/filter must reference a table that is
     # actually part of the FROM/JOIN graph just built. query_planning_service
-    # resolves date/status filters by searching every candidate table, not
-    # only the ones already backing a measure/dimension, which can produce a
-    # WHERE clause referencing a table absent from FROM/JOIN entirely — a
-    # real, reproduced defect (SQL Server rejects it as "multi-part
-    # identifier could not be bound"). Never auto-joins the missing table and
-    # never silently drops the offending reference — hard block only.
+    # now scopes date/status filter discovery to the join graph itself (Phase
+    # 2, Step 2), so this guard should no longer trip on that specific
+    # defect (SQL Server previously rejected the resulting SQL as "multi-part
+    # identifier could not be bound") — kept as a hard backstop for any other
+    # path that could still produce an out-of-graph reference. Never
+    # auto-joins the missing table and never silently drops the offending
+    # reference — hard block only.
     graph_tables: set[str] = set()
     if from_clause:
         graph_tables.add(from_clause["table_fqn"])
@@ -514,6 +817,42 @@ def build_sql_plan(
     order_by, order_warning = _build_order_by(order_intent, known_columns, measure_rows, bool(group_by))
     if order_warning:
         warnings.append({"type": "order_column_not_resolved", "severity": "LOW", "message": order_warning})
+
+    # --- Step 6b (continued): order_by must also stay inside the FROM/JOIN
+    # graph. _build_order_by runs after the Step 6b guard above (it needs
+    # group_by, computed after that guard), so a raw {table_fqn, column_name}
+    # row here was never checked against graph_tables — an alias-only row
+    # (aggregated GROUP BY case) references its own already-checked SELECT
+    # row and needs no re-check. Same hard-block treatment as select/where:
+    # never silently dropped, never auto-joined.
+    order_out_of_graph = sorted({
+        f"{row['table_fqn']}.{row['column_name']}" for row in order_by
+        if row.get("table_fqn") and row.get("table_fqn") not in graph_tables
+    })
+    if order_out_of_graph:
+        checks["all_references_in_query_graph"] = False
+        blocking_reasons.append(
+            f"Reference(s) to table(s) outside the FROM/JOIN graph: {', '.join(order_out_of_graph)}. "
+            "Refusing to generate SQL rather than silently dropping the reference or "
+            "auto-joining an unrelated table."
+        )
+
+    # Default chronological ordering for a time-grain GROUP BY ("students by
+    # year") when the question itself requested no explicit ordering — reads
+    # naturally oldest-to-newest rather than in undefined row order. Only
+    # applies when nothing else already claimed order_by.
+    if not order_by and group_by:
+        grain_group = next((g for g in group_by if g.get("time_grain")), None)
+        if grain_group:
+            grain_row = next(
+                (
+                    r for r in select
+                    if r["table_fqn"] == grain_group["table_fqn"] and r["column_name"] == grain_group["column_name"]
+                ),
+                None,
+            )
+            if grain_row:
+                order_by = [{"alias": grain_row["alias"], "direction": "ASC"}]
 
     # Query-level DISTINCT (e.g. "distinct students") only applies when the
     # query has no aggregation at all — an aggregated row already has its

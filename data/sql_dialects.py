@@ -119,6 +119,16 @@ class DialectAdapter(ABC):
         """Format an ISO-8601 date string as a SQL date literal."""
         return f"'{iso_date}'"
 
+    # ── Calendar-grain extraction ───────────────────────────────────────────
+
+    def date_part_expr(self, grain: str, col_ref: str) -> str:
+        """Wrap an already-quoted column reference to extract a calendar
+        grain ('year'|'month'|'quarter'|'week'|'day') for GROUP BY/SELECT
+        (e.g. grain='year' -> 'YEAR(col)'). Base default is a no-op — never
+        invents a wrapper for a dialect/grain it doesn't explicitly support;
+        concrete subclasses override with their own real syntax."""
+        return col_ref
+
 
 # ---------------------------------------------------------------------------
 # SQLite
@@ -138,6 +148,16 @@ class _SqliteDialect(DialectAdapter):
 
     def row_limit_suffix(self, n: int) -> str:
         return f"LIMIT {n}"
+
+    def date_part_expr(self, grain: str, col_ref: str) -> str:
+        fmt = {"year": "%Y", "month": "%m", "day": "%d"}.get(grain)
+        if fmt:
+            return f"CAST(strftime('{fmt}', {col_ref}) AS INTEGER)"
+        if grain == "quarter":
+            return f"((CAST(strftime('%m', {col_ref}) AS INTEGER) - 1) / 3) + 1"
+        if grain == "week":
+            return f"CAST(strftime('%W', {col_ref}) AS INTEGER)"
+        return col_ref
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +186,14 @@ class _MssqlDialect(DialectAdapter):
     def date_literal(self, iso_date: str) -> str:
         return f"CONVERT(date, '{iso_date}')"
 
+    def date_part_expr(self, grain: str, col_ref: str) -> str:
+        func = {"year": "YEAR", "month": "MONTH", "day": "DAY"}.get(grain)
+        if func:
+            return f"{func}({col_ref})"
+        if grain in ("quarter", "week"):
+            return f"DATEPART({grain}, {col_ref})"
+        return col_ref
+
 
 # ---------------------------------------------------------------------------
 # PostgreSQL
@@ -186,6 +214,11 @@ class _PostgreSQLDialect(DialectAdapter):
     def row_limit_suffix(self, n: int) -> str:
         return f"LIMIT {n}"
 
+    def date_part_expr(self, grain: str, col_ref: str) -> str:
+        if grain in ("year", "month", "day", "quarter", "week"):
+            return f"EXTRACT({grain.upper()} FROM {col_ref})::integer"
+        return col_ref
+
 
 # ---------------------------------------------------------------------------
 # MySQL / MariaDB
@@ -205,6 +238,12 @@ class _MySQLDialect(DialectAdapter):
 
     def row_limit_suffix(self, n: int) -> str:
         return f"LIMIT {n}"
+
+    def date_part_expr(self, grain: str, col_ref: str) -> str:
+        func = {"year": "YEAR", "month": "MONTH", "day": "DAY", "quarter": "QUARTER", "week": "WEEK"}.get(grain)
+        if func:
+            return f"{func}({col_ref})"
+        return col_ref
 
 
 # ---------------------------------------------------------------------------

@@ -104,6 +104,11 @@ def _build_select_clause(select: list[dict], adapter: DialectAdapter) -> str:
             expr = "COUNT(*)"
         else:
             col_ref = _qcol(row["table_fqn"], column_name, adapter)
+            if row.get("time_grain"):
+                # Calendar-grain dimension ("each year" -> YEAR(StartDate)) —
+                # wraps the raw column reference before any aggregation
+                # function is applied around it.
+                col_ref = adapter.date_part_expr(row["time_grain"], col_ref)
             if agg and row.get("distinct"):
                 expr = f"{agg}(DISTINCT {col_ref})"
             elif agg:
@@ -232,6 +237,10 @@ def _build_where_clause(where: list[dict], adapter: DialectAdapter) -> tuple[str
             pair = list(value) if isinstance(value, (list, tuple)) and len(value) == 2 else [value, value]
             conditions.append(f"{col} BETWEEN {ph} AND {ph}")
             params.extend(pair)
+        elif op in ("IS NOT NULL", "IS NULL"):
+            # No value/placeholder — a null-check filter (Day 2C follow-up,
+            # "on file"/"on record" idiom -> real filter) carries no operand.
+            conditions.append(f"{col} {op}")
         else:
             conditions.append(f"{col} {op} {ph}")
             params.append(value)
@@ -240,7 +249,13 @@ def _build_where_clause(where: list[dict], adapter: DialectAdapter) -> tuple[str
 
 
 def _build_group_by_clause(group_by: list[dict], adapter: DialectAdapter) -> str:
-    return ", ".join(_qcol(g["table_fqn"], g["column_name"], adapter) for g in group_by)
+    parts = []
+    for g in group_by:
+        col_ref = _qcol(g["table_fqn"], g["column_name"], adapter)
+        if g.get("time_grain"):
+            col_ref = adapter.date_part_expr(g["time_grain"], col_ref)
+        parts.append(col_ref)
+    return ", ".join(parts)
 
 
 # ---------------------------------------------------------------------------
