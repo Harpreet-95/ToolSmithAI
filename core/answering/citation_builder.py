@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+from core.answering.models import Citation, CitationType
+
+
+def _cite_dictionary(item) -> list[Citation]:
+    tables = item.data if isinstance(item.data, list) else []
+    return [
+        Citation(
+            source_type=CitationType.DICTIONARY_ENTRY,
+            reference=t.get("table_fqn", ""),
+            label=t.get("business_name") or t.get("table_fqn", "dictionary entry"),
+            detail={"is_approved": t.get("is_approved")},
+        )
+        for t in tables if t.get("table_fqn")
+    ] or [Citation(CitationType.DICTIONARY_ENTRY, "", "Data dictionary")]
+
+
+def _cite_domain(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    return [Citation(
+        source_type=CitationType.DOMAIN, reference="domain_summary",
+        label="Domain classification", detail={"domain_counts": d.get("domain_counts")},
+    )]
+
+
+def _cite_entity(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    return [Citation(
+        source_type=CitationType.ENTITY, reference="entity_summary",
+        label="Entity classification", detail={"entity_counts": d.get("entity_counts")},
+    )]
+
+
+def _cite_schema(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    return [Citation(
+        source_type=CitationType.TABLE, reference=str(d.get("snapshot_id", "")),
+        label="Schema snapshot", detail={"table_count": d.get("table_count")},
+    )]
+
+
+def _cite_live_metadata(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    citations = [
+        Citation(CitationType.TABLE, t.get("table_fqn", ""), t.get("table_name", "table"))
+        for t in (d.get("tables") or []) if t.get("table_fqn")
+    ]
+    return citations or [Citation(CitationType.METADATA_SOURCE, "", "Live metadata")]
+
+
+def _cite_relationship(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    return [Citation(
+        source_type=CitationType.RELATIONSHIP, reference="relationship_summary",
+        label="Relationship inventory", detail={"total_relationships": d.get("total_relationships")},
+    )]
+
+
+def _cite_knowledge_graph(item) -> list[Citation]:
+    return [Citation(CitationType.KNOWLEDGE_GRAPH, "knowledge_graph_summary", "Knowledge graph")]
+
+
+def _cite_profiling(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    tables = d.get("tables") or []
+    return [
+        Citation(CitationType.PROFILING, t.get("table_fqn", ""), "Profiling result")
+        for t in tables if t.get("table_fqn")
+    ] or [Citation(CitationType.PROFILING, "", "Profiling")]
+
+
+def _cite_reports(item) -> list[Citation]:
+    reports = item.data if isinstance(item.data, list) else []
+    return [
+        Citation(CitationType.REPORT, str(r.get("id", "")), r.get("title", "report"))
+        for r in reports
+    ] or [Citation(CitationType.REPORT, "", "Reports")]
+
+
+def _humanize_table(table_fqn: str) -> str:
+    short = table_fqn.split(".")[-1]
+    words = short.replace("_", " ").split()
+    return " ".join(w.capitalize() for w in words) or table_fqn
+
+
+def _cite_remembered_terminology(plan: dict) -> list[Citation]:
+    """Phase 3, Step 4 — one Citation per remembered_terminology record
+    already deduplicated by query_planning_service (see
+    _merge_remembered_terminology). Conversational label only — no
+    governance state, confidence score, or synonym-lifecycle wording, per
+    the explainability brief."""
+    return [
+        Citation(
+            source_type=CitationType.REMEMBERED_TERMINOLOGY,
+            reference=f'{item["original_term"]}->{item["canonical_term"]}',
+            label=f'Resolved using your remembered terminology: "{item["original_term"]}" → "{item["canonical_term"]}"',
+            detail=item,
+        )
+        for item in (plan.get("remembered_terminology") or [])
+    ]
+
+
+def _cite_generated_vocabulary(plan: dict) -> list[Citation]:
+    """Enterprise Phase 4 — one Citation per generated_vocabulary_evidence
+    record already deduplicated by query_planning_service.plan_business_query.
+    Mirrors _cite_remembered_terminology's exact label style/format so the
+    two read as one consistent explainability family — the only difference
+    is which memory resolved the term (a human teaching it vs. this source's
+    own auto-derived vocabulary), never confidence scores or governance
+    jargon, per the same explainability brief."""
+    return [
+        Citation(
+            source_type=CitationType.GENERATED_VOCABULARY,
+            reference=f'{item["original_term"]}->{item["generated_term"]}',
+            label=f'Resolved using database vocabulary: "{item["original_term"]}" → "{item["generated_term"]}"',
+            detail=item,
+        )
+        for item in (plan.get("generated_vocabulary_evidence") or [])
+    ]
+
+
+def _cite_live_query(item) -> list[Citation]:
+    d = item.data if isinstance(item.data, dict) else {}
+    citations = [Citation(
+        source_type=CitationType.LIVE_QUERY, reference=d.get("execution_id", ""),
+        label="Live query result", detail={"row_count": d.get("row_count")},
+    )]
+    # Milestone M-25 — additive, business-labeled table citations alongside
+    # the existing generic one (never replacing it, per the brief's
+    # "preserve existing citations... add source table label" instruction).
+    plan = d.get("business_plan") if isinstance(d.get("business_plan"), dict) else None
+    source_tables = (plan or {}).get("source_tables") or []
+    entity_label = (plan or {}).get("entity_label")
+    citations.extend(
+        Citation(
+            source_type=CitationType.TABLE, reference=table_fqn,
+            label=entity_label if i == 0 and entity_label else _humanize_table(table_fqn),
+            detail={},
+        )
+        for i, table_fqn in enumerate(source_tables)
+    )
+    # Phase 3, Step 4 — additive, alongside the citations above; never
+    # replaces or reorders them.
+    citations.extend(_cite_remembered_terminology(plan or {}))
+    # Enterprise Phase 4 — same additive treatment, one step lower precedence
+    # than remembered terminology (which is always explicit human memory).
+    citations.extend(_cite_generated_vocabulary(plan or {}))
+    return citations
+
+
+_EXTRACTORS = {
+    "dictionary": _cite_dictionary,
+    "domain": _cite_domain,
+    "entity": _cite_entity,
+    "schema": _cite_schema,
+    "live_metadata": _cite_live_metadata,
+    "relationship": _cite_relationship,
+    "knowledge_graph": _cite_knowledge_graph,
+    "profiling": _cite_profiling,
+    "reports": _cite_reports,
+    "live_query": _cite_live_query,
+}
+
+
+def build_citations(package) -> list[Citation]:
+    """Every evidence item with non-empty data produces at least one
+    citation — nothing is silently dropped."""
+    citations: list[Citation] = []
+    for item in package.evidence:
+        if item.data is None:
+            continue
+        extractor = _EXTRACTORS.get(item.source_service)
+        if extractor is not None:
+            try:
+                citations.extend(extractor(item))
+                continue
+            except Exception:  # noqa: BLE001
+                pass
+        citations.append(Citation(
+            source_type=CitationType.METADATA_SOURCE,
+            reference=item.source_service,
+            label=f"Evidence from {item.source_service}",
+        ))
+    return citations

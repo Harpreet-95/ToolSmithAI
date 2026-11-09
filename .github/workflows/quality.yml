@@ -1,0 +1,61 @@
+name: Quality checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: windows-latest
+    env:
+      APP_ENV: test
+      JWT_SECRET: ci-only-jwt-secret-that-is-longer-than-thirty-two-characters
+      ADMIN_API_KEY: tsm_ci_admin_key_that_is_longer_than_thirty_two_chars
+      USER_API_KEY: tsm_ci_user_key_that_is_longer_than_thirty_two_chars
+      USER_ID_SALT: ci-only-user-id-salt-that-is-longer-than-thirty-two-chars
+      ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Audit backend dependencies
+        run: python -m pip_audit -r requirements.txt
+      - name: Run supported backend smoke suite
+        run: >-
+          python -m pytest
+          tests/test_composer_single_route.py
+          tests/test_ai_first_composer_adapter.py
+          tests/test_sqlservice_fast_path_plan_cache.py
+          tests/test_sqlservice_fast_path_generation_service.py
+          tests/test_export_service.py
+          -q --tb=short
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+      - name: Test
+        run: npm test
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build

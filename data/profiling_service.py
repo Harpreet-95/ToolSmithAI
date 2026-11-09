@@ -1,0 +1,2181 @@
+import hashlib
+import json
+import logging
+import time
+from datetime import datetime, timezone
+
+from core.connectors.base import DataSourceConfig
+from core.connectors.registry import get as get_connector
+from core.connectors.schema import (
+    ColumnInfo, ForeignKeyInfo, PrimaryKeyInfo,
+    SchemaInfo, SchemaSnapshot, TableInfo,
+)
+from core.profiling.engine import (
+    ProfilingRunResult, run_profiling,
+    _build_referenced_by_index, _classify_columns, _classify_table,
+    _enrich_quality_columns, _profile_table_structural,
+    _run_statistical_pass, _score_table_priority,
+)
+from core.profiling.models import (
+    ProfilingBatchState, ProfilingConfig, ProfilingMode, ProfilingStatus,
+)
+from core.secrets.manager import get_secret_manager
+from data.db import get_connection
+from data.profiling_snapshot_resolver import (
+    get_latest_profiling_snapshot,
+    get_latest_profiling_snapshot_detail,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _reconstruct_snapshot(d: dict, source_id: int) -> SchemaSnapshot:
+    """Rebuild a SchemaSnapshot dataclass tree from a dataclasses.asdict() dict."""
+    schemas = []
+    for s in d.get('schemas', []):
+        tables = []
+        for t in s.get('tables', []):
+            tables.append(TableInfo(
+                table_name=t['table_name'],
+                schema_name=t['schema_name'],
+                table_fqn=t['table_fqn'],
+                table_type=t['table_type'],
+                row_count_estimate=t.get('row_count_estimate'),
+                columns=[ColumnInfo(**c) for c in t.get('columns', [])],
+                primary_keys=[PrimaryKeyInfo(**pk) for pk in t.get('primary_keys', [])],
+                foreign_keys=[ForeignKeyInfo(**fk) for fk in t.get('foreign_keys', [])],
+            ))
+        schemas.append(SchemaInfo(schema_name=s['schema_name'], tables=tables))
+    return SchemaSnapshot(
+        source_id=source_id,
+        source_type=d.get('source_type', ''),
+        discovered_at=d.get('discovered_at', ''),
+        schemas=schemas,
+        database_name=d.get('database_name'),
+        server_name=d.get('server_name'),
+        connector_version=d.get('connector_version'),
+        discovery_duration_ms=d.get('discovery_duration_ms'),
+        warnings=d.get('warnings', []),
+    )
+
+
+# ── SQL templates ──────────────────────────────────────────────────────────────
+
+_SNAP_INSERT = """
+    INSERT INTO profiling_snapshots (
+        source_id, schema_snapshot_id, snapshot_version, mode, sample_rate,
+        profiling_rules_version, status,
+        tables_total, tables_profiled, tables_skipped, tables_failed, tables_timed_out,
+        columns_total, columns_profiled, columns_skipped,
+        total_rows_profiled, pii_columns_found, classifications_complete,
+        started_at, completed_at, duration_seconds, created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+"""
+
+_TABLE_INSERT = """
+    INSERT INTO profiling_table_profiles (
+        profiling_snapshot_id, source_id, table_fqn, table_name, schema_name, table_type,
+        exact_row_count, estimated_row_count, row_count_tier,
+        has_date_column, date_column_name, earliest_record, latest_record,
+        data_span_days, data_currency,
+        column_count, pk_column_count, fk_count, referenced_by_count,
+        is_junction_table, is_root_table, is_leaf_table, has_identity_column,
+        avg_null_percentage, completeness_score,
+        table_class, classification_confidence,
+        classification_evidence_json, competing_classes_json, classification_rule_version,
+        pii_column_count, confirmed_pii_count,
+        profiling_depth, profiling_duration_ms, profiling_status,
+        skip_reason, profiled_at, created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+"""
+
+_COL_INSERT = """
+    INSERT INTO profiling_column_profiles (
+        profiling_snapshot_id, source_id, table_fqn, column_name,
+        data_type, raw_type, is_nullable, is_primary_key, is_identity, ordinal_position,
+        null_count, null_percentage, populated_count, populated_percentage,
+        empty_string_count, zero_count,
+        distinct_count, distinct_percentage, uniqueness_score, cardinality_tier,
+        min_value, max_value, min_length, max_length_observed, avg_length,
+        mean_value, std_deviation, p5_value, p25_value, p50_value, p75_value, p95_value,
+        blank_percentage, histogram_json, distribution_shape,
+        dominant_pattern, pattern_coverage,
+        email_match_rate, phone_match_rate, guid_match_rate,
+        date_string_rate, numeric_string_rate, masked_value_rate,
+        semantic_type, semantic_confidence, semantic_evidence_json, semantic_rule_version,
+        pii_name_heuristic, pii_confirmed, pii_signals_json,
+        top_values_coverage,
+        completeness_score, format_consistency_score,
+        valid_count, invalid_count, invalid_percentage, validation_status,
+        quality_score, quality_grade, quality_summary_json,
+        profiling_depth, profiling_duration_ms, profiling_status,
+        created_at, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+"""
+
+
+# ── Parameter builders ─────────────────────────────────────────────────────────
+
+def _snap_params(result: ProfilingRunResult, snap_version: int, now: str) -> tuple:
+    s = result.snapshot
+    return (
+        s.source_id, s.schema_snapshot_id, snap_version,
+        s.mode.value if hasattr(s.mode, 'value') else s.mode,
+        s.sample_rate, s.profiling_rules_version,
+        s.status.value if hasattr(s.status, 'value') else s.status,
+        s.tables_total, s.tables_profiled, s.tables_skipped,
+        s.tables_failed, s.tables_timed_out,
+        s.columns_total, s.columns_profiled, s.columns_skipped,
+        s.total_rows_profiled, s.pii_columns_found, s.classifications_complete,
+        s.started_at, s.completed_at, s.duration_seconds, now,
+    )
+
+
+def _table_row_params(tp, snap_id: int, rule_version: str, now: str) -> tuple:
+    cls = tp.classification
+    rct = tp.row_count_tier.value if tp.row_count_tier else None
+    dc  = tp.data_currency.value  if tp.data_currency  else None
+    pd  = tp.profiling_depth.value
+    ps  = tp.profiling_status.value
+    return (
+        snap_id, tp.source_id, tp.table_fqn, tp.table_name, tp.schema_name, tp.table_type,
+        tp.exact_row_count, tp.estimated_row_count, rct,
+        int(tp.has_date_column), tp.date_column_name,
+        tp.earliest_record, tp.latest_record, tp.data_span_days, dc,
+        tp.column_count, tp.pk_column_count, tp.fk_count, tp.referenced_by_count,
+        int(tp.is_junction_table), int(tp.is_root_table),
+        int(tp.is_leaf_table), int(tp.has_identity_column),
+        tp.avg_null_percentage, tp.completeness_score,
+        cls.classification if cls else None,
+        cls.confidence    if cls else None,
+        json.dumps(list(cls.evidence))   if cls else None,
+        json.dumps(list(cls.competing))  if cls else None,
+        cls.rule_version  if cls else None,
+        tp.pii_column_count, tp.confirmed_pii_count,
+        pd, tp.profiling_duration_ms, ps,
+        tp.skip_reason, tp.profiled_at, now, now,
+    )
+
+
+def _col_row_params(cp, snap_id: int, rule_version: str, now: str) -> tuple:
+    ct = cp.cardinality_tier.value if cp.cardinality_tier else None
+    st = cp.semantic_type.value    if cp.semantic_type    else None
+    pd = cp.profiling_depth.value
+    ps = cp.profiling_status.value
+    return (
+        snap_id, cp.source_id, cp.table_fqn, cp.column_name,
+        cp.data_type, cp.raw_type,
+        int(cp.is_nullable), int(cp.is_primary_key), int(cp.is_identity), cp.ordinal_position,
+        cp.null_count, cp.null_percentage, cp.populated_count, cp.populated_percentage,
+        cp.empty_string_count, cp.zero_count,
+        cp.distinct_count, cp.distinct_percentage, cp.uniqueness_score, ct,
+        cp.min_value, cp.max_value, cp.min_length, cp.max_length_observed, cp.avg_length,
+        cp.mean_value, cp.std_deviation, cp.p5_value, cp.p25_value, cp.p50_value, cp.p75_value, cp.p95_value,
+        cp.blank_percentage, cp.histogram_json, cp.distribution_shape,
+        cp.dominant_pattern, cp.pattern_coverage,
+        cp.email_match_rate, cp.phone_match_rate, cp.guid_match_rate,
+        cp.date_string_rate, cp.numeric_string_rate, cp.masked_value_rate,
+        st, cp.semantic_confidence,
+        json.dumps(cp.semantic_evidence) if cp.semantic_evidence else None,
+        rule_version,
+        int(cp.pii_name_heuristic), int(cp.pii_confirmed),
+        json.dumps(cp.pii_signals) if cp.pii_signals else None,
+        cp.top_values_coverage,
+        cp.completeness_score, cp.format_consistency_score,
+        cp.valid_count, cp.invalid_count, cp.invalid_percentage, cp.validation_status,
+        cp.quality_score, cp.quality_grade, cp.quality_summary_json,
+        pd, cp.profiling_duration_ms, ps,
+        now, now,
+    )
+
+
+# ── Public service functions ───────────────────────────────────────────────────
+
+def run_structural_profiling(source_id: int, user_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if owns is None:
+        return None
+
+    conn = get_connection()
+    try:
+        snap_row = conn.execute(
+            "SELECT id, snapshot_json FROM schema_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if snap_row is None:
+        raise ValueError(
+            "No schema snapshot found. Run POST /sources/{id}/discover first."
+        )
+
+    schema_snapshot_id = snap_row["id"]
+    snapshot = _reconstruct_snapshot(
+        json.loads(snap_row["snapshot_json"]), source_id
+    )
+
+    config = ProfilingConfig(mode=ProfilingMode.STRUCTURAL_ONLY)
+    result = run_profiling(source_id, schema_snapshot_id, config, snapshot)
+
+    profiling_snapshot_id = _save_profiling_result(result)
+
+    return {
+        "profiling_snapshot_id":  profiling_snapshot_id,
+        "schema_snapshot_id":     schema_snapshot_id,
+        "tables_profiled":        result.snapshot.tables_profiled,
+        "columns_profiled":       result.snapshot.columns_profiled,
+        "tables_classified":      result.tables_classified,
+        "columns_classified":     result.columns_classified,
+        "pii_columns_found":      result.pii_columns_found,
+        "classification_summary": result.classification_summary,
+        "semantic_type_summary":  result.semantic_type_summary,
+        "duration_ms":            result.duration_ms,
+        "mode":                   result.snapshot.mode,
+        "status":                 result.snapshot.status,
+    }
+
+
+def run_full_profiling(source_id: int, user_id: str) -> dict | None:
+    # ── Ownership + snapshot ───────────────────────────────────────────────────
+    iconn = get_connection()
+    try:
+        source_row = iconn.execute(
+            "SELECT id, source_type, encrypted_config_json "
+            "FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    if source_row is None:
+        return None
+
+    iconn = get_connection()
+    try:
+        snap_row = iconn.execute(
+            "SELECT id, snapshot_json FROM schema_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    if snap_row is None:
+        raise ValueError(
+            "No schema snapshot found. Run POST /sources/{id}/discover first."
+        )
+
+    # ── Decrypt config and open connector ─────────────────────────────────────
+    schema_snapshot_id = snap_row["id"]
+    snapshot = _reconstruct_snapshot(
+        json.loads(snap_row["snapshot_json"]), source_id
+    )
+
+    source_type = source_row["source_type"]
+    connector_cls = get_connector(source_type)
+    if connector_cls is None:
+        raise ValueError(
+            f"No connector registered for source_type '{source_type}'."
+        )
+    if "sql_query" not in connector_cls.supported_capabilities:
+        raise ValueError(
+            f"source_type '{source_type}' does not support sql_query."
+        )
+
+    try:
+        params = json.loads(
+            get_secret_manager().decrypt_secret(source_row["encrypted_config_json"])
+        )
+    except Exception:
+        logger.error("Failed to decrypt config for source id=%s", source_id)
+        raise RuntimeError("Failed to load connection configuration.")
+
+    # ── Execute full profiling with live connection ───────────────────────────
+    config = ProfilingConfig(
+        mode=ProfilingMode.FULL,
+        max_tables=0,
+        max_column_count=300,
+        excluded_prefixes=['stg_', 'tmp_', 'temp_', 'bak_', 'backup_', 'arc_', 'old_'],
+    )
+    builder = connector_cls().get_query_builder()
+    live_conn = None
+    try:
+        live_conn = connector_cls().open_connection(
+            DataSourceConfig(source_type=source_type, params=params)
+        )
+        result = run_profiling(
+            source_id, schema_snapshot_id, config, snapshot,
+            connection=live_conn,
+            query_builder=builder,
+        )
+    finally:
+        if live_conn is not None:
+            live_conn.close()
+
+    profiling_snapshot_id = _save_profiling_result(result)
+
+    return {
+        "profiling_snapshot_id":  profiling_snapshot_id,
+        "schema_snapshot_id":     schema_snapshot_id,
+        "tables_profiled":        result.snapshot.tables_profiled,
+        "columns_profiled":       result.snapshot.columns_profiled,
+        "tables_classified":      result.tables_classified,
+        "columns_classified":     result.columns_classified,
+        "pii_columns_found":      result.pii_columns_found,
+        "classification_summary": result.classification_summary,
+        "semantic_type_summary":  result.semantic_type_summary,
+        "duration_ms":            result.duration_ms,
+        "mode":                   result.snapshot.mode,
+        "status":                 result.snapshot.status,
+        "full_profile_candidates": result.tables_selected_for_full_profile,
+    }
+
+
+def get_latest_profile(source_id: int, user_id: str) -> dict | None:
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        snap = conn.execute(
+            "SELECT * FROM profiling_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        if snap is None:
+            return None
+
+        tables = conn.execute(
+            "SELECT table_fqn, table_name, schema_name, table_type, "
+            "exact_row_count, estimated_row_count, row_count_tier, "
+            "table_class, classification_confidence, "
+            "pii_column_count, confirmed_pii_count, "
+            "fk_count, referenced_by_count, is_junction_table, "
+            "profiling_depth, profiling_status "
+            "FROM profiling_table_profiles "
+            "WHERE profiling_snapshot_id = ? "
+            "ORDER BY schema_name, table_name",
+            (snap["id"],),
+        ).fetchall()
+
+        # profiling_snapshots.tables_profiled is a hand-incremented counter that
+        # can drift above the true distinct-table count if a batch window is ever
+        # processed more than once (see continue_batch_profiling). The row set in
+        # profiling_table_profiles is protected by a UNIQUE(profiling_snapshot_id,
+        # table_fqn) index, so COUNT(DISTINCT table_fqn) is the authoritative value.
+        distinct_profiled = conn.execute(
+            "SELECT COUNT(DISTINCT table_fqn) FROM profiling_table_profiles "
+            "WHERE profiling_snapshot_id = ?",
+            (snap["id"],),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    summary = _to_public_profile_summary(snap)
+    summary["tables_profiled"] = distinct_profiled
+
+    return {
+        "snapshot": summary,
+        "tables":   [dict(r) for r in tables],
+    }
+
+
+def list_profile_history(source_id: int, user_id: str) -> list[dict] | None:
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        rows = conn.execute(
+            "SELECT * FROM profiling_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC",
+            (source_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [_to_public_profile_summary(r) for r in rows]
+
+
+def get_column_profiles(
+    source_id: int,
+    user_id: str,
+    *,
+    table_fqn: str | None = None,
+    semantic_type: str | None = None,
+    pii_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict | None:
+    """Return paginated column profiles from the latest profiling snapshot.
+
+    Returns None when the source does not exist or does not belong to user_id.
+    Returns an empty columns list when profiling has not yet run.
+    All filters are applied server-side via parameterised SQL — no injection risk.
+    """
+    limit  = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if owns is None:
+        return None
+
+    # Phase 1A migration: snapshot selection now owned by
+    # data.profiling_snapshot_resolver.get_latest_profiling_snapshot, which
+    # reproduces the exact query this used to run inline (highest
+    # snapshot_version for source_id, status-independent) — no behavior
+    # change, just removing the duplicated SQL from this call site.
+    snap = get_latest_profiling_snapshot(source_id)
+    if snap is None:
+        return {
+            "snapshot_id": None,
+            "source_id":   source_id,
+            "total":       0,
+            "limit":       limit,
+            "offset":      offset,
+            "columns":     [],
+        }
+
+    snap_id = snap.id
+
+    conn = get_connection()
+    try:
+        filters: list[str] = ["profiling_snapshot_id = ?"]
+        params:  list      = [snap_id]
+
+        if table_fqn:
+            filters.append("table_fqn = ?")
+            params.append(table_fqn)
+        if semantic_type:
+            filters.append("semantic_type = ?")
+            params.append(semantic_type)
+        if pii_only:
+            filters.append("pii_name_heuristic = 1")
+
+        where = " AND ".join(filters)
+
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM profiling_column_profiles WHERE {where}",
+            params,
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            f"""
+            SELECT
+                table_fqn, column_name, data_type, raw_type,
+                is_nullable, is_primary_key, is_identity,
+                null_percentage, distinct_percentage, uniqueness_score, cardinality_tier,
+                min_value, max_value, avg_length,
+                semantic_type, semantic_confidence,
+                pii_name_heuristic, pii_confirmed, pii_signals_json,
+                dominant_pattern, pattern_coverage, top_values_coverage,
+                profiling_depth, profiling_status
+            FROM profiling_column_profiles
+            WHERE {where}
+            ORDER BY table_fqn, ordinal_position
+            LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "snapshot_id": snap_id,
+        "source_id":   source_id,
+        "total":       total,
+        "limit":       limit,
+        "offset":      offset,
+        "columns":     [dict(r) for r in rows],
+    }
+
+
+def get_key_candidate_columns(conn, source_id: int, profiling_snapshot_id: int) -> list[dict]:
+    """
+    Return profiled columns that look key-like — used by relationship_service's
+    inference engine to pre-filter candidates before any pairwise comparison.
+
+    A column qualifies via EITHER a structural signal (primary key, identity,
+    high uniqueness, GUID-shaped values, id-flavoured semantic_type) OR a
+    naming-convention signal (column_name ends in _id/_key/_code/_guid/_uuid/_fk).
+    The naming signal matters because foreign-key (child/"many") columns are
+    rarely unique themselves — only the primary-key ("one") side is — so
+    structural signals alone would miss legitimate FK-side candidates.
+
+    Takes an open connection (caller manages it) so a multi-step inference run
+    can batch all reads on one connection instead of opening one per call.
+    Returns [] when nothing qualifies; never raises on missing data.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, table_fqn, column_name, data_type, distinct_count,
+               uniqueness_score, cardinality_tier, is_primary_key, is_identity,
+               guid_match_rate, semantic_type, semantic_confidence
+        FROM profiling_column_profiles
+        WHERE source_id = ? AND profiling_snapshot_id = ?
+          AND (
+                is_primary_key = 1
+             OR is_identity = 1
+             OR uniqueness_score >= 0.5
+             OR guid_match_rate >= 0.5
+             OR semantic_type LIKE '%id%'
+             OR column_name LIKE '%\\_id'   ESCAPE '\\'
+             OR column_name LIKE '%Id'
+             OR column_name LIKE '%ID'
+             OR column_name LIKE '%\\_key'  ESCAPE '\\'
+             OR column_name LIKE '%\\_code' ESCAPE '\\'
+             OR column_name LIKE '%\\_guid' ESCAPE '\\'
+             OR column_name LIKE '%\\_uuid' ESCAPE '\\'
+             OR column_name LIKE '%\\_fk'   ESCAPE '\\'
+              )
+        ORDER BY table_fqn, column_name
+        """,
+        (source_id, profiling_snapshot_id),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_column_profile_by_name(
+    conn, source_id: int, profiling_snapshot_id: int, table_fqn: str, column_name: str,
+) -> dict | None:
+    """
+    Single-row column profile lookup by exact (table_fqn, column_name).
+
+    Used by join-quality reasoning (Program 3 Phase 2), which needs the
+    profile of a specific named join column — unlike get_key_candidate_columns
+    (bulk, filtered to key-like columns) or get_column_profiles (paginated,
+    public-API shaped). Takes an open connection so callers analyzing
+    multiple edges in one pass can batch on a single connection.
+
+    Returns None when the column was never profiled — never invents data.
+    """
+    row = conn.execute(
+        "SELECT id, table_fqn, column_name, data_type, is_nullable, "
+        "null_percentage, populated_percentage, distinct_count, "
+        "uniqueness_score, cardinality_tier, is_primary_key, is_identity, "
+        "guid_match_rate, semantic_type "
+        "FROM profiling_column_profiles "
+        "WHERE source_id = ? AND profiling_snapshot_id = ? "
+        "AND table_fqn = ? AND column_name = ?",
+        (source_id, profiling_snapshot_id, table_fqn, column_name),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_table_relevance_signals(source_id: int, user_id: str) -> list[dict] | None:
+    """Executive Report V3 (bounded cold-start discovery) — one cheap,
+    already-persisted row per table from the latest profiling snapshot,
+    carrying exactly the generic signal core.profiling.engine.
+    _score_table_priority already uses to prioritize which tables receive
+    live statistical profiling first (table_class, fk_count,
+    referenced_by_count, has_date_column, pk_column_count, plus name/row-
+    count context) — reused here, read-only, to rank which tables are worth
+    a bounded amount of targeted dictionary/domain/entity preparation before
+    a cold Executive Report. No live query: every column here was populated
+    by STRUCTURAL_ONLY profiling at connect time (schema-derived only).
+
+    Also reports whether each table already has ANY data_dictionary_tables /
+    domain_assignments row, so a caller can skip tables a prior discovery
+    pass (or the legacy full pipeline) already covered — the basis for
+    "partially learned source only fills gaps" (never re-does already-
+    evidenced tables).
+
+    Executive Report V4 (bounded discovery reuse) — also surfaces each
+    table's highest-confidence entity_assignments row, if any
+    (assigned_entity/assigned_entity_confidence/has_entity). entity_
+    assignments can exist WITHOUT a dictionary/domain row: core.analysis.
+    business_map.build_database_business_map already calls data.
+    entity_service.promote_unresolved_entities_via_semantic_contracts before
+    every report, and normal single-question Q&A's own on-demand candidate
+    resolution can promote a table's entity the same way — this is real,
+    already-validated business evidence the report's own discovery ranking
+    (core.analysis.cold_start_discovery) previously never consulted, even
+    though it was sitting right there. Read-only surface of an existing
+    table; not a new discovery/classification mechanism.
+
+    Returns None when source_id does not belong to user_id. Returns an empty
+    list when no profiling snapshot exists yet (e.g. discovery hasn't run —
+    callers should treat this the same as "nothing to rank").
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if owns is None:
+        return None
+
+    snap = get_latest_profiling_snapshot(source_id)
+    if snap is None:
+        return []
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                tp.table_fqn, tp.table_name, tp.schema_name, tp.table_type,
+                tp.estimated_row_count, tp.exact_row_count, tp.has_date_column,
+                tp.column_count, tp.pk_column_count, tp.fk_count, tp.referenced_by_count,
+                tp.is_junction_table, tp.is_root_table, tp.table_class,
+                EXISTS(
+                    SELECT 1 FROM data_dictionary_tables ddt
+                    WHERE ddt.source_id = tp.source_id AND ddt.table_fqn = tp.table_fqn
+                ) AS has_dictionary,
+                EXISTS(
+                    SELECT 1 FROM domain_assignments da
+                    WHERE da.source_id = tp.source_id AND da.table_fqn = tp.table_fqn
+                ) AS has_domain,
+                EXISTS(
+                    SELECT 1 FROM entity_assignments ea
+                    WHERE ea.source_id = tp.source_id AND ea.table_fqn = tp.table_fqn
+                ) AS has_entity,
+                (
+                    SELECT ea.entity FROM entity_assignments ea
+                    WHERE ea.source_id = tp.source_id AND ea.table_fqn = tp.table_fqn
+                    ORDER BY ea.confidence DESC LIMIT 1
+                ) AS assigned_entity,
+                (
+                    SELECT ea.confidence FROM entity_assignments ea
+                    WHERE ea.source_id = tp.source_id AND ea.table_fqn = tp.table_fqn
+                    ORDER BY ea.confidence DESC LIMIT 1
+                ) AS assigned_entity_confidence
+            FROM profiling_table_profiles tp
+            WHERE tp.profiling_snapshot_id = ?
+            """,
+            (snap.id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_table_profile_detail(
+    source_id: int,
+    user_id: str,
+    table_fqn: str,
+) -> dict | None:
+    """Return the latest table profile and all its column profiles.
+
+    Returns None when the source does not belong to user_id.
+    Returns {"table": None, "columns": []} when no profiling snapshot exists.
+    Returns {"table": None, "columns": []} when the specific table was not profiled.
+    Columns are ordered by ordinal_position.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if owns is None:
+        return None
+
+    # Phase 1B migration: snapshot selection now owned by
+    # data.profiling_snapshot_resolver.get_latest_profiling_snapshot, which
+    # reproduces the exact query this used to run inline (highest
+    # snapshot_version for source_id, status-independent) — no behavior
+    # change, just removing the duplicated SQL from this call site.
+    snap = get_latest_profiling_snapshot(source_id)
+    if snap is None:
+        return {"table": None, "columns": []}
+
+    snap_id = snap.id
+
+    conn = get_connection()
+    try:
+        table_row = conn.execute(
+            """
+            SELECT
+                table_fqn, table_name, schema_name, table_type,
+                exact_row_count, estimated_row_count, row_count_tier,
+                has_date_column, date_column_name,
+                earliest_record, latest_record, data_span_days, data_currency,
+                column_count, pk_column_count, fk_count, referenced_by_count,
+                is_junction_table, is_root_table, is_leaf_table, has_identity_column,
+                avg_null_percentage, completeness_score,
+                table_class, classification_confidence,
+                classification_evidence_json, competing_classes_json,
+                pii_column_count, confirmed_pii_count,
+                profiling_depth, profiling_status, profiled_at
+            FROM profiling_table_profiles
+            WHERE profiling_snapshot_id = ? AND table_fqn = ?
+            """,
+            (snap_id, table_fqn),
+        ).fetchone()
+
+        col_rows = conn.execute(
+            """
+            SELECT
+                table_fqn, column_name, data_type, raw_type,
+                is_nullable, is_primary_key, is_identity,
+                null_percentage, distinct_percentage, uniqueness_score, cardinality_tier,
+                min_value, max_value, avg_length,
+                semantic_type, semantic_confidence,
+                pii_name_heuristic, pii_confirmed, pii_signals_json,
+                dominant_pattern, pattern_coverage, top_values_coverage,
+                profiling_depth, profiling_status,
+                p5_value, p25_value, p50_value, p75_value, p95_value,
+                histogram_json, distribution_shape,
+                blank_percentage,
+                completeness_score, format_consistency_score,
+                invalid_count, invalid_percentage,
+                quality_score, quality_grade, quality_summary_json
+            FROM profiling_column_profiles
+            WHERE profiling_snapshot_id = ? AND table_fqn = ?
+            ORDER BY ordinal_position
+            """,
+            (snap_id, table_fqn),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return {
+        "table":   dict(table_row) if table_row else None,
+        "columns": [dict(r) for r in col_rows],
+    }
+
+
+# ── Private helpers ────────────────────────────────────────────────────────────
+
+def _save_profiling_result(result: ProfilingRunResult) -> int:
+    """Persist a ProfilingRunResult to the three profiling tables.
+
+    Returns the newly-inserted profiling_snapshots.id.
+    Writes are committed in per-table chunks so the write lock is not held
+    for the full duration of a large executemany, which prevents blocking
+    concurrent frontend writes (e.g. record_connectivity_test).
+    """
+    now = _now()
+    rule_version = result.snapshot.profiling_rules_version
+    source_id = result.snapshot.source_id
+
+    # ── 1. Insert snapshot row and commit immediately to release write lock ────
+    conn = get_connection()
+    try:
+        snap_version = conn.execute(
+            "SELECT COALESCE(MAX(snapshot_version), 0) + 1 "
+            "FROM profiling_snapshots WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()[0]
+
+        snap_cursor = conn.execute(_SNAP_INSERT, _snap_params(result, snap_version, now))
+        snap_id = snap_cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    # ── 2. Insert each table's profile + its columns in a separate transaction ─
+    # Each commit releases the write lock so other connections are not blocked.
+    for tp in result.table_profiles:
+        conn = get_connection()
+        try:
+            conn.execute(_TABLE_INSERT, _table_row_params(tp, snap_id, rule_version, now))
+            col_params = [
+                _col_row_params(cp, snap_id, rule_version, now)
+                for cp in tp.column_profiles
+            ]
+            if col_params:
+                conn.executemany(_COL_INSERT, col_params)
+            conn.commit()
+        finally:
+            conn.close()
+
+    return snap_id
+
+
+def _to_public_profile_summary(row) -> dict:
+    d = dict(row)
+    return d
+
+
+# ── Batch INSERT templates (INSERT OR IGNORE for idempotent batch saves) ──────
+
+_TABLE_INSERT_BATCH = _TABLE_INSERT.replace("INSERT INTO", "INSERT OR IGNORE INTO")
+_COL_INSERT_BATCH   = _COL_INSERT.replace("INSERT INTO",   "INSERT OR IGNORE INTO")
+
+
+# ── Batch profiling helpers ────────────────────────────────────────────────────
+
+def _compute_sorted_table_order(snapshot: SchemaSnapshot, config: ProfilingConfig) -> list[str]:
+    """Return table FQNs sorted by business priority score (descending).
+
+    Applies exclusion rules from config.  No live SQL executed.
+    """
+    referenced_by = _build_referenced_by_index(snapshot)
+    scored: list[tuple[int, str]] = []
+
+    for schema in snapshot.schemas:
+        for table in schema.tables:
+            if table.schema_name in config.excluded_schemas:
+                continue
+            if any(table.table_name.lower().startswith(p.lower())
+                   for p in config.excluded_prefixes):
+                continue
+            if table.table_fqn in config.excluded_table_fqns:
+                continue
+
+            ref_count = referenced_by.get(table.table_fqn, 0)
+            tp = _profile_table_structural(table, 0, 0, ref_count)
+            _classify_table(tp)
+            score = _score_table_priority(table, ref_count, tp)
+            scored.append((score, table.table_fqn))
+
+    scored.sort(key=lambda x: -x[0])
+    return [fqn for _, fqn in scored]
+
+
+def _save_batch_profiles(profiling_snapshot_id: int, batch_profiles: list) -> tuple[int, int, int]:
+    """Persist a batch of TableProfiles.
+
+    Returns (tables_saved, columns_saved, pii_found).
+    Uses INSERT OR IGNORE so a repeated batch call is safely idempotent.
+    """
+    now = _now()
+    rule_version = '4.0.0'
+
+    table_params = [
+        _table_row_params(tp, profiling_snapshot_id, rule_version, now)
+        for tp in batch_profiles
+    ]
+    col_params = [
+        _col_row_params(cp, profiling_snapshot_id, rule_version, now)
+        for tp in batch_profiles
+        for cp in tp.column_profiles
+    ]
+
+    conn = get_connection()
+    try:
+        conn.executemany(_TABLE_INSERT_BATCH, table_params)
+        conn.executemany(_COL_INSERT_BATCH,   col_params)
+        conn.commit()
+    finally:
+        conn.close()
+
+    pii = sum(tp.pii_column_count for tp in batch_profiles)
+    return len(batch_profiles), len(col_params), pii
+
+
+# ── Public batch functions ─────────────────────────────────────────────────────
+
+def start_batch_profiling(
+    source_id: int,
+    user_id: str,
+    batch_size: int = 50,
+    mode: str = "FULL",
+    max_tables: int = 0,
+) -> ProfilingBatchState | None:
+    """Create a new profiling snapshot and compute the priority-sorted table order.
+
+    mode: "FULL" (statistical + structural) or "STRUCTURAL_ONLY" (no live queries).
+    max_tables: 0 = unlimited; N > 0 = cap statistical pass to top-N tables.
+    Returns a ProfilingBatchState with status=RUNNING and next_table_index=0.
+    Call continue_batch_profiling repeatedly until status=COMPLETE.
+    """
+    iconn = get_connection()
+    try:
+        source_row = iconn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    if source_row is None:
+        return None
+
+    iconn = get_connection()
+    try:
+        snap_row = iconn.execute(
+            "SELECT id, snapshot_json FROM schema_snapshots "
+            "WHERE source_id = ? ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    if snap_row is None:
+        raise ValueError(
+            "No schema snapshot found. Run POST /sources/{id}/discover first."
+        )
+
+    schema_snapshot_id = snap_row["id"]
+    snapshot = _reconstruct_snapshot(json.loads(snap_row["snapshot_json"]), source_id)
+
+    prof_mode = (
+        ProfilingMode.STRUCTURAL_ONLY
+        if mode.upper() == "STRUCTURAL_ONLY"
+        else ProfilingMode.FULL
+    )
+
+    # ── Cross-snapshot resume ──────────────────────────────────────────────────
+    # A prior batch attempt for this exact (source, schema_snapshot, mode) that
+    # was CANCELLED before reaching every table already has a correct
+    # next_table_index and resumable_state_json. Re-running from index 0 would
+    # silently discard that progress and walk the same deterministic table
+    # order to the same stopping point again. Resume the existing row in place
+    # instead of creating a fresh one. RUNNING snapshots are deliberately left
+    # out of this match — an active RUNNING job is still handled by the
+    # existing_running guard below, so two callers never drive the same
+    # snapshot's next_table_index concurrently.
+    rconn = get_connection()
+    try:
+        resumable = rconn.execute(
+            "SELECT * FROM profiling_snapshots "
+            "WHERE source_id = ? AND schema_snapshot_id = ? AND mode = ? "
+            "AND status = ? "
+            "ORDER BY snapshot_version DESC LIMIT 1",
+            (
+                source_id, schema_snapshot_id, prof_mode.value,
+                ProfilingStatus.CANCELLED.value,
+            ),
+        ).fetchone()
+    finally:
+        rconn.close()
+
+    if resumable is not None and (resumable["next_table_index"] or 0) < (resumable["tables_total"] or 0):
+        rconn = get_connection()
+        try:
+            rconn.execute(
+                "UPDATE profiling_snapshots SET status = ?, cancel_requested = 0 WHERE id = ?",
+                (ProfilingStatus.RUNNING.value, resumable["id"]),
+            )
+            rconn.commit()
+        finally:
+            rconn.close()
+        return ProfilingBatchState(
+            profiling_snapshot_id=resumable["id"],
+            next_table_index=resumable["next_table_index"] or 0,
+            total_tables=resumable["tables_total"] or 0,
+            completed_tables=resumable["tables_profiled"] or 0,
+            status=ProfilingStatus.RUNNING,
+        )
+
+    config = ProfilingConfig(
+        mode=prof_mode,
+        max_tables=max_tables,
+        max_column_count=300,
+        excluded_prefixes=['stg_', 'tmp_', 'temp_', 'bak_', 'backup_', 'arc_', 'old_'],
+    )
+
+    sorted_fqns = _compute_sorted_table_order(snapshot, config)
+    if prof_mode == ProfilingMode.STRUCTURAL_ONLY:
+        statistical_fqns = []
+    elif config.max_tables == 0:
+        statistical_fqns = sorted_fqns
+    else:
+        statistical_fqns = sorted_fqns[:config.max_tables]
+
+    # Compute total column count across every table that will be profiled.
+    # sorted_fqns already has exclusions applied, so no additional filtering is needed.
+    _fqn_to_table = {t.table_fqn: t for s in snapshot.schemas for t in s.tables}
+    total_columns = sum(
+        len(_fqn_to_table[fqn].columns)
+        for fqn in sorted_fqns
+        if fqn in _fqn_to_table
+    )
+
+    plan = json.dumps({
+        "sorted_fqns":      sorted_fqns,
+        "statistical_fqns": statistical_fqns,
+        "config_max_col":   config.max_column_count,
+        "config_row_limit": config.row_limit_for_full,
+    })
+
+    now = _now()
+    iconn = get_connection()
+    try:
+        # Block if a non-cancelled RUNNING snapshot already exists for this source
+        existing_running = iconn.execute(
+            "SELECT id FROM profiling_snapshots "
+            "WHERE source_id = ? AND status = ? "
+            "AND (cancel_requested = 0 OR cancel_requested IS NULL)",
+            (source_id, ProfilingStatus.RUNNING.value),
+        ).fetchone()
+        if existing_running:
+            raise ValueError(
+                f"A profiling job is already running for this source "
+                f"(snapshot #{existing_running['id']}). Cancel it first."
+            )
+
+        snap_version = iconn.execute(
+            "SELECT COALESCE(MAX(snapshot_version), 0) + 1 "
+            "FROM profiling_snapshots WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()[0]
+
+        cursor = iconn.execute(
+            """INSERT INTO profiling_snapshots (
+                source_id, schema_snapshot_id, snapshot_version,
+                mode, sample_rate, profiling_rules_version, status,
+                tables_total, columns_total, batch_size, next_table_index,
+                resumable_state_json, started_at, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                source_id, schema_snapshot_id, snap_version,
+                prof_mode.value, config.sample_rate,
+                '4.0.0', ProfilingStatus.RUNNING.value,
+                len(sorted_fqns), total_columns, batch_size, 0,
+                plan, now, now,
+            ),
+        )
+        iconn.commit()
+        profiling_snapshot_id = cursor.lastrowid
+    finally:
+        iconn.close()
+
+    return ProfilingBatchState(
+        profiling_snapshot_id=profiling_snapshot_id,
+        next_table_index=0,
+        total_tables=len(sorted_fqns),
+        completed_tables=0,
+        statistical_tables_completed=0,
+        structural_tables_completed=0,
+        status=ProfilingStatus.RUNNING,
+    )
+
+
+def continue_batch_profiling(
+    source_id: int,
+    user_id: str,
+    profiling_snapshot_id: int,
+) -> ProfilingBatchState | None:
+    """Process the next batch of tables for an in-progress profiling snapshot.
+
+    Returns the updated ProfilingBatchState.  Call repeatedly until status=COMPLETE.
+    Returns None if the snapshot is not found or not owned by user.
+    """
+    # ── Load snapshot state ────────────────────────────────────────────────────
+    iconn = get_connection()
+    try:
+        owns = iconn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        psnap = iconn.execute(
+            "SELECT * FROM profiling_snapshots WHERE id = ? AND source_id = ?",
+            (profiling_snapshot_id, source_id),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    if psnap is None:
+        return None
+
+    # Already complete or cancelled — return final state immediately (idempotent)
+    if psnap["status"] in (ProfilingStatus.COMPLETE.value, ProfilingStatus.CANCELLED.value):
+        return _batch_state_from_row(psnap)
+
+    # Check for cancellation request before processing this batch
+    cancel_flag = psnap["cancel_requested"] if "cancel_requested" in psnap.keys() else 0
+    if cancel_flag:
+        iconn = get_connection()
+        try:
+            iconn.execute(
+                "UPDATE profiling_snapshots SET status = ?, completed_at = ? WHERE id = ?",
+                (ProfilingStatus.CANCELLED.value, _now(), profiling_snapshot_id),
+            )
+            iconn.commit()
+        finally:
+            iconn.close()
+        return ProfilingBatchState(
+            profiling_snapshot_id=profiling_snapshot_id,
+            next_table_index=psnap["next_table_index"] or 0,
+            total_tables=psnap["tables_total"] or 0,
+            completed_tables=psnap["tables_profiled"] or 0,
+            status=ProfilingStatus.CANCELLED,
+        )
+
+    plan            = json.loads(psnap["resumable_state_json"] or "{}")
+    sorted_fqns     = plan.get("sorted_fqns", [])
+    statistical_fqns = set(plan.get("statistical_fqns", []))
+    max_col         = plan.get("config_max_col", 300)
+    row_limit       = plan.get("config_row_limit", 1_000_000)
+    next_idx        = psnap["next_table_index"]
+    batch_sz        = psnap["batch_size"] or 50
+    schema_snap_id  = psnap["schema_snapshot_id"]
+
+    batch_fqns = sorted_fqns[next_idx : next_idx + batch_sz]
+    if not batch_fqns:
+        return _batch_state_from_row(psnap)
+
+    # ── Load schema snapshot ───────────────────────────────────────────────────
+    iconn = get_connection()
+    try:
+        schema_row = iconn.execute(
+            "SELECT snapshot_json FROM schema_snapshots WHERE id = ?",
+            (schema_snap_id,),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    snapshot     = _reconstruct_snapshot(json.loads(schema_row["snapshot_json"]), source_id)
+    table_map    = {t.table_fqn: t for s in snapshot.schemas for t in s.tables}
+    ref_idx      = _build_referenced_by_index(snapshot)
+
+    # ── Open live connection only if this batch contains statistical tables ─────
+    needs_live = any(fqn in statistical_fqns for fqn in batch_fqns)
+    live_conn  = None
+
+    if needs_live:
+        iconn2 = get_connection()
+        try:
+            source_row = iconn2.execute(
+                "SELECT source_type, encrypted_config_json "
+                "FROM data_source_connections WHERE id = ?",
+                (source_id,),
+            ).fetchone()
+        finally:
+            iconn2.close()
+
+        try:
+            params = json.loads(
+                get_secret_manager().decrypt_secret(source_row["encrypted_config_json"])
+            )
+        except Exception:
+            logger.error("Failed to decrypt config for source id=%s", source_id)
+            raise RuntimeError("Failed to load connection configuration.")
+
+        batch_source_type = source_row["source_type"]
+        batch_connector_cls = get_connector(batch_source_type)
+        if batch_connector_cls is None:
+            raise ValueError(
+                f"No connector registered for source_type '{batch_source_type}'."
+            )
+        builder = batch_connector_cls().get_query_builder()
+        live_conn = batch_connector_cls().open_connection(
+            DataSourceConfig(source_type=batch_source_type, params=params)
+        )
+        # Enforce ProfilingConfig.timeout_per_table_s (previously defined but
+        # never read — a hanging query, e.g. lock contention on a huge table,
+        # blocked continue_batch_profiling indefinitely with no isolation).
+        # pyodbc's Connection.timeout maps to SQL_ATTR_QUERY_TIMEOUT and raises
+        # pyodbc.Error on expiry instead of hanging; not every DBAPI2 driver
+        # exposes this, so failing to set it is not fatal to the batch.
+        try:
+            live_conn.timeout = ProfilingConfig().timeout_per_table_s
+        except Exception:
+            logger.debug("Connector for source id=%s does not support a query timeout attribute.", source_id)
+
+    # ── Profile the batch ──────────────────────────────────────────────────────
+    # Each table is isolated in its own try/except: previously one unhandled
+    # exception anywhere in this loop (a hanging/erroring query, an
+    # unclassifiable value) discarded the ENTIRE batch — next_table_index was
+    # never advanced, the whole request raised as HTTP 500, and the frontend's
+    # polling loop treated that as terminal and stopped, permanently stalling
+    # the run at whatever table triggered it. A single bad table must not
+    # block the other 49 in its batch or any table after it.
+    batch_profiles = []
+    stat_count = 0
+    struct_count = 0
+    failed_count = 0
+
+    try:
+        for fqn in batch_fqns:
+            table = table_map.get(fqn)
+            if table is None:
+                continue   # table no longer in schema — skip
+
+            ref_count = ref_idx.get(fqn, 0)
+            tp        = _profile_table_structural(table, source_id, profiling_snapshot_id, ref_count)
+
+            try:
+                is_stat = (
+                    fqn in statistical_fqns
+                    and (max_col == 0 or len(table.columns) <= max_col)
+                    and (row_limit == 0
+                         or tp.estimated_row_count is None
+                         or tp.estimated_row_count <= row_limit)
+                )
+
+                if is_stat and live_conn is not None:
+                    _run_statistical_pass(live_conn, tp, ProfilingConfig(mode=ProfilingMode.FULL), builder)
+                    _classify_table(tp)
+                    stat_count += 1
+                else:
+                    _classify_table(tp)
+                    struct_count += 1
+
+                _classify_columns(tp)
+                _enrich_quality_columns(tp)
+            except Exception as exc:
+                logger.warning(
+                    "continue_batch_profiling: table %s failed for source id=%s, "
+                    "recorded FAILED and continuing with the rest of the batch: %s",
+                    fqn, source_id, exc,
+                )
+                tp.profiling_status = ProfilingStatus.FAILED
+                tp.skip_reason = str(exc)[:500]
+                failed_count += 1
+
+            batch_profiles.append(tp)
+    finally:
+        if live_conn is not None:
+            live_conn.close()
+
+    # ── Persist batch + update snapshot ───────────────────────────────────────
+    tables_saved, cols_saved, pii_saved = _save_batch_profiles(profiling_snapshot_id, batch_profiles)
+
+    new_next   = next_idx + len(batch_fqns)
+    is_done    = new_next >= len(sorted_fqns)
+    new_status = ProfilingStatus.COMPLETE.value if is_done else ProfilingStatus.RUNNING.value
+    now        = _now()
+
+    iconn = get_connection()
+    try:
+        iconn.execute(
+            """UPDATE profiling_snapshots SET
+                next_table_index   = ?,
+                tables_profiled    = COALESCE(tables_profiled, 0) + ?,
+                tables_failed      = COALESCE(tables_failed, 0) + ?,
+                columns_profiled   = COALESCE(columns_profiled, 0) + ?,
+                pii_columns_found  = COALESCE(pii_columns_found, 0) + ?,
+                classifications_complete = COALESCE(classifications_complete, 0) + ?,
+                status             = ?,
+                completed_at       = CASE WHEN ? = 'COMPLETE' THEN ? ELSE completed_at END
+            WHERE id = ?""",
+            (
+                new_next, tables_saved, failed_count, cols_saved, pii_saved, tables_saved,
+                new_status, new_status, now,
+                profiling_snapshot_id,
+            ),
+        )
+        iconn.commit()
+
+        # Read back final counts for the state object
+        updated = iconn.execute(
+            "SELECT * FROM profiling_snapshots WHERE id = ?",
+            (profiling_snapshot_id,),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    if is_done:
+        # Automatic downstream semantic refresh — the ONE choke point every
+        # profiling-advance path (scheduler tick via
+        # continue_all_active_profiling_batches, a resumed run, the manual
+        # "continue profiling" API route) already funnels through, so this
+        # covers all of them without touching any caller. Fires exactly once
+        # per snapshot completion: the early return above (status already
+        # COMPLETE/CANCELLED) means this branch is only ever reached on the
+        # RUNNING -> COMPLETE transition itself, never again for the same
+        # snapshot. Best-effort — dictionary/domain/entity/vocabulary
+        # generation failing must never leave profiling itself looking
+        # failed; the lifecycle run's own failure is fully recorded via
+        # metadata_lifecycle_runs regardless.
+        try:
+            from core.lifecycle.models import LifecycleTrigger
+            from core.lifecycle.runner import run_autonomous_lifecycle
+            run_autonomous_lifecycle(
+                source_id, user_id, trigger=LifecycleTrigger.PROFILING_COMPLETE, job_id=None,
+            )
+        except Exception:
+            logger.exception(
+                "continue_batch_profiling: automatic semantic refresh failed for "
+                "source id=%s profiling_snapshot_id=%s", source_id, profiling_snapshot_id,
+            )
+
+    # Count statistical vs structural from DB for accurate cumulative totals
+    iconn = get_connection()
+    try:
+        depth_row = iconn.execute(
+            """SELECT
+                SUM(CASE WHEN profiling_depth = 'STATISTICAL' THEN 1 ELSE 0 END) as stat_c,
+                SUM(CASE WHEN profiling_depth = 'STRUCTURAL_ONLY' THEN 1 ELSE 0 END) as struct_c
+               FROM profiling_table_profiles
+               WHERE profiling_snapshot_id = ?""",
+            (profiling_snapshot_id,),
+        ).fetchone()
+    finally:
+        iconn.close()
+
+    return ProfilingBatchState(
+        profiling_snapshot_id=profiling_snapshot_id,
+        next_table_index=new_next,
+        total_tables=len(sorted_fqns),
+        completed_tables=updated["tables_profiled"] or 0,
+        statistical_tables_completed=depth_row[0] or 0,
+        structural_tables_completed=depth_row[1] or 0,
+        status=ProfilingStatus(new_status),
+    )
+
+
+def _batch_state_from_row(psnap) -> ProfilingBatchState:
+    """Build ProfilingBatchState from a profiling_snapshots DB row."""
+    return ProfilingBatchState(
+        profiling_snapshot_id=psnap["id"],
+        next_table_index=psnap["next_table_index"] or 0,
+        total_tables=psnap["tables_total"] or 0,
+        completed_tables=psnap["tables_profiled"] or 0,
+        status=ProfilingStatus(psnap["status"]),
+    )
+
+
+def cancel_batch_profiling(
+    source_id: int,
+    user_id: str,
+    profiling_snapshot_id: int,
+) -> dict | None:
+    """Request cancellation of a running profiling batch job.
+
+    Sets cancel_requested=1 on the snapshot. The next call to
+    continue_batch_profiling will detect the flag and transition the
+    snapshot to CANCELLED status.  Safe to call on a job that has
+    already completed — returns the current status unchanged.
+    Returns None if the snapshot does not exist or does not belong to user.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        psnap = conn.execute(
+            "SELECT id, status FROM profiling_snapshots WHERE id = ? AND source_id = ?",
+            (profiling_snapshot_id, source_id),
+        ).fetchone()
+        if psnap is None:
+            return None
+
+        if psnap["status"] not in (ProfilingStatus.RUNNING.value, ProfilingStatus.PENDING.value):
+            return {
+                "cancel_requested": False,
+                "already_done": True,
+                "status": psnap["status"],
+                "profiling_snapshot_id": profiling_snapshot_id,
+            }
+
+        conn.execute(
+            "UPDATE profiling_snapshots SET cancel_requested = 1 WHERE id = ?",
+            (profiling_snapshot_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "cancel_requested": True,
+        "profiling_snapshot_id": profiling_snapshot_id,
+        "status": ProfilingStatus.RUNNING.value,
+    }
+
+
+def get_active_profiling_snapshot(source_id: int, user_id: str) -> dict | None:
+    """Return the most recent RUNNING or PENDING profiling snapshot for a source.
+
+    Used by the frontend on page load to detect jobs that survived a refresh.
+    Returns None if the source does not belong to user or has no active job.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        row = conn.execute(
+            "SELECT id, status, next_table_index, tables_total, tables_profiled, "
+            "mode, started_at, cancel_requested "
+            "FROM profiling_snapshots "
+            "WHERE source_id = ? AND status IN (?, ?) "
+            "ORDER BY snapshot_version DESC LIMIT 1",
+            (source_id, ProfilingStatus.RUNNING.value, ProfilingStatus.PENDING.value),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    cancel_flag = row["cancel_requested"] if "cancel_requested" in row.keys() else 0
+    return {
+        "profiling_snapshot_id": row["id"],
+        "status":                row["status"],
+        "next_table_index":      row["next_table_index"] or 0,
+        "total_tables":          row["tables_total"] or 0,
+        "completed_tables":      row["tables_profiled"] or 0,
+        "mode":                  row["mode"],
+        "started_at":            row["started_at"],
+        "cancel_requested":      bool(cancel_flag),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Automatic batch continuation
+#
+# start_batch_profiling/continue_batch_profiling (above) are single-batch
+# primitives originally designed to be driven by a browser tab polling in a
+# loop. That means large schemas only ever finished profiling if a user kept
+# a tab open for the whole run — closing it (or a single batch failing before
+# the per-table isolation added above) left the snapshot stuck RUNNING with
+# nothing left to advance it. The functions below let a source-agnostic
+# caller (a scheduler tick, or a script) drive an existing batch job to
+# completion in bounded, resumable chunks, reusing start_batch_profiling's
+# resume path and continue_batch_profiling's per-table isolation — no new
+# profiling engine, just a driver loop around the existing primitives.
+# ---------------------------------------------------------------------------
+
+def advance_batch_profiling_for_source(
+    source_id: int,
+    user_id: str,
+    profiling_snapshot_id: int | None = None,
+    time_budget_s: float = 45.0,
+) -> ProfilingBatchState | None:
+    """Call continue_batch_profiling repeatedly until COMPLETE/CANCELLED or the
+    time budget is exhausted, whichever comes first.
+
+    Bounded so a single call never blocks indefinitely on a very large
+    schema — call it again (or let the scheduler tick call it again) to keep
+    advancing from wherever it stopped; next_table_index is always persisted
+    after each batch. Returns None if profiling_snapshot_id is not supplied
+    and no RUNNING/PENDING snapshot is active for this source.
+    """
+    if profiling_snapshot_id is None:
+        active = get_active_profiling_snapshot(source_id, user_id)
+        if active is None:
+            return None
+        profiling_snapshot_id = active["profiling_snapshot_id"]
+
+    t0 = time.monotonic()
+    state: ProfilingBatchState | None = None
+    while time.monotonic() - t0 < time_budget_s:
+        state = continue_batch_profiling(source_id, user_id, profiling_snapshot_id)
+        if state is None or state.status in (ProfilingStatus.COMPLETE, ProfilingStatus.CANCELLED):
+            break
+    return state
+
+
+def _sources_with_incomplete_profiling() -> list[dict]:
+    """Return {snapshot_id, source_id, user_id, status, mode} for every
+    source whose latest profiling_snapshots row is RUNNING or CANCELLED with
+    tables still remaining. Used by continue_all_active_profiling_batches to
+    find work each scheduler tick without scanning every source blindly."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT ps.id AS snapshot_id, ps.source_id, ps.status, ps.mode,
+                   ps.next_table_index, ps.tables_total, dsc.user_id
+            FROM profiling_snapshots ps
+            JOIN data_source_connections dsc ON dsc.id = ps.source_id
+            JOIN (
+                SELECT source_id, MAX(snapshot_version) AS max_v
+                FROM profiling_snapshots
+                GROUP BY source_id
+            ) latest ON latest.source_id = ps.source_id AND latest.max_v = ps.snapshot_version
+            WHERE ps.status IN (?, ?) AND dsc.is_active = 1
+            """,
+            (ProfilingStatus.RUNNING.value, ProfilingStatus.CANCELLED.value),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        dict(r) for r in rows
+        if (r["next_table_index"] or 0) < (r["tables_total"] or 0)
+    ]
+
+
+def continue_all_active_profiling_batches(time_budget_s: float = 45.0) -> list[dict]:
+    """Advance every source's in-progress or stalled-but-resumable batch
+    profiling job by one bounded tick each. Intended to be called
+    periodically (see api/app.py scheduler wiring) so a large schema reaches
+    full coverage automatically without a browser tab driving it, and so a
+    batch stalled by a since-fixed transient error (network blip, connector
+    hiccup) is retried on the next tick rather than sitting CANCELLED
+    forever. Never raises — a failure advancing one source is logged and
+    does not block the others.
+    """
+    summaries: list[dict] = []
+    for src in _sources_with_incomplete_profiling():
+        source_id = src["source_id"]
+        user_id = src["user_id"]
+        try:
+            if src["status"] == ProfilingStatus.CANCELLED.value:
+                # Route through start_batch_profiling so its resume path
+                # flips the existing snapshot back to RUNNING in place
+                # rather than continue_batch_profiling being called on a
+                # snapshot still marked CANCELLED (which is a no-op).
+                resumed = start_batch_profiling(source_id, user_id, mode=src["mode"])
+                if resumed is None:
+                    continue
+                snapshot_id = resumed.profiling_snapshot_id
+            else:
+                snapshot_id = src["snapshot_id"]
+
+            state = advance_batch_profiling_for_source(
+                source_id, user_id, snapshot_id, time_budget_s=time_budget_s,
+            )
+            if state is not None:
+                summaries.append({
+                    "source_id": source_id,
+                    "profiling_snapshot_id": state.profiling_snapshot_id,
+                    "next_table_index": state.next_table_index,
+                    "total_tables": state.total_tables,
+                    "status": state.status.value,
+                })
+        except Exception:
+            logger.exception(
+                "continue_all_active_profiling_batches: failed to advance source id=%s",
+                source_id,
+            )
+    return summaries
+
+
+# ---------------------------------------------------------------------------
+# Profile Review Tasks
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_CONFIDENCE_THRESHOLD = 0.70  # columns below this trigger a review task
+
+_SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+
+
+def _make_review_task(
+    *,
+    task_type: str,
+    asset_type: str,
+    asset_name: str,
+    table_fqn: str,
+    table_name: str,
+    schema_name: str,
+    column_name: str | None,
+    reason: str,
+    severity: str,
+    nav_target: dict,
+    created_at: str,
+) -> dict:
+    raw = f"{task_type}:{table_fqn}:{column_name or ''}"
+    task_id = hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:12]
+    return {
+        "id":          task_id,
+        "task_type":   task_type,
+        "asset_type":  asset_type,
+        "asset_name":  asset_name,
+        "table_fqn":   table_fqn,
+        "table_name":  table_name,
+        "schema_name": schema_name,
+        "column_name": column_name,
+        "reason":      reason,
+        "severity":    severity,
+        "status":      "OPEN",
+        "nav_target":  nav_target,
+        "created_at":  created_at,
+    }
+
+
+def _review_summary(tasks: list[dict]) -> dict:
+    counts: dict[str, int] = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    open_count = completed_count = pii_pending = 0
+    for t in tasks:
+        if t["status"] == "OPEN":
+            open_count += 1
+            counts[t["severity"]] = counts.get(t["severity"], 0) + 1
+            if t["task_type"] == "Review PII Classification":
+                pii_pending += 1
+        else:
+            completed_count += 1
+    return {
+        "total":       len(tasks),
+        "open":        open_count,
+        "critical":    counts["CRITICAL"],
+        "high":        counts["HIGH"],
+        "medium":      counts["MEDIUM"],
+        "low":         counts["LOW"],
+        "completed":   completed_count,
+        "pii_pending": pii_pending,
+    }
+
+
+def list_pii_classifications(source_id: int, user_id: str) -> dict | None:
+    """Full PII classification inventory for the PII admin view (Part 21):
+    every column the name/type heuristic ever flagged, with its current
+    classification/confidence/evidence/source/override state and the
+    resulting policy effect (BLOCKED/MASKED/ALLOWED — mirrors
+    data.query_execution_service._governance_recheck's own gate, not
+    re-derived logic). Returns None if source_id is not owned by user_id.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        detail = get_latest_profiling_snapshot_detail(source_id)
+        if detail is None:
+            return {"columns": [], "total_count": 0}
+
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.pii_confirmed, pcp.pii_classification,
+                      pcp.pii_classification_confidence, pcp.pii_classification_evidence,
+                      pcp.pii_classification_source, pcp.pii_classified_at,
+                      pcp.pii_manual_override
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ? AND pcp.pii_name_heuristic = 1
+               ORDER BY ptp.table_name, pcp.column_name""",
+            (detail.id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    columns = []
+    for r in rows:
+        if r["pii_confirmed"]:
+            policy_effect = "MASKED"
+        elif r["pii_classification"] == "CONFIRMED_NON_PII":
+            policy_effect = "ALLOWED"
+        else:
+            policy_effect = "BLOCKED"
+        columns.append({
+            "table_fqn":    r["table_fqn"],
+            "table_name":   r["table_name"],
+            "schema_name":  r["schema_name"],
+            "column_name":  r["column_name"],
+            "classification":       r["pii_classification"] or "UNCLASSIFIED",
+            "confidence":           r["pii_classification_confidence"],
+            "evidence":             r["pii_classification_evidence"],
+            "classification_source": r["pii_classification_source"],
+            "classified_at":        r["pii_classified_at"],
+            "manual_override":      bool(r["pii_manual_override"]),
+            "policy_effect":        policy_effect,
+        })
+    return {"columns": columns, "total_count": len(columns)}
+
+
+def get_profile_review_tasks(
+    source_id: int,
+    user_id: str,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict | None:
+    """Return review tasks generated from the latest profiling snapshot.
+
+    Tasks are derived entirely from stored profiling, dictionary, domain, and
+    entity rows.  No values are fabricated.  Returns None when the source does
+    not exist or does not belong to user_id.  Returns an empty task list when
+    profiling has not yet run or no issues are found.
+    """
+    conn = get_connection()
+    try:
+        owns = conn.execute(
+            "SELECT id FROM data_source_connections WHERE id = ? AND user_id = ?",
+            (source_id, user_id),
+        ).fetchone()
+        if owns is None:
+            return None
+
+        # Phase 1F.1 migration: snapshot selection now owned by
+        # data.profiling_snapshot_resolver.get_latest_profiling_snapshot_detail,
+        # which reproduces the exact query this used to run inline (highest
+        # snapshot_version for source_id, status-independent) — no behavior
+        # change, just removing the duplicated SQL from this call site.
+        detail = get_latest_profiling_snapshot_detail(source_id)
+        if detail is None:
+            return {"tasks": [], "summary": _review_summary([]), "total_count": 0}
+
+        snap_id: int = detail.id
+        snap_ts: str = detail.created_at or ""
+        tasks: list[dict] = []
+
+        # ── 1. PII detected but not confirmed (CRITICAL) ─────────────────────
+        # Autonomous classification (data.pii_classification_service) already
+        # resolves the unambiguous cases: CONFIRMED_PII sets pii_confirmed=1
+        # (excluded by the WHERE below) and CONFIRMED_NON_PII/manual clears
+        # are excluded via pii_manual_override — what remains here is
+        # genuinely UNCERTAIN evidence (or not-yet-classified legacy rows),
+        # i.e. exactly the cases the milestone brief says must fail
+        # conservatively rather than auto-resolve.
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.pii_classification, pcp.pii_classification_confidence,
+                      pcp.pii_classification_evidence
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.pii_name_heuristic = 1
+                 AND pcp.pii_confirmed = 0
+                 AND COALESCE(pcp.pii_manual_override, 0) = 0""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            if r["pii_classification_evidence"]:
+                reason = (
+                    f"PII signals detected but classification is uncertain "
+                    f"(confidence {r['pii_classification_confidence']:.2f}): "
+                    f"{r['pii_classification_evidence']}. Needs human review."
+                )
+            else:
+                reason = "PII signals detected by heuristic but not yet confirmed by a human reviewer."
+            tasks.append(_make_review_task(
+                task_type="Review PII Classification",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=reason,
+                severity="CRITICAL",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 2. Semantic type confidence below threshold (HIGH) ────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, pcp.semantic_type,
+                      pcp.semantic_confidence, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.semantic_type IS NOT NULL
+                 AND pcp.semantic_confidence IS NOT NULL
+                 AND pcp.semantic_confidence < ?""",
+            (snap_id, _SEMANTIC_CONFIDENCE_THRESHOLD),
+        ).fetchall()
+        for r in rows:
+            conf = r["semantic_confidence"]
+            tasks.append(_make_review_task(
+                task_type="Review Semantic Classification",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Semantic type '{r['semantic_type']}' assigned with "
+                    f"{conf:.0%} confidence (threshold: {_SEMANTIC_CONFIDENCE_THRESHOLD:.0%})."
+                ),
+                severity="HIGH",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 3. Column classification failed (HIGH) ────────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.profiling_status = 'FAILED'""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Review Classification",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason="Column profiling failed during classification and requires manual review.",
+                severity="HIGH",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 4. No Domain assigned (MEDIUM) ────────────────────────────────────
+        rows = conn.execute(
+            """SELECT ptp.table_fqn, ptp.table_name, ptp.schema_name
+               FROM profiling_table_profiles ptp
+               LEFT JOIN domain_assignments da
+                 ON da.source_id = ptp.source_id AND da.table_fqn = ptp.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND da.id IS NULL""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Assign Domain",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason="No business domain has been assigned to this table.",
+                severity="MEDIUM",
+                nav_target={"tab": "domains", "table_fqn": r["table_fqn"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 5. No Entity assigned (MEDIUM) ────────────────────────────────────
+        rows = conn.execute(
+            """SELECT ptp.table_fqn, ptp.table_name, ptp.schema_name
+               FROM profiling_table_profiles ptp
+               LEFT JOIN entity_assignments ea
+                 ON ea.source_id = ptp.source_id AND ea.table_fqn = ptp.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ea.id IS NULL""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Assign Entity",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason="No business entity has been assigned to this table.",
+                severity="MEDIUM",
+                nav_target={"tab": "entities", "table_fqn": r["table_fqn"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 6. Table profiling skipped (MEDIUM) ───────────────────────────────
+        rows = conn.execute(
+            """SELECT ptp.table_fqn, ptp.table_name, ptp.schema_name, ptp.skip_reason
+               FROM profiling_table_profiles ptp
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ptp.profiling_status = 'SKIPPED'""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            reason = r["skip_reason"] or "Table was skipped during profiling."
+            tasks.append(_make_review_task(
+                task_type="Review Profiling Failure",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason=reason,
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 7a. Table dictionary entry pending approval (LOW) ─────────────────
+        rows = conn.execute(
+            """SELECT ddt.table_fqn, ptp.table_name, ptp.schema_name,
+                      ddt.business_name, ddt.created_at AS dict_ts
+               FROM data_dictionary_tables ddt
+               JOIN profiling_table_profiles ptp
+                 ON ptp.source_id = ddt.source_id AND ptp.table_fqn = ddt.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ddt.source_id = ?
+                 AND ddt.is_approved = 0
+                 AND ddt.business_name IS NOT NULL""",
+            (snap_id, source_id),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Approve Dictionary Entry",
+                asset_type="table",
+                asset_name=r["table_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=None,
+                reason=f"Business name '{r['business_name']}' is generated but awaiting human approval.",
+                severity="LOW",
+                nav_target={"tab": "dictionary", "table_fqn": r["table_fqn"]},
+                created_at=r["dict_ts"] or snap_ts,
+            ))
+
+        # ── 7b. Column dictionary entry pending approval (LOW) ────────────────
+        rows = conn.execute(
+            """SELECT ddc.table_fqn, ddc.column_name, ptp.table_name, ptp.schema_name,
+                      ddc.business_label, ddc.created_at AS dict_ts
+               FROM data_dictionary_columns ddc
+               JOIN profiling_table_profiles ptp
+                 ON ptp.source_id = ddc.source_id AND ptp.table_fqn = ddc.table_fqn
+               WHERE ptp.profiling_snapshot_id = ?
+                 AND ddc.source_id = ?
+                 AND ddc.is_approved = 0
+                 AND ddc.business_label IS NOT NULL""",
+            (snap_id, source_id),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Approve Dictionary Entry",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=f"Business label '{r['business_label']}' is generated but awaiting human approval.",
+                severity="LOW",
+                nav_target={"tab": "dictionary", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=r["dict_ts"] or snap_ts,
+            ))
+
+        # ── 8. Quality grade F (CRITICAL), D (HIGH), or score < 60 (var) ─────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.quality_grade, pcp.quality_score
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND (
+                     pcp.quality_grade IN ('D', 'F')
+                  OR (pcp.quality_score IS NOT NULL AND pcp.quality_score < 60
+                      AND (pcp.quality_grade IS NULL OR pcp.quality_grade NOT IN ('D', 'F')))
+                 )""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            grade = r["quality_grade"]
+            score = r["quality_score"]
+            score_disp = f"{score:.0f}" if score is not None else "N/A"
+            if grade == "F" or (score is not None and score < 40):
+                sev = "CRITICAL"
+                action = "Immediately audit all quality dimensions and trace root-cause data issues."
+            elif grade == "D" or (score is not None and score < 50):
+                sev = "HIGH"
+                action = "Review null rates, format patterns, and validation failures; prioritise remediation."
+            else:
+                sev = "MEDIUM"
+                action = "Inspect the quality summary and address the lowest-scoring dimension."
+            tasks.append(_make_review_task(
+                task_type="Review Data Quality",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has quality grade "
+                    f"{grade or 'N/A'} (score: {score_disp}/100). {action}"
+                ),
+                severity=sev,
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 9. Invalid percentage > 10% — CRITICAL above 25%, MEDIUM 10–25% ──
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.invalid_percentage
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.invalid_percentage > 10""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            pct = r["invalid_percentage"]
+            sev = "CRITICAL" if pct > 25 else "MEDIUM"
+            action = (
+                "Identify the source of invalid values and apply upstream data validation."
+                if pct > 25
+                else "Investigate invalid value patterns and consider adding validation constraints."
+            )
+            tasks.append(_make_review_task(
+                task_type="Review Data Validity",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has "
+                    f"{pct:.1f}% invalid values (threshold: 10%). {action}"
+                ),
+                severity=sev,
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 10. Completeness score < 70 (MEDIUM) ─────────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.completeness_score
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.completeness_score IS NOT NULL
+                 AND pcp.completeness_score < 70""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            score = r["completeness_score"]
+            tasks.append(_make_review_task(
+                task_type="Review Data Completeness",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has a completeness score of "
+                    f"{score:.0f}/100 (threshold: 70). Reduce null and blank rates in the source system."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 11. Format consistency score < 70 (MEDIUM) ────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.format_consistency_score
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.format_consistency_score IS NOT NULL
+                 AND pcp.format_consistency_score < 70""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            score = r["format_consistency_score"]
+            tasks.append(_make_review_task(
+                task_type="Review Format Consistency",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has a format consistency score of "
+                    f"{score:.0f}/100 (threshold: 70). Standardise values to a single dominant format."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 12. Highly skewed distribution (MEDIUM) ───────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.distribution_shape = 'highly_skewed'""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            tasks.append(_make_review_task(
+                task_type="Review Distribution Skew",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has a highly skewed distribution. "
+                    "Review for outliers, data entry errors, or business logic issues causing imbalance."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+        # ── 13. Blank percentage > 30% (MEDIUM) ──────────────────────────────
+        rows = conn.execute(
+            """SELECT pcp.table_fqn, pcp.column_name, ptp.table_name, ptp.schema_name,
+                      pcp.blank_percentage
+               FROM profiling_column_profiles pcp
+               JOIN profiling_table_profiles ptp
+                 ON ptp.profiling_snapshot_id = pcp.profiling_snapshot_id
+                AND ptp.table_fqn = pcp.table_fqn
+               WHERE pcp.profiling_snapshot_id = ?
+                 AND pcp.blank_percentage IS NOT NULL
+                 AND pcp.blank_percentage > 30""",
+            (snap_id,),
+        ).fetchall()
+        for r in rows:
+            pct = r["blank_percentage"]
+            tasks.append(_make_review_task(
+                task_type="Review Blank Rate",
+                asset_type="column",
+                asset_name=r["column_name"],
+                table_fqn=r["table_fqn"],
+                table_name=r["table_name"],
+                schema_name=r["schema_name"],
+                column_name=r["column_name"],
+                reason=(
+                    f"Column '{r['column_name']}' in table '{r['table_fqn']}' has {pct:.1f}% blank (empty string) "
+                    "values (threshold: 30%). Replace blanks with NULL or a canonical sentinel value."
+                ),
+                severity="MEDIUM",
+                nav_target={"tab": "profile", "table_fqn": r["table_fqn"], "column_name": r["column_name"]},
+                created_at=snap_ts,
+            ))
+
+    finally:
+        conn.close()
+
+    tasks.sort(key=lambda t: (_SEVERITY_ORDER.get(t["severity"], 99), t["asset_name"]))
+    total_count = len(tasks)
+    summary = _review_summary(tasks)
+    return {"tasks": tasks[offset : offset + limit], "summary": summary, "total_count": total_count}

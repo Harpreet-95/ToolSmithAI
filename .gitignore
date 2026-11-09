@@ -1,0 +1,54 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments, caches, coverage, and test output
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest_*/
+.coverage
+.coverage.*
+htmlcov/
+
+# JavaScript dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# Runtime databases, logs, uploads, and exports
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite3
+*.log
+*.log.*
+*.bak
+*.pre-m3-backup
+data/uploads/
+data/exports/
+data/backups/
+
+# Generated portable knowledge packages
+knowledge_packages/*.json
+!knowledge_packages/README.md
+
+# Generated validation and local diagnostic output
+scratch_*.json
+*_workingtree.json
+*_validation_results.json
+test_email_renderer.txt
+
+# Editor and operating-system files
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

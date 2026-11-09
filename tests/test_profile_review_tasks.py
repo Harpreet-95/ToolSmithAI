@@ -1,0 +1,1227 @@
+"""
+Tests for get_profile_review_tasks() in data/profiling_service.py.
+
+Every test uses an in-memory SQLite DB patched over data.profiling_service.get_connection
+so no on-disk state is touched.  Each test case verifies that tasks are generated
+(or not) from real profiling rows only — no fabricated data.
+
+Run from project root:
+    venv/Scripts/pytest tests/test_profile_review_tasks.py -v
+"""
+from __future__ import annotations
+
+import os
+import sqlite3
+from unittest.mock import patch
+
+import pytest
+from cryptography.fernet import Fernet
+
+os.environ.setdefault("ENCRYPTION_KEY", Fernet.generate_key().decode())
+os.environ.setdefault("JWT_SECRET",      "test-jwt-review-tasks-long-enough-secret")
+os.environ.setdefault("USER_ID_SALT",    "test-salt-review-tasks")
+
+from data.profiling_service import (
+    _SEMANTIC_CONFIDENCE_THRESHOLD,
+    _review_summary,
+    get_profile_review_tasks,
+)
+
+
+# ---------------------------------------------------------------------------
+# Minimal schema — only the tables that get_profile_review_tasks queries
+# ---------------------------------------------------------------------------
+
+_SCHEMA = """
+    CREATE TABLE data_source_connections (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     TEXT    NOT NULL,
+        display_name TEXT   NOT NULL DEFAULT 'Test Source',
+        source_type TEXT    NOT NULL DEFAULT 'mssql',
+        source_category TEXT NOT NULL DEFAULT 'relational_db',
+        encrypted_config_json TEXT NOT NULL DEFAULT '{}',
+        config_schema_version INTEGER NOT NULL DEFAULT 1,
+        capabilities_json TEXT NOT NULL DEFAULT '[]',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        source_status TEXT NOT NULL DEFAULT 'ACTIVE',
+        is_active   INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at  TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE schema_snapshots (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id        INTEGER NOT NULL,
+        snapshot_version INTEGER NOT NULL DEFAULT 1,
+        source_type      TEXT    NOT NULL DEFAULT 'mssql',
+        table_count      INTEGER NOT NULL DEFAULT 0,
+        view_count       INTEGER NOT NULL DEFAULT 0,
+        column_count     INTEGER NOT NULL DEFAULT 0,
+        snapshot_json    TEXT    NOT NULL DEFAULT '{}',
+        discovered_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_at       TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE profiling_snapshots (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id               INTEGER NOT NULL,
+        schema_snapshot_id      INTEGER NOT NULL DEFAULT 1,
+        snapshot_version        INTEGER NOT NULL DEFAULT 1,
+        mode                    TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
+        sample_rate             REAL    NOT NULL DEFAULT 1.0,
+        profiling_rules_version TEXT    NOT NULL DEFAULT '4.0.0',
+        status                  TEXT    NOT NULL DEFAULT 'COMPLETE',
+        tables_total            INTEGER NOT NULL DEFAULT 0,
+        tables_profiled         INTEGER NOT NULL DEFAULT 0,
+        tables_skipped          INTEGER NOT NULL DEFAULT 0,
+        tables_failed           INTEGER NOT NULL DEFAULT 0,
+        tables_timed_out        INTEGER NOT NULL DEFAULT 0,
+        columns_total           INTEGER NOT NULL DEFAULT 0,
+        columns_profiled        INTEGER NOT NULL DEFAULT 0,
+        columns_skipped         INTEGER NOT NULL DEFAULT 0,
+        total_rows_profiled     INTEGER NOT NULL DEFAULT 0,
+        pii_columns_found       INTEGER NOT NULL DEFAULT 0,
+        classifications_complete INTEGER NOT NULL DEFAULT 0,
+        started_at              TEXT,
+        completed_at            TEXT,
+        duration_seconds        INTEGER,
+        resumable_state_json    TEXT,
+        batch_size              INTEGER NOT NULL DEFAULT 50,
+        next_table_index        INTEGER NOT NULL DEFAULT 0,
+        created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE profiling_table_profiles (
+        id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+        profiling_snapshot_id     INTEGER NOT NULL,
+        source_id                 INTEGER NOT NULL,
+        table_fqn                 TEXT    NOT NULL,
+        table_name                TEXT    NOT NULL,
+        schema_name               TEXT    NOT NULL,
+        table_type                TEXT    NOT NULL DEFAULT 'TABLE',
+        exact_row_count           INTEGER,
+        estimated_row_count       INTEGER,
+        row_count_tier            TEXT,
+        has_date_column           INTEGER NOT NULL DEFAULT 0,
+        date_column_name          TEXT,
+        earliest_record           TEXT,
+        latest_record             TEXT,
+        data_span_days            INTEGER,
+        data_currency             TEXT    NOT NULL DEFAULT 'UNKNOWN',
+        column_count              INTEGER NOT NULL DEFAULT 0,
+        pk_column_count           INTEGER NOT NULL DEFAULT 0,
+        fk_count                  INTEGER NOT NULL DEFAULT 0,
+        referenced_by_count       INTEGER NOT NULL DEFAULT 0,
+        is_junction_table         INTEGER NOT NULL DEFAULT 0,
+        is_root_table             INTEGER NOT NULL DEFAULT 0,
+        is_leaf_table             INTEGER NOT NULL DEFAULT 0,
+        has_identity_column       INTEGER NOT NULL DEFAULT 0,
+        avg_null_percentage       REAL,
+        completeness_score        REAL,
+        table_class               TEXT,
+        classification_confidence REAL,
+        classification_evidence_json TEXT,
+        competing_classes_json    TEXT,
+        classification_rule_version TEXT,
+        pii_column_count          INTEGER NOT NULL DEFAULT 0,
+        confirmed_pii_count       INTEGER NOT NULL DEFAULT 0,
+        profiling_depth           TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
+        profiling_duration_ms     INTEGER,
+        profiling_status          TEXT    NOT NULL DEFAULT 'COMPLETE',
+        skip_reason               TEXT,
+        profiled_at               TEXT,
+        created_at                TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at                TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE profiling_column_profiles (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        profiling_snapshot_id INTEGER NOT NULL,
+        source_id             INTEGER NOT NULL,
+        table_fqn             TEXT    NOT NULL,
+        column_name           TEXT    NOT NULL,
+        data_type             TEXT    NOT NULL DEFAULT 'TEXT',
+        raw_type              TEXT,
+        is_nullable           INTEGER NOT NULL DEFAULT 1,
+        is_primary_key        INTEGER NOT NULL DEFAULT 0,
+        is_identity           INTEGER NOT NULL DEFAULT 0,
+        ordinal_position      INTEGER NOT NULL DEFAULT 0,
+        null_count            INTEGER,
+        null_percentage       REAL,
+        populated_count       INTEGER,
+        populated_percentage  REAL,
+        empty_string_count    INTEGER,
+        zero_count            INTEGER,
+        distinct_count        INTEGER,
+        distinct_percentage   REAL,
+        uniqueness_score      REAL,
+        cardinality_tier      TEXT,
+        min_value             TEXT,
+        max_value             TEXT,
+        min_length            INTEGER,
+        max_length_observed   INTEGER,
+        avg_length            REAL,
+        mean_value            REAL,
+        std_deviation         REAL,
+        p5_value              TEXT,
+        p95_value             TEXT,
+        dominant_pattern      TEXT,
+        pattern_coverage      REAL,
+        email_match_rate      REAL,
+        phone_match_rate      REAL,
+        guid_match_rate       REAL,
+        date_string_rate      REAL,
+        numeric_string_rate   REAL,
+        masked_value_rate     REAL,
+        semantic_type         TEXT,
+        semantic_confidence   REAL,
+        semantic_evidence_json TEXT,
+        semantic_rule_version TEXT,
+        pii_name_heuristic    INTEGER NOT NULL DEFAULT 0,
+        pii_confirmed         INTEGER NOT NULL DEFAULT 0,
+        pii_signals_json      TEXT,
+        pii_classification            TEXT,
+        pii_classification_confidence REAL,
+        pii_classification_evidence   TEXT,
+        pii_classification_source     TEXT,
+        pii_classified_at             TEXT,
+        pii_manual_override   INTEGER NOT NULL DEFAULT 0,
+        top_values_coverage   REAL,
+        profiling_depth       TEXT    NOT NULL DEFAULT 'STRUCTURAL_ONLY',
+        profiling_duration_ms INTEGER,
+        profiling_status      TEXT    NOT NULL DEFAULT 'COMPLETE',
+        blank_percentage      REAL,
+        distribution_shape    TEXT,
+        completeness_score    REAL,
+        format_consistency_score REAL,
+        invalid_percentage    REAL,
+        quality_score         REAL,
+        quality_grade         TEXT,
+        created_at            TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at            TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE domain_assignments (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id             INTEGER NOT NULL,
+        profiling_snapshot_id INTEGER NOT NULL,
+        table_fqn             TEXT    NOT NULL,
+        domain                TEXT    NOT NULL,
+        confidence            REAL    NOT NULL DEFAULT 0.0,
+        evidence_json         TEXT    NOT NULL DEFAULT '[]',
+        competing_domains_json TEXT   NOT NULL DEFAULT '[]',
+        created_at            TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at            TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE entity_assignments (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id               INTEGER NOT NULL,
+        profiling_snapshot_id   INTEGER NOT NULL,
+        table_fqn               TEXT    NOT NULL,
+        entity                  TEXT    NOT NULL,
+        confidence              REAL    NOT NULL DEFAULT 0.0,
+        evidence_json           TEXT    NOT NULL DEFAULT '[]',
+        competing_entities_json TEXT    NOT NULL DEFAULT '[]',
+        created_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at              TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE data_dictionary_tables (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id     INTEGER NOT NULL,
+        snapshot_id   INTEGER NOT NULL DEFAULT 1,
+        table_fqn     TEXT    NOT NULL,
+        table_name    TEXT    NOT NULL,
+        schema_name   TEXT    NOT NULL DEFAULT 'dbo',
+        table_type    TEXT    NOT NULL DEFAULT 'TABLE',
+        business_name TEXT,
+        description   TEXT,
+        domain        TEXT,
+        grain         TEXT,
+        is_approved   INTEGER NOT NULL DEFAULT 0,
+        approved_by   TEXT,
+        approved_at   TEXT,
+        generation_method TEXT NOT NULL DEFAULT 'rule_based',
+        created_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE data_dictionary_columns (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id      INTEGER NOT NULL,
+        snapshot_id    INTEGER NOT NULL DEFAULT 1,
+        table_fqn      TEXT    NOT NULL,
+        column_name    TEXT    NOT NULL,
+        business_label TEXT,
+        meaning        TEXT,
+        semantic_type  TEXT,
+        is_metric      INTEGER NOT NULL DEFAULT 0,
+        is_dimension   INTEGER NOT NULL DEFAULT 0,
+        is_date        INTEGER NOT NULL DEFAULT 0,
+        is_id          INTEGER NOT NULL DEFAULT 0,
+        pii_risk       INTEGER NOT NULL DEFAULT 0,
+        is_approved    INTEGER NOT NULL DEFAULT 0,
+        approved_by    TEXT,
+        approved_at    TEXT,
+        generation_method TEXT NOT NULL DEFAULT 'rule_based',
+        created_at     TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at     TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+"""
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+class _NoClose:
+    """Wraps a connection and makes close() a no-op so in-memory DB survives."""
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.fixture()
+def db():
+    """Fresh in-memory DB. Also patches data.profiling_snapshot_resolver.get_connection:
+    since Phase 1F.1, get_profile_review_tasks() delegates snapshot selection to
+    get_latest_profiling_snapshot_detail(), which holds its own get_connection
+    reference in that module's namespace — patching data.profiling_service alone
+    would leave it hitting the real on-disk DB."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    wrapper = _NoClose(conn)
+    with patch("data.profiling_service.get_connection", return_value=wrapper), \
+         patch("data.profiling_snapshot_resolver.get_connection", return_value=wrapper):
+        yield conn
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Seed helpers
+# ---------------------------------------------------------------------------
+
+def _src(db, user: str = "u1") -> int:
+    cur = db.execute("INSERT INTO data_source_connections (user_id) VALUES (?)", (user,))
+    db.commit()
+    return cur.lastrowid
+
+
+def _snap(db, source_id: int, *, snapshot_version: int = 1, status: str = "COMPLETE",
+          created_at: str | None = None) -> int:
+    ss = db.execute(
+        "INSERT INTO schema_snapshots (source_id, source_type, snapshot_json, "
+        "discovered_at, created_at) VALUES (?, 'mssql', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        (source_id,),
+    ).lastrowid
+    db.commit()
+    cur = db.execute(
+        "INSERT INTO profiling_snapshots (source_id, schema_snapshot_id, snapshot_version, status, created_at) "
+        "VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))",
+        (source_id, ss, snapshot_version, status, created_at),
+    )
+    db.commit()
+    return cur.lastrowid
+
+
+def _table(db, snap_id: int, source_id: int, fqn: str = "dbo.Orders",
+           status: str = "COMPLETE", skip_reason: str | None = None) -> None:
+    parts = fqn.split(".", 1)
+    schema, name = parts[0], parts[1]
+    db.execute(
+        """INSERT INTO profiling_table_profiles
+           (profiling_snapshot_id, source_id, table_fqn, table_name, schema_name,
+            table_type, column_count, profiling_depth, profiling_status,
+            skip_reason, created_at, updated_at)
+           VALUES (?,?,?,?,?,'TABLE',2,'STRUCTURAL_ONLY',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""",
+        (snap_id, source_id, fqn, name, schema, status, skip_reason),
+    )
+    db.commit()
+
+
+def _col(db, snap_id: int, source_id: int, fqn: str, col: str,
+         *, pii_heuristic: int = 0, pii_confirmed: int = 0,
+         semantic_type: str | None = None, semantic_confidence: float | None = None,
+         col_status: str = "COMPLETE") -> None:
+    db.execute(
+        """INSERT INTO profiling_column_profiles
+           (profiling_snapshot_id, source_id, table_fqn, column_name,
+            data_type, ordinal_position,
+            pii_name_heuristic, pii_confirmed,
+            semantic_type, semantic_confidence,
+            profiling_depth, profiling_status, created_at, updated_at)
+           VALUES (?,?,?,?,'TEXT',1,?,?,?,?,'STRUCTURAL_ONLY',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""",
+        (snap_id, source_id, fqn, col,
+         pii_heuristic, pii_confirmed,
+         semantic_type, semantic_confidence,
+         col_status),
+    )
+    db.commit()
+
+
+def _domain(db, source_id: int, snap_id: int, fqn: str, domain: str = "Sales") -> None:
+    db.execute(
+        "INSERT INTO domain_assignments (source_id, profiling_snapshot_id, table_fqn, domain, created_at, updated_at) "
+        "VALUES (?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+        (source_id, snap_id, fqn, domain),
+    )
+    db.commit()
+
+
+def _entity(db, source_id: int, snap_id: int, fqn: str, entity: str = "Order") -> None:
+    db.execute(
+        "INSERT INTO entity_assignments (source_id, profiling_snapshot_id, table_fqn, entity, created_at, updated_at) "
+        "VALUES (?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+        (source_id, snap_id, fqn, entity),
+    )
+    db.commit()
+
+
+def _dict_table(db, source_id: int, fqn: str, business_name: str, approved: int = 0) -> None:
+    parts = fqn.split(".", 1)
+    schema, name = parts[0], parts[1]
+    db.execute(
+        "INSERT INTO data_dictionary_tables (source_id, table_fqn, table_name, schema_name, "
+        "business_name, is_approved, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+        (source_id, fqn, name, schema, business_name, approved),
+    )
+    db.commit()
+
+
+def _dict_col(db, source_id: int, fqn: str, col: str, business_label: str, approved: int = 0) -> None:
+    db.execute(
+        "INSERT INTO data_dictionary_columns (source_id, table_fqn, column_name, "
+        "business_label, is_approved, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+        (source_id, fqn, col, business_label, approved),
+    )
+    db.commit()
+
+
+def _qcol(
+    db,
+    snap_id: int,
+    source_id: int,
+    fqn: str,
+    col: str,
+    *,
+    quality_grade: str | None = None,
+    quality_score: float | None = None,
+    invalid_percentage: float | None = None,
+    completeness_score: float | None = None,
+    format_consistency_score: float | None = None,
+    distribution_shape: str | None = None,
+    blank_percentage: float | None = None,
+) -> None:
+    """Insert a column profile row with quality metric fields."""
+    db.execute(
+        """INSERT INTO profiling_column_profiles
+           (profiling_snapshot_id, source_id, table_fqn, column_name,
+            data_type, ordinal_position,
+            pii_name_heuristic, pii_confirmed,
+            profiling_depth, profiling_status,
+            quality_grade, quality_score, invalid_percentage,
+            completeness_score, format_consistency_score,
+            distribution_shape, blank_percentage,
+            created_at, updated_at)
+           VALUES (?,?,?,?,'TEXT',1,0,0,'STRUCTURAL_ONLY','COMPLETE',
+                   ?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)""",
+        (
+            snap_id, source_id, fqn, col,
+            quality_grade, quality_score, invalid_percentage,
+            completeness_score, format_consistency_score,
+            distribution_shape, blank_percentage,
+        ),
+    )
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# 1. Ownership / existence guards
+# ---------------------------------------------------------------------------
+
+def test_wrong_user_returns_none(db):
+    src = _src(db, "alice")
+    assert get_profile_review_tasks(src, "bob") is None
+
+
+def test_nonexistent_source_returns_none(db):
+    assert get_profile_review_tasks(9999, "u1") is None
+
+
+def test_no_snapshot_returns_empty(db):
+    src = _src(db)
+    result = get_profile_review_tasks(src, "u1")
+    assert result is not None
+    assert result["tasks"] == []
+    assert result["summary"]["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 2. PII detected but not confirmed (CRITICAL)
+# ---------------------------------------------------------------------------
+
+def test_pii_heuristic_unconfirmed_generates_critical_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    result = get_profile_review_tasks(src, "u1")
+    pii_tasks = [t for t in result["tasks"] if t["task_type"] == "Review PII Classification"]
+    assert len(pii_tasks) == 1
+    t = pii_tasks[0]
+    assert t["severity"] == "CRITICAL"
+    assert t["asset_type"] == "column"
+    assert t["column_name"] == "Email"
+    assert t["table_fqn"] == "dbo.Customers"
+    assert t["nav_target"]["tab"] == "profile"
+    assert t["status"] == "OPEN"
+
+
+def test_pii_confirmed_does_not_generate_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "Email", pii_heuristic=1, pii_confirmed=1)
+
+    result = get_profile_review_tasks(src, "u1")
+    pii_tasks = [t for t in result["tasks"] if t["task_type"] == "Review PII Classification"]
+    assert len(pii_tasks) == 0
+
+
+def test_no_pii_heuristic_does_not_generate_pii_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "CustomerID", pii_heuristic=0, pii_confirmed=0)
+
+    result = get_profile_review_tasks(src, "u1")
+    pii_tasks = [t for t in result["tasks"] if t["task_type"] == "Review PII Classification"]
+    assert len(pii_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 3. Semantic type confidence below threshold (HIGH)
+# ---------------------------------------------------------------------------
+
+def test_low_semantic_confidence_generates_high_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    low_conf = _SEMANTIC_CONFIDENCE_THRESHOLD - 0.01
+    _col(db, snap, src, "dbo.Orders", "Status",
+         semantic_type="STATUS", semantic_confidence=low_conf)
+
+    result = get_profile_review_tasks(src, "u1")
+    sem_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Semantic Classification"]
+    assert len(sem_tasks) == 1
+    assert sem_tasks[0]["severity"] == "HIGH"
+    assert sem_tasks[0]["column_name"] == "Status"
+    assert "STATUS" in sem_tasks[0]["reason"]
+    assert sem_tasks[0]["nav_target"]["tab"] == "profile"
+
+
+def test_high_semantic_confidence_no_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    high_conf = _SEMANTIC_CONFIDENCE_THRESHOLD + 0.01
+    _col(db, snap, src, "dbo.Orders", "Status",
+         semantic_type="STATUS", semantic_confidence=high_conf)
+
+    result = get_profile_review_tasks(src, "u1")
+    sem_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Semantic Classification"]
+    assert len(sem_tasks) == 0
+
+
+def test_null_semantic_confidence_no_task(db):
+    """Columns with a semantic type but NULL confidence do not trigger a review task."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _col(db, snap, src, "dbo.Orders", "Status",
+         semantic_type="STATUS", semantic_confidence=None)
+
+    result = get_profile_review_tasks(src, "u1")
+    sem_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Semantic Classification"]
+    assert len(sem_tasks) == 0
+
+
+def test_no_semantic_type_no_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _col(db, snap, src, "dbo.Orders", "Status",
+         semantic_type=None, semantic_confidence=0.3)
+
+    result = get_profile_review_tasks(src, "u1")
+    sem_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Semantic Classification"]
+    assert len(sem_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 4. Column classification failed (HIGH)
+# ---------------------------------------------------------------------------
+
+def test_failed_column_generates_review_classification_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Products")
+    _col(db, snap, src, "dbo.Products", "Price", col_status="FAILED")
+
+    result = get_profile_review_tasks(src, "u1")
+    cls_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Classification"]
+    assert len(cls_tasks) == 1
+    assert cls_tasks[0]["severity"] == "HIGH"
+    assert cls_tasks[0]["column_name"] == "Price"
+    assert cls_tasks[0]["nav_target"]["tab"] == "profile"
+
+
+def test_complete_column_no_classification_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Products")
+    _col(db, snap, src, "dbo.Products", "Price", col_status="COMPLETE")
+
+    result = get_profile_review_tasks(src, "u1")
+    cls_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Classification"]
+    assert len(cls_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 5. No Domain assigned (MEDIUM)
+# ---------------------------------------------------------------------------
+
+def test_unassigned_domain_generates_assign_domain_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Invoices")
+
+    result = get_profile_review_tasks(src, "u1")
+    dom_tasks = [t for t in result["tasks"] if t["task_type"] == "Assign Domain"]
+    assert len(dom_tasks) == 1
+    assert dom_tasks[0]["severity"] == "MEDIUM"
+    assert dom_tasks[0]["table_fqn"] == "dbo.Invoices"
+    assert dom_tasks[0]["nav_target"]["tab"] == "domains"
+
+
+def test_assigned_domain_no_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Invoices")
+    _domain(db, src, snap, "dbo.Invoices", "Finance")
+
+    result = get_profile_review_tasks(src, "u1")
+    dom_tasks = [t for t in result["tasks"] if t["task_type"] == "Assign Domain"]
+    assert len(dom_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 6. No Entity assigned (MEDIUM)
+# ---------------------------------------------------------------------------
+
+def test_unassigned_entity_generates_assign_entity_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Employees")
+
+    result = get_profile_review_tasks(src, "u1")
+    ent_tasks = [t for t in result["tasks"] if t["task_type"] == "Assign Entity"]
+    assert len(ent_tasks) == 1
+    assert ent_tasks[0]["severity"] == "MEDIUM"
+    assert ent_tasks[0]["nav_target"]["tab"] == "entities"
+
+
+def test_assigned_entity_no_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Employees")
+    _entity(db, src, snap, "dbo.Employees", "Employee")
+
+    result = get_profile_review_tasks(src, "u1")
+    ent_tasks = [t for t in result["tasks"] if t["task_type"] == "Assign Entity"]
+    assert len(ent_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 7. Table profiling skipped (MEDIUM)
+# ---------------------------------------------------------------------------
+
+def test_skipped_table_generates_review_profiling_failure_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Archive", status="SKIPPED", skip_reason="Table too large")
+
+    result = get_profile_review_tasks(src, "u1")
+    skip_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Profiling Failure"]
+    assert len(skip_tasks) == 1
+    assert skip_tasks[0]["severity"] == "MEDIUM"
+    assert "Table too large" in skip_tasks[0]["reason"]
+    assert skip_tasks[0]["nav_target"]["tab"] == "profile"
+
+
+def test_skipped_table_no_skip_reason_uses_default(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Archive", status="SKIPPED", skip_reason=None)
+
+    result = get_profile_review_tasks(src, "u1")
+    skip_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Profiling Failure"]
+    assert len(skip_tasks) == 1
+    assert skip_tasks[0]["reason"] != ""
+
+
+def test_complete_table_no_skip_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders", status="COMPLETE")
+
+    result = get_profile_review_tasks(src, "u1")
+    skip_tasks = [t for t in result["tasks"] if t["task_type"] == "Review Profiling Failure"]
+    assert len(skip_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. Dictionary entry pending approval (LOW)
+# ---------------------------------------------------------------------------
+
+def test_unapproved_table_dict_entry_generates_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Products")
+    _dict_table(db, src, "dbo.Products", "Product Catalog", approved=0)
+
+    result = get_profile_review_tasks(src, "u1")
+    dict_tasks = [t for t in result["tasks"] if t["task_type"] == "Approve Dictionary Entry"]
+    assert any(t["asset_type"] == "table" for t in dict_tasks)
+    tbl = next(t for t in dict_tasks if t["asset_type"] == "table")
+    assert tbl["severity"] == "LOW"
+    assert "Product Catalog" in tbl["reason"]
+    assert tbl["nav_target"]["tab"] == "dictionary"
+
+
+def test_approved_table_dict_no_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Products")
+    _dict_table(db, src, "dbo.Products", "Product Catalog", approved=1)
+
+    result = get_profile_review_tasks(src, "u1")
+    dict_tasks = [t for t in result["tasks"] if t["task_type"] == "Approve Dictionary Entry"
+                  and t["asset_type"] == "table"]
+    assert len(dict_tasks) == 0
+
+
+def test_unapproved_column_dict_entry_generates_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Employees")
+    _col(db, snap, src, "dbo.Employees", "Salary")
+    _dict_col(db, src, "dbo.Employees", "Salary", "Annual Salary", approved=0)
+
+    result = get_profile_review_tasks(src, "u1")
+    dict_tasks = [t for t in result["tasks"] if t["task_type"] == "Approve Dictionary Entry"
+                  and t["asset_type"] == "column"]
+    assert len(dict_tasks) == 1
+    assert dict_tasks[0]["column_name"] == "Salary"
+    assert dict_tasks[0]["nav_target"]["tab"] == "dictionary"
+    assert "Annual Salary" in dict_tasks[0]["reason"]
+
+
+def test_approved_column_dict_no_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Employees")
+    _col(db, snap, src, "dbo.Employees", "Salary")
+    _dict_col(db, src, "dbo.Employees", "Salary", "Annual Salary", approved=1)
+
+    result = get_profile_review_tasks(src, "u1")
+    dict_tasks = [t for t in result["tasks"] if t["task_type"] == "Approve Dictionary Entry"
+                  and t["asset_type"] == "column"]
+    assert len(dict_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# 9. Summary counts
+# ---------------------------------------------------------------------------
+
+def test_summary_counts_match_tasks(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.T")
+    # 1 CRITICAL: PII unconfirmed
+    _col(db, snap, src, "dbo.T", "Email", pii_heuristic=1, pii_confirmed=0)
+    # 1 HIGH: semantic confidence low
+    _col(db, snap, src, "dbo.T", "Status", semantic_type="STATUS",
+         semantic_confidence=_SEMANTIC_CONFIDENCE_THRESHOLD - 0.05)
+    # No domain → 1 MEDIUM (Assign Domain)
+    # No entity → 1 MEDIUM (Assign Entity)
+
+    result = get_profile_review_tasks(src, "u1")
+    s = result["summary"]
+    assert s["total"]    == len(result["tasks"])
+    assert s["critical"] == 1
+    assert s["high"]     >= 1   # at least the semantic task
+    assert s["medium"]   >= 2   # Assign Domain + Assign Entity
+    assert s["open"]     == s["total"]
+    assert s["completed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 10. Sort order: CRITICAL → HIGH → MEDIUM → LOW, then alpha by asset_name
+# ---------------------------------------------------------------------------
+
+def test_tasks_sorted_by_severity_then_name(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Billing")
+    _col(db, snap, src, "dbo.Billing", "Phone", pii_heuristic=1, pii_confirmed=0)
+    _col(db, snap, src, "dbo.Billing", "Amount",
+         semantic_type="AMOUNT", semantic_confidence=0.40)
+
+    result = get_profile_review_tasks(src, "u1")
+    sevs = [t["severity"] for t in result["tasks"]]
+    _ORD = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    assert sevs == sorted(sevs, key=lambda s: _ORD.get(s, 99))
+
+
+# ---------------------------------------------------------------------------
+# 11. Source isolation
+# ---------------------------------------------------------------------------
+
+def test_different_user_cannot_access_tasks(db):
+    src_a = _src(db, "alice")
+    src_b = _src(db, "bob")
+    snap_a = _snap(db, src_a)
+    _table(db, snap_a, src_a, "dbo.T")
+
+    assert get_profile_review_tasks(src_a, "bob") is None
+    assert get_profile_review_tasks(src_b, "alice") is None
+
+
+# ---------------------------------------------------------------------------
+# 12. Deterministic task IDs
+# ---------------------------------------------------------------------------
+
+def test_task_id_is_deterministic(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    r1 = get_profile_review_tasks(src, "u1")
+    r2 = get_profile_review_tasks(src, "u1")
+    ids1 = {t["id"] for t in r1["tasks"]}
+    ids2 = {t["id"] for t in r2["tasks"]}
+    assert ids1 == ids2
+
+
+# ---------------------------------------------------------------------------
+# 13. Empty tasks when no issues
+# ---------------------------------------------------------------------------
+
+def test_fully_governed_source_returns_no_tasks(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders", status="COMPLETE")
+    # Assign domain and entity → no medium tasks
+    _domain(db, src, snap, "dbo.Orders", "Finance")
+    _entity(db, src, snap, "dbo.Orders", "Order")
+    # Column with confirmed PII + high confidence → no critical/high tasks
+    _col(db, snap, src, "dbo.Orders", "OrderID",
+         pii_heuristic=0, pii_confirmed=0,
+         semantic_type="ID", semantic_confidence=0.95,
+         col_status="COMPLETE")
+    # Approved dict entries → no low tasks
+    _dict_table(db, src, "dbo.Orders", "Sales Orders", approved=1)
+    _dict_col(db, src, "dbo.Orders", "OrderID", "Order Identifier", approved=1)
+
+    result = get_profile_review_tasks(src, "u1")
+    assert result["tasks"] == []
+    assert result["summary"]["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 14. Pagination — limit / offset / total_count
+# ---------------------------------------------------------------------------
+
+def test_no_snapshot_includes_total_count_zero(db):
+    src = _src(db)
+    result = get_profile_review_tasks(src, "u1")
+    assert result is not None
+    assert result["total_count"] == 0
+
+
+def test_pagination_limit_slices_returned_tasks(db):
+    """limit=2 returns at most 2 tasks while total_count reflects the full set."""
+    src = _src(db)
+    snap = _snap(db, src)
+    # 3 tables, each unassigned for domain and entity → 6 MEDIUM tasks total
+    for name in ["Alpha", "Beta", "Gamma"]:
+        _table(db, snap, src, f"dbo.{name}")
+
+    result = get_profile_review_tasks(src, "u1", limit=2, offset=0)
+    assert result["total_count"] == 6
+    assert len(result["tasks"]) == 2
+
+
+def test_pagination_offset_pages_without_overlap(db):
+    """Consecutive pages cover disjoint task IDs and total_count is stable."""
+    src = _src(db)
+    snap = _snap(db, src)
+    for name in ["Alpha", "Beta", "Gamma"]:
+        _table(db, snap, src, f"dbo.{name}")
+
+    p0 = get_profile_review_tasks(src, "u1", limit=2, offset=0)
+    p1 = get_profile_review_tasks(src, "u1", limit=2, offset=2)
+    p2 = get_profile_review_tasks(src, "u1", limit=2, offset=4)
+
+    ids_p0 = {t["id"] for t in p0["tasks"]}
+    ids_p1 = {t["id"] for t in p1["tasks"]}
+    ids_p2 = {t["id"] for t in p2["tasks"]}
+    assert ids_p0.isdisjoint(ids_p1), "page 0 and page 1 must not overlap"
+    assert ids_p1.isdisjoint(ids_p2), "page 1 and page 2 must not overlap"
+    assert p0["total_count"] == p1["total_count"] == p2["total_count"] == 6
+
+
+def test_summary_always_reflects_all_tasks_regardless_of_page(db):
+    """summary counts must equal the global total even when offset skips most tasks."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.T")
+    _col(db, snap, src, "dbo.T", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    # Request a page well beyond the last task
+    result = get_profile_review_tasks(src, "u1", limit=1, offset=1000)
+    assert len(result["tasks"]) == 0
+    assert result["total_count"] >= 1
+    assert result["summary"]["critical"] == 1  # global count, not page count
+
+
+def test_summary_pii_pending_counts_unconfirmed_pii_tasks(db):
+    """pii_pending in summary counts PII tasks globally, not by page."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "Email", pii_heuristic=1, pii_confirmed=0)
+    _col(db, snap, src, "dbo.Customers", "Phone", pii_heuristic=1, pii_confirmed=0)
+    _col(db, snap, src, "dbo.Customers", "SSN",   pii_heuristic=1, pii_confirmed=1)  # confirmed → no task
+
+    result = get_profile_review_tasks(src, "u1")
+    assert result["summary"]["pii_pending"] == 2
+
+    result_page1 = get_profile_review_tasks(src, "u1", limit=1, offset=0)
+    assert result_page1["summary"]["pii_pending"] == 2  # still global
+
+def test_summary_pii_pending_zero_when_no_pii_tasks(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+
+    result = get_profile_review_tasks(src, "u1")
+    assert result["summary"]["pii_pending"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 15. Quality-driven review tasks (Phase 1E)
+# ---------------------------------------------------------------------------
+
+def test_quality_grade_f_generates_critical_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Status", quality_grade="F", quality_score=30.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    qtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Quality"]
+    assert len(qtasks) == 1
+    t = qtasks[0]
+    assert t["severity"] == "CRITICAL"
+    assert t["column_name"] == "Status"
+    assert "F" in t["reason"]
+    assert t["nav_target"]["tab"] == "profile"
+    assert t["status"] == "OPEN"
+
+
+def test_quality_grade_d_generates_high_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Amount", quality_grade="D", quality_score=45.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    qtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Quality"]
+    assert len(qtasks) == 1
+    assert qtasks[0]["severity"] == "HIGH"
+    assert "D" in qtasks[0]["reason"]
+
+
+def test_quality_score_below_50_no_grade_generates_high_task(db):
+    """quality_score < 50 with no grade still triggers a HIGH task."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Amount", quality_grade=None, quality_score=45.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    qtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Quality"]
+    assert len(qtasks) == 1
+    assert qtasks[0]["severity"] == "HIGH"
+
+
+def test_invalid_percentage_above_25_generates_critical_validity_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Email", invalid_percentage=30.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    vtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Validity"]
+    assert len(vtasks) == 1
+    assert vtasks[0]["severity"] == "CRITICAL"
+    assert "30.0" in vtasks[0]["reason"]
+    assert vtasks[0]["column_name"] == "Email"
+
+
+def test_invalid_percentage_between_10_and_25_generates_medium_validity_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Phone", invalid_percentage=15.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    vtasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Validity"]
+    assert len(vtasks) == 1
+    assert vtasks[0]["severity"] == "MEDIUM"
+    assert "15.0" in vtasks[0]["reason"]
+
+
+def test_completeness_score_below_70_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _qcol(db, snap, src, "dbo.Customers", "Address", completeness_score=55.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    ctasks = [t for t in result["tasks"] if t["task_type"] == "Review Data Completeness"]
+    assert len(ctasks) == 1
+    assert ctasks[0]["severity"] == "MEDIUM"
+    assert "55" in ctasks[0]["reason"]
+    assert ctasks[0]["column_name"] == "Address"
+
+
+def test_format_consistency_below_70_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _qcol(db, snap, src, "dbo.Customers", "PhoneNumber", format_consistency_score=60.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    ftasks = [t for t in result["tasks"] if t["task_type"] == "Review Format Consistency"]
+    assert len(ftasks) == 1
+    assert ftasks[0]["severity"] == "MEDIUM"
+    assert "60" in ftasks[0]["reason"]
+    assert ftasks[0]["column_name"] == "PhoneNumber"
+
+
+def test_highly_skewed_distribution_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Sales")
+    _qcol(db, snap, src, "dbo.Sales", "Revenue", distribution_shape="highly_skewed")
+
+    result = get_profile_review_tasks(src, "u1")
+    stasks = [t for t in result["tasks"] if t["task_type"] == "Review Distribution Skew"]
+    assert len(stasks) == 1
+    assert stasks[0]["severity"] == "MEDIUM"
+    assert stasks[0]["column_name"] == "Revenue"
+    assert "highly skewed" in stasks[0]["reason"]
+
+
+def test_non_skewed_distribution_generates_no_skew_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Sales")
+    _qcol(db, snap, src, "dbo.Sales", "Revenue", distribution_shape="symmetric")
+
+    result = get_profile_review_tasks(src, "u1")
+    stasks = [t for t in result["tasks"] if t["task_type"] == "Review Distribution Skew"]
+    assert len(stasks) == 0
+
+
+def test_blank_percentage_above_30_generates_medium_task(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _qcol(db, snap, src, "dbo.Orders", "Notes", blank_percentage=45.0)
+
+    result = get_profile_review_tasks(src, "u1")
+    btasks = [t for t in result["tasks"] if t["task_type"] == "Review Blank Rate"]
+    assert len(btasks) == 1
+    assert btasks[0]["severity"] == "MEDIUM"
+    assert "45.0" in btasks[0]["reason"]
+    assert btasks[0]["column_name"] == "Notes"
+
+
+def test_good_quality_column_generates_no_quality_tasks(db):
+    """A column with all quality metrics in healthy ranges produces no quality tasks."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _domain(db, src, snap, "dbo.Orders", "Finance")
+    _entity(db, src, snap, "dbo.Orders", "Order")
+    _qcol(
+        db, snap, src, "dbo.Orders", "OrderID",
+        quality_grade="A",
+        quality_score=95.0,
+        invalid_percentage=1.0,
+        completeness_score=98.0,
+        format_consistency_score=99.0,
+        distribution_shape="symmetric",
+        blank_percentage=2.0,
+    )
+
+    result = get_profile_review_tasks(src, "u1")
+    quality_task_types = {
+        "Review Data Quality",
+        "Review Data Validity",
+        "Review Data Completeness",
+        "Review Format Consistency",
+        "Review Distribution Skew",
+        "Review Blank Rate",
+    }
+    quality_tasks = [t for t in result["tasks"] if t["task_type"] in quality_task_types]
+    assert quality_tasks == [], f"Expected no quality tasks but got: {quality_tasks}"
+
+
+# ---------------------------------------------------------------------------
+# 16. Phase 1F.1 — snapshot selection delegated to
+#     get_latest_profiling_snapshot_detail(); these are regression guards
+#     proving the resolver-backed lookup reproduces the exact prior behavior.
+# ---------------------------------------------------------------------------
+
+def test_resolver_delegation_produces_tasks_from_correct_snapshot(db):
+    """Sanity check that delegation to the resolver still wires the resolved
+    snapshot id through to the per-task queries (a task is generated from it)."""
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Customers")
+    _col(db, snap, src, "dbo.Customers", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    result = get_profile_review_tasks(src, "u1")
+    pii_tasks = [t for t in result["tasks"] if t["task_type"] == "Review PII Classification"]
+    assert len(pii_tasks) == 1
+
+
+def test_created_at_preserved_from_resolver_detail(db):
+    """created_at on generated tasks comes from detail.created_at exactly."""
+    src = _src(db)
+    snap = _snap(db, src, created_at="2026-03-01T12:00:00")
+    _table(db, snap, src, "dbo.Invoices")  # no domain -> MEDIUM task
+
+    result = get_profile_review_tasks(src, "u1")
+    dom_tasks = [t for t in result["tasks"] if t["task_type"] == "Assign Domain"]
+    assert len(dom_tasks) == 1
+    assert dom_tasks[0]["created_at"] == "2026-03-01T12:00:00"
+
+
+def test_snapshot_id_preserved_selects_rows_scoped_to_that_snapshot(db):
+    """detail.id must be the id actually used to scope the per-task queries:
+    an older snapshot's rows must not leak into the current result."""
+    src = _src(db)
+    old_snap = _snap(db, src, snapshot_version=1)
+    _table(db, old_snap, src, "dbo.Old")
+    _col(db, old_snap, src, "dbo.Old", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    new_snap = _snap(db, src, snapshot_version=2)
+    _table(db, new_snap, src, "dbo.New")
+
+    result = get_profile_review_tasks(src, "u1")
+    fqns = {t["table_fqn"] for t in result["tasks"]}
+    assert "dbo.Old" not in fqns
+    assert any(t["table_fqn"] == "dbo.New" for t in result["tasks"])
+
+
+def test_no_snapshot_returns_empty_payload_exactly(db):
+    src = _src(db)
+    result = get_profile_review_tasks(src, "u1")
+    assert result == {"tasks": [], "summary": _review_summary([]), "total_count": 0}
+
+
+def test_latest_snapshot_version_still_wins(db):
+    src = _src(db)
+    older = _snap(db, src, snapshot_version=1)
+    _table(db, older, src, "dbo.Old")
+
+    newer = _snap(db, src, snapshot_version=2)
+    _table(db, newer, src, "dbo.New")
+
+    result = get_profile_review_tasks(src, "u1")
+    fqns = {t["table_fqn"] for t in result["tasks"]}
+    assert "dbo.New" in fqns
+    assert "dbo.Old" not in fqns
+
+
+def test_older_complete_snapshot_beats_newer_cancelled(db):
+    src = _src(db)
+    older = _snap(db, src, snapshot_version=1, status="COMPLETE")
+    _table(db, older, src, "dbo.Old")
+
+    newer = _snap(db, src, snapshot_version=2, status="CANCELLED")
+    _table(db, newer, src, "dbo.New")
+
+    result = get_profile_review_tasks(src, "u1")
+    # The older COMPLETE snapshot must win selection — a newer CANCELLED
+    # snapshot must never shadow older, usable COMPLETE evidence.
+    fqns = {t["table_fqn"] for t in result["tasks"]}
+    assert "dbo.Old" in fqns
+    assert "dbo.New" not in fqns
+
+
+def test_older_complete_snapshot_beats_newer_running(db):
+    src = _src(db)
+    older = _snap(db, src, snapshot_version=1, status="COMPLETE")
+    _table(db, older, src, "dbo.Old")
+
+    newer = _snap(db, src, snapshot_version=2, status="RUNNING")
+    _table(db, newer, src, "dbo.New")
+
+    result = get_profile_review_tasks(src, "u1")
+    # The older COMPLETE snapshot must win selection — a newer RUNNING
+    # snapshot must never shadow older, usable COMPLETE evidence.
+    fqns = {t["table_fqn"] for t in result["tasks"]}
+    assert "dbo.Old" in fqns
+    assert "dbo.New" not in fqns
+
+
+def test_migration_performs_no_writes(db):
+    src = _src(db)
+    snap = _snap(db, src)
+    _table(db, snap, src, "dbo.Orders")
+    _col(db, snap, src, "dbo.Orders", "Email", pii_heuristic=1, pii_confirmed=0)
+
+    before = {
+        table: [dict(r) for r in db.execute(f"SELECT * FROM {table}").fetchall()]
+        for table in (
+            "data_source_connections", "schema_snapshots", "profiling_snapshots",
+            "profiling_table_profiles", "profiling_column_profiles",
+        )
+    }
+    get_profile_review_tasks(src, "u1")
+    get_profile_review_tasks(9999, "u1")  # no-source path too
+    after = {
+        table: [dict(r) for r in db.execute(f"SELECT * FROM {table}").fetchall()]
+        for table in before
+    }
+
+    assert before == after

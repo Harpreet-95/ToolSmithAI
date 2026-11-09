@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Backend test tooling for local development and CI.
+pytest>=8.0,<9.0
+httpx>=0.27,<1.0
+pip-audit>=2.10,<3.0
