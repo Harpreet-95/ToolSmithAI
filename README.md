@@ -6,15 +6,15 @@
 
 **Built by Harpreet Kaur.**
 
-ToolSmithAI lets non-technical people ask plain-language questions about a Microsoft SQL Server database or an uploaded CSV/Excel file, and get back tables, KPIs, charts and grounded insights, without trusting a model to write unchecked SQL.
+ToolSmithAI helps non-technical users ask questions about a Microsoft SQL Server database or an uploaded CSV/Excel file in everyday language. It returns tables, KPIs, charts and grounded insights, while checking every generated query before it reaches the database.
 
-> **Status:** a production-oriented prototype validated for a controlled pilot. It is not presented as a turnkey production deployment. See [Limitations](#limitations).
+> **Project status:** working, tested and ready for a controlled pilot. It still needs the production infrastructure listed under [Limitations](#limitations) before being used for critical workloads.
 
-**Read next:** [Case study](CASE_STUDY.md) · [Architecture](ARCHITECTURE.md) · [Security](SECURITY.md) · [Testing](TESTING.md)
+**Read next:** [Architecture](ARCHITECTURE.md) · [Security](SECURITY.md) · [Testing](TESTING.md)
 
 ## The problem
 
-Important business information sits behind database schemas, SQL knowledge and analyst availability. A basic "text to SQL" demo makes that data easier to reach, but it can pick the wrong table, invent a join, or generate an unsafe statement, and nobody can tell from the answer alone. ToolSmithAI is built around one idea: **the model proposes, deterministic code decides.**
+Important business information is often difficult to reach without SQL knowledge or help from an analyst. A basic text-to-SQL tool can shorten that process, but it can also choose the wrong table, invent a join or produce an unsafe statement. I built ToolSmithAI around one rule: **the model proposes, deterministic code decides.**
 
 ## Who it is for
 
@@ -57,7 +57,7 @@ The full flow, including caching, clarification and uploaded datasets, is in [AR
 | npm dependency audit | 0 vulnerabilities |
 | API surface | 76 routes, each used by the frontend or needed for health monitoring |
 
-These figures describe engineering verification only. They are **not** claims about answer accuracy, latency or business impact; those depend on the connected database, its metadata, the model, and the network, and were not measured for this public release.
+These results show how the software was verified. Accuracy and response time will vary with the connected data, metadata, model and network, so I have not attached unsupported performance claims to this release.
 
 ## Quick start (no database needed)
 
@@ -120,9 +120,9 @@ tests/               Backend regression tests
 - The Docker image packages the backend only; local setup above is the verified path.
 - Some source files are very large (for example `App.jsx` and `routes.py`) and would benefit from refactoring.
 
-## Before serving critical or regulated workloads
+## What I would add for production use
 
-Add managed secrets and key rotation, SSO and a tenant-isolation review, managed metadata storage with backups, central monitoring, load and model-quality evaluation, deployment automation, and data-governance approval for each connected source.
+For critical or regulated workloads, I would add managed secrets and key rotation, SSO, a tenant-isolation review, managed metadata storage and backups, central monitoring, load and model-quality evaluation, deployment automation, and data-governance approval for every connected source.
 
 ## AI-assisted development disclosure
 

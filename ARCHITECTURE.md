@@ -1,6 +1,6 @@
 # ToolSmithAI architecture
 
-*Built by Harpreet Kaur.* This document explains how ToolSmithAI turns a plain-language question into a checked, current answer. Every statement below describes behavior implemented in this repository; where something is a limitation or future work, it is labelled as such.
+*Built by Harpreet Kaur.* This document explains how ToolSmithAI turns a plain-language question into a checked answer based on current data. Limitations and future production work are listed at the end.
 
 ## The idea in one sentence
 

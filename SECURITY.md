@@ -4,7 +4,7 @@
 
 ## Reporting a concern
 
-This is a portfolio and case-study repository, not a supported product. If you find a security problem, please contact Harpreet Kaur directly through the channel you used to receive this repository rather than opening a public issue. Do not post credentials, tokens or private data anywhere.
+This is a portfolio repository, not a supported commercial product. If you find a security problem, contact Harpreet Kaur privately through her GitHub profile. Please do not include credentials, tokens or private data in a public issue.
 
 ## What the application does to protect data
 
