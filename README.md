@@ -12,6 +12,10 @@ ToolSmithAI helps non-technical users ask questions about a Microsoft SQL Server
 
 **Read next:** [Architecture](ARCHITECTURE.md) · [Security](SECURITY.md) · [Testing](TESTING.md)
 
+## Product preview
+
+![ToolSmithAI login page with product overview and sign-in panel](docs/images/toolsmithai-login.png)
+
 ## The problem
 
 Important business information is often difficult to reach without SQL knowledge or help from an analyst. A basic text-to-SQL tool can shorten that process, but it can also choose the wrong table, invent a join or produce an unsafe statement. I built ToolSmithAI around one rule: **the model proposes, deterministic code decides.**
