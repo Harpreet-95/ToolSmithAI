@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="frontend/public/toolsmith-logo-transparent.png" alt="ToolSmithAI logo" width="120">
-</p>
-
 # ToolSmithAI
 
 **Built by Harpreet Kaur.**
